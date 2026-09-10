@@ -1,0 +1,51 @@
+# === Guardrail: ベンダ由来のバイナリを 1 バイトも入れない（CLAUDE.md §1） ===
+# NAND ダンプ・吸い出した blob は「解析対象」であって、リポジトリに置くものではない。
+# 必要になった素材は都度 `!` で明示的に例外化すること。
+dumps/
+vendor-blobs/
+*.dump
+*.nand
+*.mtd
+*.bin
+*.img
+*.rom
+*.so
+*.so.*
+
+# === Guardrail: 鍵素材を置かない（CLAUDE.md §6-4 / §9） ===
+# factory コンテナの AES 鍵は各自が自機から回収し、ビルド時に渡す。
+keys/
+secrets/
+*.key
+*.pem
+*.aes
+
+# === 内部作業前提ファイル（公開しない。CLAUDE.md §3） ===
+# Claude Code 向けの内部メモ。方針・確定事実・解析状況を含むため git 管理外に置く。
+CLAUDE.md
+
+# === ベンダ配布物・GPL アーカイブ（展開物は参照するが、リポジトリには載せない） ===
+gpl-src/
+*.tar
+*.tar.*
+*.tgz
+*.zip
+*.7z
+
+# === Buildroot ビルド成果物 ===
+output/
+dl/
+build/
+.config
+.config.old
+*.o
+*.ko
+
+# === エディタ・OS ===
+.vscode/
+.idea/
+*.swp
+*~
+Thumbs.db
+desktop.ini
+.DS_Store

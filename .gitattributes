@@ -1,0 +1,13 @@
+# 作業は Windows、対象は Linux ファームウェア。リポジトリ内は LF に正規化する。
+* text=auto eol=lf
+
+# シェルスクリプト・Makefile は必ず LF（CRLF が混ざるとビルドが壊れる）
+*.sh    text eol=lf
+*.mk    text eol=lf
+Makefile text eol=lf
+*_defconfig text eol=lf
+
+# バイナリ扱い（誤って追加された場合に diff を汚さない）
+*.bin   binary
+*.img   binary
+*.gz    binary
