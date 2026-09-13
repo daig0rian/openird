@@ -1,0 +1,25 @@
+--- a/drivers/media/Kconfig
++++ b/drivers/media/Kconfig
+@@ -147,7 +147,6 @@
+ 	default "m"
+ 	help
+ 	  Set Y or M if you want to support the Fujitsu DTV/STB device driver (FAPex).
+-	source "drivers/media/fapex/Kconfig"
+ 
+ config FUJITSU_FAPI
+ 	tristate "Fujitsu DTV/STB core device driver"
+@@ -155,6 +154,5 @@
+ 	default "m"
+ 	help
+ 	  Set Y or M if you want to support the Fujitsu DTV/STB device driver (FAPI).
+-	source "drivers/media/fapi_driver/Kconfig"
+ 
+ endif # MEDIA_SUPPORT
+--- a/drivers/media/Makefile
++++ b/drivers/media/Makefile
+@@ -6,5 +6,3 @@
+ 
+ obj-$(CONFIG_VIDEO_DEV) += radio/
+ obj-$(CONFIG_DVB_CORE)  += dvb/
+-obj-$(CONFIG_FUJITSU_FAPEX) += fapex/
+-obj-$(CONFIG_FUJITSU_FAPI)  += fapi_driver/
