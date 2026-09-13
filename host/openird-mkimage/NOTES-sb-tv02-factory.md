@@ -34,7 +34,7 @@ mtd5(0x140000) のカーネルラッパー **RDHB** を完全に同定。仕様�
 | # | 不明点 | 状態 | 解決手順 | 影響 |
 |---|---|---|---|---|
 | ~~H1~~ | RDHB 構造 | **解決** | 実ダンプで同定・spec 化・pack-kernel 実装 | — |
-| **H1b** | RDHB `0x08` チェックサムのアルゴリズムと、libooter が検証するか | **未特定** | 標準 CRC(各catalog)/Adler/Fletcher/sum いずれも不一致＝独自。→ **実機テスト**: `0x08=0` の自作 kernel を mtd5 に焼き起動可否を見る（全ダンプがある＝`dione_server -w` で即復旧）。どうしても要れば libooter 逆アセ(Close) | 中（起動可否の確証） |
+| ~~H1b~~ | RDHB `0x08` チェックサムを libooter が検証するか | **解決** | 2026-09-13 実機テストで決着＝**libooter は検証しない**。`0x08=0` の自前カーネルを `dione_server -w` で mtd5 に焼き、`ARM jumps to 0x42e08000`→自前カーネル(`user@…`/gcc4.9.4)起動→squashfs(mtd6) mount まで確認。→ `pack-kernel` 既定(0x08=0)で起動像が作れる。詳細は docs/specs/rdhb-kernel-container.md | — |
 | H2 | `.full`(`updater.full`) の `Updater_decode` 本体変換 | **昇格** | **end-user USB factory 経路の唯一の関門**（dev の `-w` 生書きには不要だが、ユーザ配布には必須）。純正 `.full` 入手→構造解析 / `dione_server -d` 素通しテスト。割れたら `pack-full` 実装 | 高(配布) |
 | H3 | `Updater_Header` の byte レイアウト | 昇格 | H2 と一体で解明 | 高(配布) |
 | H4 | kernel .config 確定版 | 進行可 | §C から menuconfig。実ビルドで確定 | 中 |
