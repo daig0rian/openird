@@ -21,11 +21,12 @@ O               := $(ROOT)/output/$(BOARD)
 
 BR_MAKE = $(MAKE) -C $(BR) BR2_EXTERNAL="$(BR2_EXTERNAL)" O="$(O)"
 
-.PHONY: help list-boards all menuconfig linux-menuconfig savedefconfig clean distclean hooks check-buildroot check-board
+.PHONY: help list-boards all kernel menuconfig linux-menuconfig savedefconfig clean distclean hooks check-buildroot check-board
 
 help:
 	@echo "OpenIRD — make list-boards | make BOARD=<device> [menuconfig|clean]"
 	@echo "例: make BOARD=emma3sep_softbank_poe-br100-yb1"
+	@echo "     make kernel BOARD=<device> … 検証済みカーネル(mtd5像)を再現ビルド (要 Linux/WSL)"
 	@$(MAKE) -s list-boards
 
 list-boards:
@@ -52,6 +53,10 @@ all: check-buildroot check-board
 	@echo "→ $(BOARD)  外部ツリー: $(BR2_EXTERNAL)"
 	$(BR_MAKE) $(BOARD)_defconfig
 	$(BR_MAKE)
+
+# 検証済みカーネル(mtd5 像)を再現ビルド（Buildroot 不使用・要 Linux/WSL）。詳細は docs/BUILDING.md
+kernel: check-board
+	@$(ROOT)/scripts/build-kernel.sh $(BOARD)
 
 menuconfig linux-menuconfig savedefconfig: check-buildroot check-board
 	$(BR_MAKE) $@
