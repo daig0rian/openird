@@ -1,0 +1,23 @@
+# <area>: <要約（日本語可・一行に収まる程度）>
+#
+# 例) emma3sep: add POE-BR100-YB1 defconfig
+#     ird-tuner-mxl683: initial chardev skeleton
+#     mkimage: BLUR family container writer
+#     docs: record SB-TV06-WRIP partition map
+#
+# area の例: tree(ビルド基盤) / emma3sep / mb86h61 / ird-tuner-core /
+#           ird-tuner-mxl683 / ird-config / ird-webui / mkimage / docs
+#
+# --- 本文（何を・なぜ。折り返し 72 字） ---
+#
+#
+# --- trailer（下記は機械検査されます。CONTRIBUTING.md 参照） ---
+# Origin:   clean-room | gpl-derived | observed | upstream
+#   clean-room  : 仕様だけを根拠に書いた自前コード（ベンダ内部を参照していない）
+#   gpl-derived : GPL 上流（kernel / uClibc / busybox 等）の派生・パッチ
+#   observed    : ブラックボックス観察（strings/usage/ログ）由来の仕様・記録
+#   upstream    : 無改変で取り込んだ上流定義
+# Spec-Ref: docs/specs/<file>#<section>   （Origin: clean-room の実装では必須）
+# Signed-off-by: Your Name <you@example.com>   （`git commit -s` で自動付与）
+Origin:
+Signed-off-by:

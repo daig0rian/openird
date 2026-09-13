@@ -1,0 +1,47 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# OpenIRD pre-commit hook: ベンダ blob・鍵・Close 層・巨大ファイルの混入を拒否。
+# ガードレール（CLAUDE.md §1/§2, CONTRIBUTING.md §0）の機械強制。
+added="$(git diff --cached --name-only --diff-filter=AM)"
+fail=0
+[ -z "$added" ] && exit 0
+
+for f in $added; do
+  [ -f "$f" ] || continue
+
+  # パス/拡張子での拒否
+  case "$f" in
+    *_Close.md|*_close.md) echo "✗ Close 層ドキュメントは commit 禁止: $f"; fail=1; continue ;;
+    CLAUDE.md)            echo "✗ CLAUDE.md は commit 禁止: $f"; fail=1; continue ;;
+    *.bin|*.img|*.rom|*.nand|*.dump|*.mtd|*.ko|*.so|*.so.*) \
+                          echo "✗ バイナリ/blob は commit 禁止: $f"; fail=1; continue ;;
+    *.key|*.pem|*.aes)    echo "✗ 鍵素材は commit 禁止: $f"; fail=1; continue ;;
+  esac
+
+  # 先頭バイトで判定（テキスト以外 = ELF / squashfs / 既知コンテナ）
+  magic="$(dd if="$f" bs=4 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+  case "$magic" in
+    7f454c46) echo "✗ ELF バイナリは commit 禁止: $f"; fail=1; continue ;;  # \x7fELF
+    68737173) echo "✗ squashfs イメージは commit 禁止: $f"; fail=1; continue ;;  # 'hsqs'
+  esac
+  # ベンダ更新コンテナはタグが先頭(0x00)にある(spec §6.8)。先頭32Bだけを見る
+  # （ソースが文字列として言及するだけの場合を誤検知しないため）。
+  case "$(dd if="$f" bs=1 count=32 2>/dev/null)" in
+    *_UPDATE_v1b*) echo "✗ ベンダ更新コンテナの混入疑い(先頭タグ): $f"; fail=1; continue ;;
+  esac
+  # PEM 秘密鍵は行頭のダッシュ付き(-----BEGIN ... PRIVATE KEY-----)。
+  # 本文がパターンを「言及」するだけのソースを誤検知しないよう枠ごと照合。
+  if grep -qI -- '-----BEGIN[A-Z ]*PRIVATE KEY-----' "$f" 2>/dev/null; then
+    echo "✗ 秘密鍵の混入疑い: $f"; fail=1; continue
+  fi
+
+  # サイズ警告（1MB 超）
+  sz="$(wc -c < "$f")"
+  if [ "$sz" -gt 1048576 ]; then
+    echo "⚠ 1MB 超のファイル: $f（$sz bytes）。GPL tarball は dl/ へ。意図的なら --no-verify。"
+    fail=1
+  fi
+done
+
+[ "$fail" -eq 0 ] || { echo "--- commit を中止しました（CONTRIBUTING.md §0 を参照） ---"; exit 1; }
+exit 0

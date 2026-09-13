@@ -49,3 +49,13 @@ build/
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# ===ローカル作業用の一時ディレクトリ
+temp/
+# === clean-room: 逆アセ由来の Close 層は公開しない（CONTRIBUTING.md §3） ===
+*_Close.md
+*_close.md
+
+# === fwcutter: ユーザが自機から切り出した非再配布ファーム（配布・commit 禁止） ===
+*.fw
+dl/firmware-input/

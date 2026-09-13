@@ -1,0 +1,45 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# OpenIRD commit-msg hook: subject 形式 / Signed-off-by / Origin / Spec-Ref を検査。
+# 要約は日本語可。長さは強制しない（CONTRIBUTING.md §4-§5 準拠）。
+msg_file="$1"
+# コメント行(#)と空行を除いた実体
+body="$(grep -v '^#' "$msg_file")"
+subject="$(printf '%s\n' "$body" | sed '/^[[:space:]]*$/d' | head -n1)"
+fail=0
+
+# --- subject: "<area>: <要約>" 形式のみ（要約は日本語/英語どちらでも可） ---
+case "$subject" in
+  *": "*) : ;;
+  *) echo "✗ subject は '<area>: <要約>' 形式にしてください: $subject"; fail=1 ;;
+esac
+# 長さは強制しない。極端に長いときだけ非致命の注意（バイト換算の目安）。
+if [ "$(printf '%s' "$subject" | wc -c)" -gt 120 ]; then
+  echo "⚠ subject がかなり長いようです（一行に収まる程度を推奨。非致命）。"
+fi
+
+# --- Signed-off-by（DCO） ---
+if ! printf '%s\n' "$body" | grep -qE '^Signed-off-by: .+ <.+@.+>'; then
+  echo "✗ Signed-off-by がありません。'git commit -s' を使ってください（DCO）。"; fail=1
+fi
+
+# --- Origin trailer ---
+origin="$(printf '%s\n' "$body" | grep -E '^Origin:' | head -n1 | sed 's/^Origin:[[:space:]]*//')"
+case "$origin" in
+  clean-room|gpl-derived|observed|upstream) : ;;
+  "") echo "✗ Origin trailer がありません（clean-room|gpl-derived|observed|upstream）。"; fail=1 ;;
+  *) echo "✗ Origin の値が不正です: '$origin'"; fail=1 ;;
+esac
+
+# --- clean-room の「実装コード」が ird-* に入る時だけ Spec-Ref 必須 ---
+# .c/.h/.S/.cpp/.cc のみ対象。Config.in/README/.mk 等の骨格は対象外。
+if [ "$origin" = "clean-room" ]; then
+  touches_impl="$(git diff --cached --name-only | grep -E 'package/ird-.*\.(c|h|S|cpp|cc)$' || true)"
+  if [ -n "$touches_impl" ] && ! printf '%s\n' "$body" | grep -qE '^Spec-Ref: '; then
+    echo "✗ Origin: clean-room で ird-* の実装コードに触れています。Spec-Ref: docs/specs/...#... を付けてください。"
+    fail=1
+  fi
+fi
+
+[ "$fail" -eq 0 ] || { echo "--- commit を中止しました（CONTRIBUTING.md を参照） ---"; exit 1; }
+exit 0
