@@ -1,0 +1,1 @@
+source "$BR2_EXTERNAL_IRD_FUJITSU_PATH/package/ird-tuner-tc90532/Config.in"

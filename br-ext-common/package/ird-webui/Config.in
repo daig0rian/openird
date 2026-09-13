@@ -1,0 +1,4 @@
+config BR2_PACKAGE_IRD_WEBUI
+	bool "ird-webui"
+	help
+	  OpenIRD: ird-webui（プレースホルダ。実装は後続マイルストーン）。

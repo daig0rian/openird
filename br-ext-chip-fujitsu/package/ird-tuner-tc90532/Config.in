@@ -1,0 +1,6 @@
+config BR2_PACKAGE_IRD_TUNER_TC90532
+	bool "ird-tuner-tc90532"
+	select BR2_PACKAGE_IRD_TUNER_CORE
+	help
+	  Toshiba TC90532 復調（＋XC5200C/CXD2818 RF）のクリーン実装（MB86H61 機）。
+	  ird-tuner-core の chardev ABI の上に乗る。段階 C（Milestone 2）で実装。

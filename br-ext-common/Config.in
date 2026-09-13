@@ -1,0 +1,4 @@
+source "$BR2_EXTERNAL_IRD_COMMON_PATH/package/ird-tuner-core/Config.in"
+source "$BR2_EXTERNAL_IRD_COMMON_PATH/package/ird-config/Config.in"
+source "$BR2_EXTERNAL_IRD_COMMON_PATH/package/ird-webui/Config.in"
+source "$BR2_EXTERNAL_IRD_COMMON_PATH/package/ird-base-files/Config.in"

@@ -1,0 +1,4 @@
+config BR2_PACKAGE_IRD_CONFIG
+	bool "ird-config"
+	help
+	  OpenIRD: ird-config（プレースホルダ。実装は後続マイルストーン）。

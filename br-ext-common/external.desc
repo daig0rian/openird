@@ -1,0 +1,2 @@
+name: IRD_COMMON
+desc: OpenIRD vendor-agnostic packages (chardev ABI, config, webui, base-files)

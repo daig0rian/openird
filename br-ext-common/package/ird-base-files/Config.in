@@ -1,0 +1,4 @@
+config BR2_PACKAGE_IRD_BASE_FILES
+	bool "ird-base-files"
+	help
+	  OpenIRD: ird-base-files（プレースホルダ。実装は後続マイルストーン）。

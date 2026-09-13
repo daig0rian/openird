@@ -1,0 +1,32 @@
+# OpenIRD: BMMPX1301 / POE-BR100-YB1  (Renesas EMMA3SEP, MIPS32r2 BE)
+# ビルド: make BOARD=emma3sep_softbank_poe-br100-yb1
+# 骨格。NAND ダンプ後に確定する値は TODO を参照（CLAUDE.md §11）。
+
+# --- アーキテクチャ ---
+BR2_mips=y
+BR2_mips_32r2=y
+BR2_ENDIAN_BIG=y
+
+# --- toolchain / libc ---
+# TODO(§10): 段階A は musl 新規、段階B で blob に合わせる場合は uClibc-ng。
+#            受信 blob の libc は Milestone 0 チェック2 で判定。
+BR2_TOOLCHAIN_BUILDROOT=y
+BR2_TOOLCHAIN_BUILDROOT_UCLIBC=y
+
+# --- kernel (GPL 再ビルド・非 DT) ---
+BR2_LINUX_KERNEL=y
+BR2_LINUX_KERNEL_CUSTOM_VERSION=y
+BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="2.6.27.39"
+# TODO: pristine GPL tarball を dl/ に置き CUSTOM_TARBALL で指す（*.hash で検証）。
+BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG=y
+BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="$(BR2_EXTERNAL_IRD_RENESAS_PATH)/board/emma3sep/kernel/linux.config"
+BR2_LINUX_KERNEL_UIMAGE=y
+BR2_LINUX_KERNEL_UIMAGE_LOADADDR=0x82280000
+
+# --- rootfs ---
+# TODO: 実区画（mtdparts）確定後に squashfs 等へ。factory は kernel+rootfs のみ上書き。
+
+# --- packages ---
+BR2_PACKAGE_IRD_BASE_FILES=y
+BR2_PACKAGE_IRD_CONFIG=y
+# BR2_PACKAGE_IRD_TUNER_MXL683=y   # 段階C（Milestone 2）で有効化

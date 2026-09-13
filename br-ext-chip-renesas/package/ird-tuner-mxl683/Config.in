@@ -1,0 +1,6 @@
+config BR2_PACKAGE_IRD_TUNER_MXL683
+	bool "ird-tuner-mxl683"
+	select BR2_PACKAGE_IRD_TUNER_CORE
+	help
+	  MaxLinear MXL683 復調のクリーン実装（EMMA3SEP 機）。ird-tuner-core の
+	  chardev ABI の上に乗る。段階 C（Milestone 2）で実装。

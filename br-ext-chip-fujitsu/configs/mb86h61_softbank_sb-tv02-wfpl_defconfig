@@ -1,0 +1,30 @@
+# OpenIRD: SB-TV02-WFPL  (Fujitsu MB86H61, ARM1176 ARMv6 LE)
+# ビルド: make BOARD=mb86h61_softbank_sb-tv02-wfpl
+# 骨格。SPI-NOR 16MB / kernel=mtd5 / rootfs=mtd6（spec §2.3）。
+
+# --- アーキテクチャ ---
+BR2_arm=y
+BR2_arm1176jzf_s=y
+# (little-endian はデフォルト)
+
+# --- toolchain / libc ---
+# vendor は uClibc-0.9.31。段階B で blob 併用なら uClibc-ng に寄せる（§10）。
+BR2_TOOLCHAIN_BUILDROOT=y
+BR2_TOOLCHAIN_BUILDROOT_UCLIBC=y
+
+# --- kernel (GPL 再ビルド) ---
+BR2_LINUX_KERNEL=y
+BR2_LINUX_KERNEL_CUSTOM_VERSION=y
+BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="2.6.31.6"
+# TODO: PREEMPT_RT パッチ / pristine tarball を dl/ に（*.hash で検証）。
+BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG=y
+BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="$(BR2_EXTERNAL_IRD_FUJITSU_PATH)/board/mb86h61/kernel/linux.config"
+# TODO: kernel イメージ形式（mtd5 は 'RDHB'+'PIX-' 独自コンテナ。libooter が食う形式を確認）。
+
+# --- rootfs ---
+# TODO: squashfs（実機 mtd6 は squashfs 4.0）。単一面につき非起動イメージ厳禁。
+
+# --- packages ---
+BR2_PACKAGE_IRD_BASE_FILES=y
+BR2_PACKAGE_IRD_CONFIG=y
+# BR2_PACKAGE_IRD_TUNER_TC90532=y  # 段階C（Milestone 2）で有効化

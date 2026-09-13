@@ -1,0 +1,7 @@
+config BR2_PACKAGE_IRD_TUNER_CORE
+	bool "ird-tuner-core"
+	help
+	  OpenIRD のチューナ ABI 契約。px4_drv 互換 chardev を提供する
+	  ベンダ非依存の骨格（ioctl / キャラクタデバイス登録 / 生 TS リング）。
+	  機種別の復調ドライバ（ird-tuner-mxl683 / ird-tuner-tc90532）が
+	  この ABI の上に乗る。

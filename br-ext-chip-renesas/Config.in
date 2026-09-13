@@ -1,0 +1,1 @@
+source "$BR2_EXTERNAL_IRD_RENESAS_PATH/package/ird-tuner-mxl683/Config.in"
