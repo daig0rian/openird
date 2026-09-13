@@ -1,0 +1,44 @@
+{
+  "board": "sb-tv02-wfpl",
+  "defconfig": "mb86h61_softbank_sb-tv02-wfpl",
+  "soc": "Fujitsu MB86H61 (MB86H610H)",
+  "arch": "arm", "cpu": "arm1176jzf_s", "endian": "little",
+  "kernel_version": "2.6.31.6-rt19",
+  "bootloader": "libooter",
+  "nvm": { "type": "spi-nor", "part": "MX25L12845E", "size": "0x1000000", "erasesize": "0x10000" },
+
+  "_provenance": "区画: spec §2.3 (GPL mb86h61_devkit.c ＝実機 /proc/mtd 一致)。ロード: GPL Makefile.boot ＋ booter ログ。install: spec §8.5/§8.6/§8.9 (Open・平文 dump)。",
+
+  "load": {
+    "memory_start": "0x40000000",
+    "firm_area_size": "0x02e00000",
+    "zreladdr":   "0x42e08000",
+    "params_phys":"0x42e00100",
+    "_note": "zreladdr = memory_start + firm_area + 0x8000。booter ログ 'ARM jumps to 0x42e08000' と一致。"
+  },
+
+  "cmdline_template": "console=ttyAMA0,115200 root=/dev/mtdblock6 rw ip=none mac_adrs={mac}",
+  "_cmdline_note": "{mac} は個体固有。libooter env(mtd1) から読む。ハードコードしない(PII)。",
+
+  "partitions": [
+    {"mtd":0,  "name":"libooter",    "offset":"0x000000", "size":"0x100000", "policy":"preserve", "note":"ブートローダ。絶対に書かない"},
+    {"mtd":1,  "name":"libooter_env","offset":"0x100000", "size":"0x010000", "policy":"preserve", "note":"cmdline/MAC。cmdline 変更は libooter_tool 経由のみ"},
+    {"mtd":2,  "name":"slot_info0",  "offset":"0x110000", "size":"0x010000", "policy":"preserve", "note":"A/B 選択メタ1面目"},
+    {"mtd":3,  "name":"nvram0",      "offset":"0x120000", "size":"0x010000", "policy":"preserve"},
+    {"mtd":4,  "name":"nvram1",      "offset":"0x130000", "size":"0x010000", "policy":"preserve"},
+    {"mtd":5,  "name":"kernel_bslot","offset":"0x140000", "size":"0x180000", "policy":"writable", "image":"kernel", "wrapper":"RDHB", "note":"単一面=非起動像厳禁。RDHB ヘッダ要(未解明=HOLD H1)"},
+    {"mtd":6,  "name":"rootfs",      "offset":"0x2C0000", "size":"0x100000", "policy":"writable", "image":"squashfs", "note":"squashfs4.0 raw。root=/dev/mtdblock6。単一面"},
+    {"mtd":7,  "name":"slot0",       "offset":"0x3C0000", "size":"0x600000", "policy":"writable", "image":"squashfs", "note":"アプリ+AV FW スロットA"},
+    {"mtd":8,  "name":"slot1",       "offset":"0x9C0000", "size":"0x600000", "policy":"writable", "image":"squashfs", "note":"アプリ+AV FW スロットB"},
+    {"mtd":9,  "name":"slot_info1",  "offset":"0xFC0000", "size":"0x010000", "policy":"preserve"},
+    {"mtd":10, "name":"reserved",    "offset":"0xFD0000", "size":"0x030000", "policy":"preserve"}
+  ],
+
+  "install": {
+    "primary": "booter-root + dione_server -w (暗号ゲート無し・確定)",
+    "booter_root": "libooter 'Wait for kbd input'→ロック無し shell → setparam ...init=/bin/sh → saveparam (mtd1のみ・可逆)",
+    "raw_write_cmd": "dione_server -w /dev/mtd<N>:<file>  (該当 MTD を消去し生書き込み)",
+    "ab_safe_rootfs": "非アクティブ slot へ書く → libooter_tool set KERNELPARAM(root=) → dione_server -t で status 反転 → reboot → update restore_rootfs",
+    "usb_updater": "reset SW 起動 + /mnt/updater.full → dione_server -d で復号 → update。※.full の Updater_decode 本体変換は未解明=HOLD H2/H3"
+  }
+}
