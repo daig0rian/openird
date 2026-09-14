@@ -31,4 +31,6 @@ OpenIRD の配布物は GPL ソースからの再ビルドと自前実装だけ�
 
 - ベンダバイナリ・ダンプ・ファーム・鍵の commit（`.gitignore` + pre-commit で拒否）。
 - 限定受信の復号ロジック・鍵・回避手順（スコープ外。CONTRIBUTING.md §0）。
+- 鍵抽出ロジック・ツールの commit（機構は問わない）。値そのものと違い blob 検査
+  では拾えないため、レビュー時に PR の目的で判断する（CONTRIBUTING.md §0）。
 - `*_Close.md`（逆アセ詳細）と `CLAUDE.md`（内部戦略）の commit。
