@@ -55,6 +55,32 @@ def cmd_partitions(a):
               % (p["mtd"], p["name"], p["offset"], p["size"], p["policy"], p.get("note", "")))
 
 
+SQUASHFS_COMP = {1: "gzip", 2: "lzma", 3: "lzo", 4: "xz", 5: "lz4", 6: "zstd"}
+SQUASHFS_INVALID_BLK = 0xFFFFFFFFFFFFFFFF
+SQUASHFS_FLAG_COMP_OPT = 1 << 10
+
+
+def check_squashfs(data, spec):
+    """squashfs 4.0 スーパーブロック（先頭 96B・LE）をボードのカーネルが読める形か検査する。
+    spec = board["squashfs"]: {"compressors": [...], "xattrs": bool}。"""
+    if len(data) < 96:
+        sys.exit("✗ squashfs が短すぎます（%dB）。" % len(data))
+    (_magic, _inodes, _mtime, block_size, _frags, comp, _blog, flags, _nids,
+     major, minor, _root, bytes_used, _idt, xattr_t) = struct.unpack_from("<IIIIIHHHHHHQQQQ", data, 0)
+    if (major, minor) != (4, 0):
+        sys.exit("✗ squashfs %d.%d（4.0 のみ対応）。" % (major, minor))
+    name = SQUASHFS_COMP.get(comp, "id%d" % comp)
+    if name not in spec.get("compressors", ["gzip"]):
+        sys.exit("✗ 圧縮 %s はこのボードのカーネルで読めません（可: %s）。"
+                 % (name, ", ".join(spec["compressors"])))
+    if flags & SQUASHFS_FLAG_COMP_OPT and not spec.get("comp_options", False):
+        sys.exit("✗ 圧縮オプション付き（flags 0x%x）。このボードのカーネルは解釈しません。" % flags)
+    if xattr_t != SQUASHFS_INVALID_BLK and not spec.get("xattrs", False):
+        sys.exit("✗ xattr テーブル付き。このボードのカーネルは xattr 入り inode を読めません（mksquashfs -no-xattrs）。")
+    print("  squashfs 4.0 / %s / block %dK / bytes_used %dB / xattr %s"
+          % (name, block_size // 1024, bytes_used, "有" if xattr_t != SQUASHFS_INVALID_BLK else "無"))
+
+
 def cmd_pack_rootfs(a):
     b = load_board(a.board)
     mtd6 = part_by_mtd(b, 6)
@@ -62,6 +88,7 @@ def cmd_pack_rootfs(a):
         data = f.read()
     if data[:4] != SQUASHFS_MAGIC:
         sys.exit("✗ squashfs マジック 'hsqs' が先頭にありません（得: %r）。" % data[:4])
+    check_squashfs(data, b.get("squashfs", {}))
     cap = h(mtd6["size"])
     if len(data) > cap:
         sys.exit("✗ rootfs %dB が mtd6 容量 %dB を超過。" % (len(data), cap))

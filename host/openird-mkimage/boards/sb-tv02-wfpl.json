@@ -17,6 +17,11 @@
     "_note": "zreladdr = memory_start + firm_area + 0x8000。booter ログ 'ARM jumps to 0x42e08000' と一致。"
   },
 
+  "squashfs": {
+    "compressors": ["gzip"], "xattrs": false, "comp_options": false,
+    "_note": "2.6.31 の squashfs は zlib のみ（lzo 2.6.36・xz 2.6.38〜）、xattr は 2.6.35〜、圧縮オプションは未対応。"
+  },
+
   "cmdline_template": "console=ttyAMA0,115200 root=/dev/mtdblock6 rw ip=none mac_adrs={mac}",
   "_cmdline_note": "{mac} は個体固有。libooter env(mtd1) から読む。ハードコードしない(PII)。",
 
