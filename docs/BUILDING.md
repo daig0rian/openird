@@ -1,13 +1,14 @@
 # ビルド手順（再現ビルド）
 
-clone した人が、検証済みのカーネル像（`mtd5.img`）を再現するための手順。
-現状は **カーネルの再現ビルド**まで（フル Buildroot イメージ＝rootfs 込みは今後）。
+clone した人が、検証済みの像を再現するための手順。現状は **カーネル**（`mtd5.img`）と
+**ファーストエイド rootfs**（区画切り直しの足場）まで。本番 rootfs は今後。
 
 ## 対応状況
-| 機種 (BOARD) | カーネル再現ビルド | 実機起動確認 |
-|---|---|---|
-| `mb86h61_softbank_sb-tv02-wfpl` (SB-TV02-WFPL) | ✅ `make kernel` | ⚠ overlayfs 取り込み前（パッチ 0001–0002）の構成は実機起動確認済（H1b 解決）。overlayfs 入り（0003–0014 ＋ `CONFIG_OVERLAYFS_FS=y`）は QEMU 検証のみで**実機未確認** |
-| その他 | 未 | 未 |
+| 機種 (BOARD) | カーネル再現ビルド | rootfs | 実機起動確認 |
+|---|---|---|---|
+| `mb86h61_softbank_sb-tv02-wfpl` (SB-TV02-WFPL) | ✅ `make kernel` | — | ✅ overlayfs 入り（0003–0014 ＋ `CONFIG_OVERLAYFS_FS=y` ＋ jffs2）で起動・overlay 動作を実機確認 |
+| `mb86h61_softbank_sb-tv02-wfpl_firstaid` | （同上のカーネルを使う） | ✅ `make BOARD=…_firstaid` | ⚠ 未（手順は `br-ext-chip-fujitsu/board/mb86h61/firstaid/README.md`） |
+| その他 | 未 | 未 | 未 |
 
 ## 前提環境
 - **Linux（ネイティブ）または WSL2**。Windows ネイティブ不可（Git Bash 等では ARM カーネルをビルドできない）。
@@ -16,10 +17,18 @@ clone した人が、検証済みのカーネル像（`mtd5.img`）を再現す�
   失敗する。ext4（`~/openird` 等に clone）なら問題なし。
 - ホストに必要なパッケージ（Ubuntu 例）:
   ```
-  sudo apt install -y build-essential bc bison flex libncurses-dev wget xz-utils
+  sudo apt install -y build-essential bc bison flex libncurses-dev wget xz-utils \
+                      cpio unzip rsync file python3 git
   ```
-  ARM クロスツールチェーン（gcc 4.9.4）と旧 `libmpfr.so.4` は `build-kernel.sh` が
-  **公開URLから sha256 検証つきで自動取得**するので、事前導入は不要。
+  ARM クロスツールチェーン（gcc 4.9.4）と旧 `libmpfr.so.4` は `build-kernel.sh` が、
+  Buildroot 本体と rootfs 用 toolchain は `make` が、**公開URLから sha256 検証つきで自動取得**する。
+- **Ubuntu 26.04 など `install` が uutils coreutils の環境**では Buildroot が既知の不具合
+  （uutils#12166）を検出して停止する。GNU 版に切り替える:
+  ```
+  sudo update-alternatives --install /usr/bin/install install /usr/bin/gnuinstall 100
+  ```
+- WSL は Windows 側の PATH を引き継ぐが、Buildroot は空白入りの PATH を拒否する。
+  トップの `Makefile` が空白を含む要素を落として渡すので、追加の対処は不要。
 
 ## GPL カーネルソースの入手（各自）
 配布物にベンダ由来物を含めない方針のため、GPL カーネル tarball はリポジトリに同梱しない。
@@ -33,7 +42,6 @@ pin の全体は `br-ext-chip-fujitsu/board/mb86h61/kernel/build.env` を参照�
 ## 実行
 ```
 # リポジトリ直下で（Linux/WSL）
-git submodule update --init buildroot   # ← フルビルド用。kernel だけなら不要
 make kernel BOARD=mb86h61_softbank_sb-tv02-wfpl
 # 直接叩く場合:
 #   scripts/build-kernel.sh mb86h61_softbank_sb-tv02-wfpl
@@ -51,6 +59,24 @@ make kernel BOARD=mb86h61_softbank_sb-tv02-wfpl
 - 実機 mtd5 への書き込みは `docs/devices`（Wiki）と `host/openird-mkimage`（`flash-script` /
   `dione_server -w`）を参照。**mtd5 は単一面のため SPI クリップの復旧手段を用意してから**。
   overlayfs 入りの像は実機での起動がまだ確認されていない（上表）。
+
+## rootfs（Buildroot）
+Buildroot 本体はリポジトリに含めない。`scripts/buildroot.env` の pin（版・URL・sha256）から
+`make` が `dl/` に取得・検証して `buildroot/` に展開する（git 管理外）。
+```
+make BOARD=mb86h61_softbank_sb-tv02-wfpl_firstaid
+# → output/<BOARD>/images/openird-firstaid-sb-tv02-wfpl-rootfs.squashfs（+ .sha256）
+```
+`make` が行うこと:
+1. `scripts/fetch-buildroot.sh` が Buildroot を取得・展開
+2. defconfig 適用 → Buildroot が外部 toolchain（Bootlin musl・sha256 は
+   `board/mb86h61/patches/toolchain-external-custom/`）と各ソースを取得（全て hash 検証）
+3. BusyBox ＋ `openwrt-mtd`（OpenWrt の `mtd`。commit 固定・ファイル単位で取得）を静的リンクでビルド
+4. squashfs 4.0/gzip を生成し、`openird-mkimage pack-rootfs` が
+   **カーネルが読める形式か（gzip・xattr 無し）と旧 mtd6 容量 1MB に収まるか**を検査
+
+ファーストエイド rootfs の中身と実機への入れ方は
+`br-ext-chip-fujitsu/board/mb86h61/firstaid/README.md`。
 
 ## カーネルパッチの機能テスト（QEMU）
 同じ GPL ツリーとパッチを QEMU の汎用ボード向けにビルドし、overlayfs の動作を確かめる

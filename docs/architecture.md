@@ -3,8 +3,9 @@
 ## 1 コードベースで複数機種を作る（OpenIPC 流の外部ツリー）
 
 リポジトリ本体は **Buildroot を内蔵しないオーケストレータ**。Buildroot 本体は
-版を固定して submodule（または取得）で持ち、ベンダ GPL カーネルは `dl/` に
-キャッシュ（自前の差分だけ `patches/` に commit）。
+`scripts/buildroot.env` で版・URL・sha256 を固定し、`make` が `dl/` に取得して
+`buildroot/` に展開する（git 管理外）。ベンダ GPL カーネルは `dl/` にキャッシュ
+（自前の差分だけ `patches/` に commit）。
 
 機種ビルドは常に **共通 + ベンダ 1 つ**の外部ツリーを重ねる:
 
@@ -17,15 +18,16 @@ SB-TV02-WFPL:         BR2_EXTERNAL = br-ext-common : br-ext-chip-fujitsu
 ```
 openird/
 ├─ Makefile                 # make BOARD=<device> で外部ツリーを自動選択
-├─ buildroot/               # submodule（上流 Buildroot・版ピン留め）
-├─ dl/                      # GPL tarball キャッシュ（git 管理外・*.hash で検証）
+├─ buildroot/               # 上流 Buildroot（pin から自動展開・git 管理外）
+├─ dl/                      # tarball キャッシュ（git 管理外・sha256 で検証）
 │
 ├─ br-ext-common/           # ベンダ非依存・全機種共通
 │   └─ package/
 │       ├─ ird-tuner-core/  # px4_drv 互換 chardev の ABI 骨格（契約の本体）
 │       ├─ ird-config/      # UCI 相当 /etc/config/*
 │       ├─ ird-webui/       # 管理 UI
-│       └─ ird-base-files/  # 共通 rootfs skeleton / init
+│       ├─ ird-base-files/  # 共通 rootfs skeleton / init
+│       └─ openwrt-mtd/     # OpenWrt の mtd（区画書き込み。commit 固定で取得）
 │
 ├─ br-ext-chip-renesas/     # Renesas EMMA3SEP（MIPS BE, 2.6.27）
 │   ├─ board/emma3sep/      # kernel config + patches、rootfs overlay
@@ -33,12 +35,13 @@ openird/
 │   └─ package/ird-tuner-mxl683/
 │
 ├─ br-ext-chip-fujitsu/     # Fujitsu MB86H61（ARMv6 LE, 2.6.31-rt）
-│   ├─ board/mb86h61/
-│   ├─ configs/             # mb86h61_softbank_sb-tv02-wfpl_defconfig
+│   ├─ board/mb86h61/       # kernel config/patches、firstaid/（区画切り直しの足場）
+│   ├─ configs/             # mb86h61_softbank_sb-tv02-wfpl_defconfig ほか
 │   └─ package/ird-tuner-tc90532/
 │
 ├─ host/openird-mkimage/    # factory コンテナ生成（鍵は埋めず外から渡す）
 ├─ scripts/build-kernel.sh  # 検証済みカーネル（mtd5 像）の再現ビルド（make kernel）
+├─ scripts/fetch-buildroot.sh # pin した Buildroot の取得・検証・展開
 ├─ tests/overlayfs/         # カーネルパッチの QEMU 機能テスト（make test-overlayfs）
 └─ docs/
 ```
