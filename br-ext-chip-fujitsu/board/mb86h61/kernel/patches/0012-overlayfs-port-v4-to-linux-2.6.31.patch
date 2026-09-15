@@ -1,0 +1,277 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Daigorian <apps@daigorian.com>
+Date: Tue, 15 Sep 2026 21:51:11 +0900
+Subject: [PATCH] overlayfs: port v4 to linux-2.6.31
+
+The v4 series targets 2.6.36.  On 2.6.31.6-rt19 its "vfs: make
+i_op->permission take a dentry instead of inode" patch touches 43 files
+and 34 hunks reject, so it is not carried.  That VFS change was only
+needed because v4 shares one inode per superblock between all regular
+files (and likewise symlinks and special files), which leaves
+->permission(inode) unable to tell which file is being checked.
+
+Allocate one overlay inode per dentry for non-directories instead, as
+mainline overlayfs (3.18) does, and let ovl_permission() take an inode
+and recover its dentry from the alias list.  d_find_alias() skips
+unhashed non-directory aliases and copy-up unhashes the dentry, so walk
+i_dentry directly under dcache_lock.
+
+Other 2.6.31 API differences:
+ - ->fsync() and vfs_fsync() still take a dentry (changed in 2.6.35).
+ - inode_operations has no ->check_acl (added in 2.6.32); call
+   generic_permission() with NULL, as the 2.6.31 VFS itself does.
+
+s_op->is_same_inode() is kept; with per-dentry inodes it is no longer
+required but remains correct.
+
+Signed-off-by: Daigorian <apps@daigorian.com>
+---
+ fs/overlayfs/overlayfs.c | 152 +++++++++++++++++++--------------------
+ 1 file changed, 74 insertions(+), 78 deletions(-)
+
+diff --git a/fs/overlayfs/overlayfs.c b/fs/overlayfs/overlayfs.c
+index 1148b8c..014784f 100644
+--- a/fs/overlayfs/overlayfs.c
++++ b/fs/overlayfs/overlayfs.c
+@@ -19,9 +19,6 @@ MODULE_LICENSE("GPL");
+ #define OVL_COPY_UP_CHUNK_SIZE (1 << 20)
+ 
+ struct ovl_fs {
+-	struct inode *symlink_inode;
+-	struct inode *regular_inode;
+-	struct inode *special_inode;
+ 	struct vfsmount *upper_mnt;
+ 	struct vfsmount *lower_mnt;
+ };
+@@ -440,7 +437,7 @@ static loff_t ovl_dir_llseek(struct file *file, loff_t offset, int origin)
+ 	return res;
+ }
+ 
+-static int ovl_dir_fsync(struct file *file, int datasync)
++static int ovl_dir_fsync(struct file *file, struct dentry *dentry, int datasync)
+ {
+ 	struct ovl_dir_file *od = file->private_data;
+ 
+@@ -454,7 +451,7 @@ static int ovl_dir_fsync(struct file *file, int datasync)
+ 			return PTR_ERR(od->realfile);
+ 	}
+ 
+-	return vfs_fsync(od->realfile, datasync);
++	return vfs_fsync(od->realfile, od->realfile->f_path.dentry, datasync);
+ }
+ 
+ static int ovl_dir_release(struct inode *inode, struct file *file)
+@@ -519,45 +516,58 @@ static const struct dentry_operations ovl_dentry_operations = {
+ 	.d_release = ovl_dentry_release,
+ };
+ 
++static const struct inode_operations ovl_file_inode_operations;
++static const struct inode_operations ovl_symlink_inode_operations;
++static const struct file_operations ovl_file_operations;
++
++/* Per-dentry inodes so ->permission(inode) can find its dentry (no VFS change). */
+ static struct inode *ovl_new_inode(struct super_block *sb, umode_t mode)
+ {
+-	struct ovl_fs *ufs = sb->s_fs_info;
+ 	struct inode *inode;
+ 
+ 	switch (mode & S_IFMT) {
+ 	case S_IFDIR:
+-		inode = new_inode(sb);
+-		inode->i_flags |= S_NOATIME|S_NOCMTIME;
+-		inode->i_op = &ovl_dir_inode_operations;
+-		inode->i_fop = &ovl_dir_operations;
+-		inode->i_mode = S_IFDIR;
+-		break;
+-
+ 	case S_IFLNK:
+-		inode = ufs->symlink_inode;
+-		atomic_inc(&inode->i_count);
+-		break;
+-
+ 	case S_IFREG:
+-		inode = ufs->regular_inode;
+-		atomic_inc(&inode->i_count);
+-		break;
+-
+ 	case S_IFSOCK:
+ 	case S_IFBLK:
+ 	case S_IFCHR:
+ 	case S_IFIFO:
+-		inode = ufs->special_inode;
+-		atomic_inc(&inode->i_count);
+ 		break;
+-
+ 	default:
+ 		WARN(1, "illegal file type: %i\n", mode & S_IFMT);
+-		inode = NULL;
++		return NULL;
+ 	}
+ 
+-	return inode;
++	inode = new_inode(sb);
++	if (!inode)
++		return NULL;
++
++	inode->i_flags |= S_NOATIME|S_NOCMTIME;
++
++	switch (mode & S_IFMT) {
++	case S_IFDIR:
++		inode->i_mode = S_IFDIR;
++		inode->i_op = &ovl_dir_inode_operations;
++		inode->i_fop = &ovl_dir_operations;
++		break;
++	case S_IFLNK:
++		inode->i_mode = S_IFLNK;
++		inode->i_op = &ovl_symlink_inode_operations;
++		break;
++	case S_IFREG:
++		inode->i_mode = S_IFREG;
++		inode->i_op = &ovl_file_inode_operations;
++		inode->i_fop = &ovl_file_operations;
++		break;
++	default:
++		inode->i_mode = S_IFSOCK;
++		inode->i_op = &ovl_file_inode_operations;
++		inode->i_fop = &ovl_file_operations;
++		break;
++	}
+ 
++	return inode;
+ }
+ 
+ static struct dentry *ovl_lookup_real(struct dentry *dir, struct qstr *name)
+@@ -1238,36 +1248,57 @@ static int ovl_dir_getattr(struct vfsmount *mnt, struct dentry *dentry,
+ 	return 0;
+ }
+ 
+-static int ovl_permission(struct dentry *dentry, int mask)
++/* d_find_alias() skips unhashed non-dir aliases; copy-up unhashes them. */
++static struct dentry *ovl_find_any_alias(struct inode *inode)
++{
++	struct dentry *alias = NULL;
++
++	spin_lock(&dcache_lock);
++	if (!list_empty(&inode->i_dentry)) {
++		alias = list_entry(inode->i_dentry.next, struct dentry, d_alias);
++		dget_locked(alias);
++	}
++	spin_unlock(&dcache_lock);
++
++	return alias;
++}
++
++static int ovl_permission(struct inode *ovl_inode, int mask)
+ {
++	struct dentry *dentry;
+ 	enum ovl_path_type type;
+ 	struct path realpath;
+ 	struct inode *inode;
+ 	int err;
+ 
+-	type = ovl_path_real(dentry, &realpath);
+-	if (type != OVL_PATH_LOWER)
+-		return dentry_permission(realpath.dentry, mask);
++	dentry = ovl_find_any_alias(ovl_inode);
++	if (WARN_ON(!dentry))
++		return -ENOENT;
+ 
++	type = ovl_path_real(dentry, &realpath);
+ 	inode = realpath.dentry->d_inode;
+-	if (!(mask & MAY_WRITE) || special_file(inode->i_mode))
+-		return dentry_permission(realpath.dentry, mask);
+ 
+-	/* Don't check for read-only fs */
+-	if (mask & MAY_WRITE) {
+-		if (IS_IMMUTABLE(inode))
+-			return -EACCES;
++	if (type != OVL_PATH_LOWER ||
++	    !(mask & MAY_WRITE) || special_file(inode->i_mode)) {
++		err = inode_permission(inode, mask);
++		goto out;
+ 	}
+ 
++	/* Don't check for read-only fs */
++	err = -EACCES;
++	if (IS_IMMUTABLE(inode))
++		goto out;
++
+ 	if (inode->i_op->permission)
+-		err = inode->i_op->permission(realpath.dentry, mask);
++		err = inode->i_op->permission(inode, mask);
+ 	else
+-		err = generic_permission(inode, mask, inode->i_op->check_acl);
+-
+-	if (err)
+-		return err;
++		err = generic_permission(inode, mask, NULL);
+ 
+-	return security_inode_permission(inode, mask);
++	if (!err)
++		err = security_inode_permission(inode, mask);
++out:
++	dput(dentry);
++	return err;
+ }
+ 
+ static int ovl_create_object(struct dentry *dentry, int mode, dev_t rdev,
+@@ -1924,9 +1955,6 @@ static void ovl_put_super(struct super_block *sb)
+ 	mntput(ufs->upper_mnt);
+ 	mntput(ufs->lower_mnt);
+ 
+-	iput(ufs->symlink_inode);
+-	iput(ufs->regular_inode);
+-	iput(ufs->special_inode);
+ 	kfree(ufs);
+ }
+ 
+@@ -2076,35 +2104,9 @@ static int ovl_fill_super(struct super_block *sb, void *data, int silent)
+ 	if (!ufs)
+ 		goto out_free_config;
+ 
+-	ufs->symlink_inode = new_inode(sb);
+-	if (!ufs->symlink_inode)
+-		goto out_free_ufs;
+-
+-	ufs->regular_inode = new_inode(sb);
+-	if (!ufs->regular_inode)
+-		goto out_put_symlink_inode;
+-
+-	ufs->special_inode = new_inode(sb);
+-	if (!ufs->special_inode)
+-		goto out_put_regular_inode;
+-
+-	ufs->symlink_inode->i_flags |= S_NOATIME|S_NOCMTIME;
+-	ufs->symlink_inode->i_mode = S_IFLNK;
+-	ufs->symlink_inode->i_op = &ovl_symlink_inode_operations;
+-
+-	ufs->regular_inode->i_flags |= S_NOATIME|S_NOCMTIME;
+-	ufs->regular_inode->i_mode = S_IFREG;
+-	ufs->regular_inode->i_op = &ovl_file_inode_operations;
+-	ufs->regular_inode->i_fop = &ovl_file_operations;
+-
+-	ufs->special_inode->i_flags |= S_NOATIME|S_NOCMTIME;
+-	ufs->special_inode->i_mode = S_IFSOCK;
+-	ufs->special_inode->i_op = &ovl_file_inode_operations;
+-	ufs->special_inode->i_fop = &ovl_file_operations;
+-
+ 	root_inode = ovl_new_inode(sb, S_IFDIR);
+ 	if (!root_inode)
+-		goto out_put_special_inode;
++		goto out_free_ufs;
+ 
+ 	oe = ovl_alloc_entry();
+ 	if (oe == NULL)
+@@ -2160,12 +2162,6 @@ out_free_oe:
+ 	kfree(oe);
+ out_put_root:
+ 	iput(root_inode);
+-out_put_special_inode:
+-	iput(ufs->special_inode);
+-out_put_regular_inode:
+-	iput(ufs->regular_inode);
+-out_put_symlink_inode:
+-	iput(ufs->symlink_inode);
+ out_free_ufs:
+ 	kfree(ufs);
+ out_free_config:
