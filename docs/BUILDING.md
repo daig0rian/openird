@@ -6,7 +6,7 @@ clone した人が、検証済みのカーネル像（`mtd5.img`）を再現す�
 ## 対応状況
 | 機種 (BOARD) | カーネル再現ビルド | 実機起動確認 |
 |---|---|---|
-| `mb86h61_softbank_sb-tv02-wfpl` (SB-TV02-WFPL) | ✅ `make kernel` | ✅ 実機で起動確認済（H1b 解決） |
+| `mb86h61_softbank_sb-tv02-wfpl` (SB-TV02-WFPL) | ✅ `make kernel` | ⚠ overlayfs 取り込み前（パッチ 0001–0002）の構成は実機起動確認済（H1b 解決）。overlayfs 入り（0003–0014 ＋ `CONFIG_OVERLAYFS_FS=y`）は QEMU 検証のみで**実機未確認** |
 | その他 | 未 | 未 |
 
 ## 前提環境
@@ -50,6 +50,7 @@ make kernel BOARD=mb86h61_softbank_sb-tv02-wfpl
 - `output/<BOARD>/mtd5.img` … libooter が起動できる RDHB カーネル像。
 - 実機 mtd5 への書き込みは `docs/devices`（Wiki）と `host/openird-mkimage`（`flash-script` /
   `dione_server -w`）を参照。**mtd5 は単一面のため SPI クリップの復旧手段を用意してから**。
+  overlayfs 入りの像は実機での起動がまだ確認されていない（上表）。
 
 ## 再現性について
 同一の pin（toolchain / patches / linux.config / GPL ソース）から**機能的に等価な起動可能カーネル**を
