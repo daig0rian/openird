@@ -32,7 +32,8 @@ gpl-src/
 *.zip
 *.7z
 
-# === Buildroot ビルド成果物 ===
+# === Buildroot 本体（scripts/fetch-buildroot.sh が pin から展開）とビルド成果物 ===
+/buildroot/
 output/
 dl/
 build/

@@ -20,7 +20,13 @@ VENDOR_TREE     := $(patsubst %/configs/$(BOARD)_defconfig,%,$(DEFCONFIG_MATCH))
 BR2_EXTERNAL    := $(COMMON_TREE):$(VENDOR_TREE)
 O               := $(ROOT)/output/$(BOARD)
 
-BR_MAKE = $(MAKE) -C $(BR) BR2_EXTERNAL="$(BR2_EXTERNAL)" O="$(O)"
+# WSL は Windows 側の PATH（空白入り）を引き継ぐが、Buildroot は空白を含む PATH を拒否する。
+# 空白を含む要素だけ落として渡す。ダウンロードキャッシュは kernel ビルドと同じ dl/ を共有する。
+BR_PATH := $(shell printf '%s' "$$PATH" | tr ':' '\n' | grep -v '[[:space:]]' | paste -sd: -)
+BR_MAKE = env PATH="$(BR_PATH)" BR2_DL_DIR="$(ROOT)/dl" \
+	$(MAKE) -C $(BR) BR2_EXTERNAL="$(BR2_EXTERNAL)" O="$(O)"
+
+.DEFAULT_GOAL := $(if $(BOARD),all,help)
 
 .PHONY: help list-boards all kernel test-overlayfs menuconfig linux-menuconfig savedefconfig clean distclean hooks check-buildroot check-board
 
@@ -40,10 +46,9 @@ list-boards:
 		printf "  %-40s (%s)\n" "$$b" "$$v"; \
 	done
 
+# pin（scripts/buildroot.env）どおりの Buildroot を dl/ に取得・検証して buildroot/ に展開
 check-buildroot:
-	@test -f "$(BR)/Makefile" || { \
-		echo "✗ buildroot/ がありません。submodule を取得してください:"; \
-		echo "    git submodule update --init buildroot"; exit 1; }
+	@$(ROOT)/scripts/fetch-buildroot.sh
 
 check-board:
 	@test -n "$(BOARD)" || { echo "✗ BOARD= を指定してください（make list-boards）"; exit 1; }

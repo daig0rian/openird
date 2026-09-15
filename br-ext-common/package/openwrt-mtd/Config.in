@@ -1,0 +1,12 @@
+config BR2_PACKAGE_OPENWRT_MTD
+	bool "openwrt-mtd"
+	help
+	  OpenWrt の mtd ユーティリティ（package/system/mtd）。
+	  MTD 区画の消去・書き込み・検証（write/erase/verify/jffs2write）を
+	  行う。対象は /proc/mtd の区画名または /dev/mtdN で指定する。
+	  OpenIRD のファーストエイド rootfs と sysupgrade 系の書き込み口。
+
+	  依存の libubox からは md5 実装だけを取り込み、静的リンクで
+	  単体バイナリにする（Buildroot の libubox は共有ライブラリ必須）。
+
+	  https://github.com/openwrt/openwrt/tree/main/package/system/mtd
