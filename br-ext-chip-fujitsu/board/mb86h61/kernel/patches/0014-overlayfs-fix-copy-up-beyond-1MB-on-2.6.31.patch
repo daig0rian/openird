@@ -1,0 +1,56 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Daigorian <apps@daigorian.com>
+Date: Tue, 15 Sep 2026 21:51:12 +0900
+Subject: [PATCH] overlayfs: fix copy-up of files larger than 1MB on 2.6.31
+
+Up to 2.6.34, direct_splice_actor() writes at sd->pos, which starts
+from *ppos, and never advances out->f_pos; 2.6.35 switched it to
+out->f_pos.  ovl_copy_up_data() relied on the newer behaviour and
+reloaded the offset from new_file->f_pos for every 1MB chunk, so on
+2.6.31 every chunk was read from and written to offset 0.  Files larger
+than OVL_COPY_UP_CHUNK_SIZE were silently truncated to 1MB when copied
+up, with no error reported.
+
+Keep the offset across iterations; do_splice_direct() advances it.
+
+While here, fput() both files when copy-up is interrupted by a fatal
+signal instead of returning -EINTR with them still open.
+
+Signed-off-by: Daigorian <apps@daigorian.com>
+---
+ fs/overlayfs/overlayfs.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/fs/overlayfs/overlayfs.c b/fs/overlayfs/overlayfs.c
+index 08eee8e..a006934 100644
+--- a/fs/overlayfs/overlayfs.c
++++ b/fs/overlayfs/overlayfs.c
+@@ -760,6 +760,8 @@ static int ovl_copy_up_data(struct path *old, struct path *new, loff_t len)
+ {
+ 	struct file *old_file;
+ 	struct file *new_file;
++	/* 2.6.31 do_splice_direct() writes at *ppos and leaves out->f_pos alone. */
++	loff_t offset = 0;
+ 	int error = 0;
+ 
+ 	if (len == 0)
+@@ -777,15 +779,16 @@ static int ovl_copy_up_data(struct path *old, struct path *new, loff_t len)
+ 
+ 	/* FIXME: copy up sparse files efficiently */
+ 	while (len) {
+-		loff_t offset = new_file->f_pos;
+ 		size_t this_len = OVL_COPY_UP_CHUNK_SIZE;
+ 		long bytes;
+ 
+ 		if (len < this_len)
+ 			this_len = len;
+ 
+-		if (signal_pending_state(TASK_KILLABLE, current))
+-			return -EINTR;
++		if (signal_pending_state(TASK_KILLABLE, current)) {
++			error = -EINTR;
++			break;
++		}
+ 
+ 		bytes = do_splice_direct(old_file, &offset, new_file, this_len,
+ 				 SPLICE_F_MOVE);
