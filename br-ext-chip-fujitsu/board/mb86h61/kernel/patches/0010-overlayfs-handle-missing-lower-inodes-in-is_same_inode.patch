@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Andy Whitcroft <apw@canonical.com>
+Date: Wed, 17 Nov 2010 17:37:03 +0000
+Subject: [PATCH] overlayfs: handle missing lower inodes in ovl_is_same_inode
+
+Signed-off-by: Andy Whitcroft <apw@canonical.com>
+
+[OpenIRD: refreshed for linux-2.6.31.6-rt19; no functional change.
+ Source: linux-fsdevel "[PATCH 1/2] overlayfs: handle missing lower inodes in ovl_is_same_inode",
+ https://marc.info/?l=linux-fsdevel&m=129001549709606 ]
+---
+ fs/overlayfs/overlayfs.c | 22 ++++++++++++++--------
+ 1 file changed, 14 insertions(+), 8 deletions(-)
+
+diff --git a/fs/overlayfs/overlayfs.c b/fs/overlayfs/overlayfs.c
+index 63afa3d..6b8a7b9 100644
+--- a/fs/overlayfs/overlayfs.c
++++ b/fs/overlayfs/overlayfs.c
+@@ -1948,19 +1948,25 @@ static int ovl_remount_fs(struct super_block *sb, int *flagsp, char *data)
+ 
+ static bool ovl_is_same_inode(struct dentry *d1, struct dentry *d2)
+ {
+-	struct dentry *upperd1;
+-	struct dentry *upperd2;
++	struct dentry *od1;
++	struct dentry *od2;
+ 
+-	upperd1 = ovl_dentry_upper(d1);
+-	upperd2 = ovl_dentry_upper(d2);
++	od1 = ovl_dentry_upper(d1);
++	od2 = ovl_dentry_upper(d2);
+ 
+-	if (upperd1 && upperd2)
+-		return vfs_is_same_inode(upperd1, upperd2);
++	if (od1 && od2)
++		return vfs_is_same_inode(od1, od2);
+ 
+-	if (upperd1 || upperd2)
++	if (od1 || od2)
+ 		return false;
+ 
+-	return vfs_is_same_inode(ovl_dentry_lower(d1), ovl_dentry_lower(d2));
++	od1 = ovl_dentry_lower(d1);
++	od2 = ovl_dentry_lower(d2);
++
++	if (od1 && od2)
++		return vfs_is_same_inode(od1, od2);
++
++	return false;
+ }
+ 
+ /**

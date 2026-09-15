@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Andy Whitcroft <apw@canonical.com>
+Date: Wed, 17 Nov 2010 17:37:04 +0000
+Subject: [PATCH] overlayfs: ovl_copy_up_xattr -- handle EOPNOTSUPP from
+ vfs_listxattr
+
+Even when an underlying filesystem had a getxattr op it may not support
+xattrs.  In this case vfs_listxattr will return EOPNOTSUPP.  Handle
+this return when copying up attributes.
+
+Signed-off-by: Andy Whitcroft <apw@canonical.com>
+
+[OpenIRD: refreshed for linux-2.6.31.6-rt19; no functional change.
+ Source: linux-fsdevel "[PATCH 2/2] overlayfs: ovl_copy_up_xattr -- handle EOPNOTSUPP from vfs_listxattr",
+ https://marc.info/?l=linux-fsdevel&m=129001549609600 ]
+---
+ fs/overlayfs/overlayfs.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/fs/overlayfs/overlayfs.c b/fs/overlayfs/overlayfs.c
+index 6b8a7b9..1148b8c 100644
+--- a/fs/overlayfs/overlayfs.c
++++ b/fs/overlayfs/overlayfs.c
+@@ -692,8 +692,11 @@ static int ovl_copy_up_xattr(struct dentry *old, struct dentry *new)
+ 		return 0;
+ 
+ 	list_size = vfs_listxattr(old, NULL, 0);
+-	if (list_size <= 0)
++	if (list_size <= 0) {
++		if (list_size == -EOPNOTSUPP)
++			return 0;
+ 		return list_size;
++	}
+ 
+ 	buf = kzalloc(list_size, GFP_KERNEL);
+ 	if (!buf)

@@ -1,0 +1,88 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Miklos Szeredi <mszeredi@suse.cz>
+Date: Tue, 26 Oct 2010 10:50:31 +0000
+Subject: [PATCH] vfs: introduce s_op->is_same_inode()
+
+rename(2) says:
+
+  "If oldpath and newpath are existing hard links referring to the same
+   file, then rename() does nothing, and returns a success status."
+
+Overlayfs, however, uses dummy inodes and 'old_dentry->d_inode ==
+new_dentry->d_inode' doesn't necessarily mean that they refer to the
+same file.
+
+Introduce a new superblock operation: ->is_same_inode() that returns a
+boolean value indicating whether the files referred to by the given
+dentries are the same or not.
+
+Export a vfs_is_same_inode() helper so that this can be checked
+recursively if one of the underlying filesystems is itself an
+overlayfs (or another fs that uses this service).
+
+Signed-off-by: Miklos Szeredi <mszeredi@suse.cz>
+
+[OpenIRD: refreshed for linux-2.6.31.6-rt19; the vfs_is_same_inode() declaration
+ is placed after vfs_statfs() because its 2.6.36 context does not exist.
+ Source: linux-fsdevel "[PATCH 3/8 v4] vfs: introduce s_op->is_same_inode()",
+ https://marc.info/?l=linux-fsdevel&m=128809039823112 ]
+---
+ fs/namei.c         | 17 ++++++++++++++---
+ include/linux/fs.h |  2 ++
+ 2 files changed, 16 insertions(+), 3 deletions(-)
+
+diff --git a/fs/namei.c b/fs/namei.c
+index fcfc553..f1d1cab 100644
+--- a/fs/namei.c
++++ b/fs/namei.c
+@@ -2643,6 +2643,17 @@ static int vfs_rename_other(struct inode *old_dir, struct dentry *old_dentry,
+ 	return error;
+ }
+ 
++bool vfs_is_same_inode(struct dentry *d1, struct dentry *d2)
++{
++	BUG_ON(d1->d_sb != d2->d_sb);
++
++	if (d1->d_sb->s_op->is_same_inode && d1->d_inode && d2->d_inode)
++		return d1->d_sb->s_op->is_same_inode(d1, d2);
++	else
++		return d1->d_inode == d2->d_inode;
++}
++EXPORT_SYMBOL(vfs_is_same_inode);
++
+ int vfs_rename(struct inode *old_dir, struct dentry *old_dentry,
+ 	       struct inode *new_dir, struct dentry *new_dentry)
+ {
+@@ -2650,9 +2661,9 @@ int vfs_rename(struct inode *old_dir, struct dentry *old_dentry,
+ 	int is_dir = S_ISDIR(old_dentry->d_inode->i_mode);
+ 	const char *old_name;
+ 
+-	if (old_dentry->d_inode == new_dentry->d_inode)
+- 		return 0;
+- 
++	if (vfs_is_same_inode(old_dentry, new_dentry))
++		return 0;
++
+ 	error = may_delete(old_dir, old_dentry, is_dir);
+ 	if (error)
+ 		return error;
+diff --git a/include/linux/fs.h b/include/linux/fs.h
+index 1ad8543..bea22dd 100644
+--- a/include/linux/fs.h
++++ b/include/linux/fs.h
+@@ -1581,6 +1581,7 @@ struct super_operations {
+ 	ssize_t (*quota_write)(struct super_block *, int, const char *, size_t, loff_t);
+ #endif
+ 	int (*bdev_try_to_free_page)(struct super_block*, struct page*, gfp_t);
++	bool (*is_same_inode)(struct dentry *, struct dentry *);
+ };
+ 
+ /*
+@@ -1807,6 +1808,7 @@ extern struct vfsmount *collect_mounts(struct path *);
+ extern void drop_collected_mounts(struct vfsmount *);
+ 
+ extern int vfs_statfs(struct dentry *, struct kstatfs *);
++extern bool vfs_is_same_inode(struct dentry *d1, struct dentry *d2);
+ 
+ extern int current_umask(void);
+ 

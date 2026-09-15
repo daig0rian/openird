@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Andy Whitcroft <apw@canonical.com>
+Date: Tue, 26 Oct 2010 10:50:33 +0000
+Subject: [PATCH] export security_inode_permission to allow overlayfs to be
+ modular
+
+When compiling overlayfs as a module we end up with an unknown symbol
+'security_inode_permission'.  Export it.
+
+Signed-off-by: Andy Whitcroft <apw@canonical.com>
+Signed-off-by: Miklos Szeredi <mszeredi@suse.cz>
+
+[OpenIRD: refreshed for linux-2.6.31.6-rt19; no functional change.
+ Source: linux-fsdevel "[PATCH 5/8 v4] export security_inode_permission to allow overlayfs to be modular",
+ https://marc.info/?l=linux-fsdevel&m=128809035123054 ]
+---
+ security/security.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/security/security.c b/security/security.c
+index dc7674f..da27908 100644
+--- a/security/security.c
++++ b/security/security.c
+@@ -519,6 +519,7 @@ int security_inode_permission(struct inode *inode, int mask)
+ 		return 0;
+ 	return security_ops->inode_permission(inode, mask);
+ }
++EXPORT_SYMBOL_GPL(security_inode_permission);
+ 
+ int security_inode_setattr(struct dentry *dentry, struct iattr *attr)
+ {

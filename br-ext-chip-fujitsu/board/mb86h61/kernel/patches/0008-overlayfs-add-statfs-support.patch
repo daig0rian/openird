@@ -1,0 +1,59 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Andy Whitcroft <apw@canonical.com>
+Date: Tue, 26 Oct 2010 10:50:35 +0000
+Subject: [PATCH] overlayfs: add statfs support
+
+Add support for statfs to the overlayfs filesystem.  As the upper layer
+is the target of all write operations assume that the space in that
+filesystem is the space in the overlayfs.  There will be some inaccuracy as
+overwriting a file will copy it up and consume space we were not expecting,
+but it is better than nothing.
+
+Use the upper layer dentry and mount from the overlayfs root inode,
+passing the statfs call to that filesystem.
+
+Signed-off-by: Andy Whitcroft <apw@canonical.com>
+Signed-off-by: Miklos Szeredi <mszeredi@suse.cz>
+
+[OpenIRD: refreshed for linux-2.6.31.6-rt19; no functional change.
+ Source: linux-fsdevel "[PATCH 7/8 v4] overlayfs: add statfs support",
+ https://marc.info/?l=linux-fsdevel&m=128809031422975 ]
+---
+ fs/overlayfs/overlayfs.c | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+diff --git a/fs/overlayfs/overlayfs.c b/fs/overlayfs/overlayfs.c
+index 4f04eab..63afa3d 100644
+--- a/fs/overlayfs/overlayfs.c
++++ b/fs/overlayfs/overlayfs.c
+@@ -1963,10 +1963,30 @@ static bool ovl_is_same_inode(struct dentry *d1, struct dentry *d2)
+ 	return vfs_is_same_inode(ovl_dentry_lower(d1), ovl_dentry_lower(d2));
+ }
+ 
++/**
++ * ovl_statfs
++ * @sb: The overlayfs super block
++ * @buf: The struct kstatfs to fill in with stats
++ *
++ * Get the filesystem statistics.  As writes always target the upper layer
++ * filesystem pass the statfs to the same filesystem.
++ */
++static int ovl_statfs(struct dentry *dentry, struct kstatfs *buf)
++{
++	struct dentry *root_dentry = dentry->d_sb->s_root;
++	struct path path;
++	ovl_path_upper(root_dentry, &path);
++
++	if (!path.dentry->d_sb->s_op->statfs)
++		return -ENOSYS;
++	return path.dentry->d_sb->s_op->statfs(path.dentry, buf);
++}
++
+ static const struct super_operations ovl_super_operations = {
+ 	.put_super	= ovl_put_super,
+ 	.remount_fs	= ovl_remount_fs,
+ 	.is_same_inode	= ovl_is_same_inode,
++	.statfs		= ovl_statfs,
+ };
+ 
+ struct ovl_config {
