@@ -1,0 +1,187 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Daigorian <apps@daigorian.com>
+Date: Tue, 15 Sep 2026 21:51:12 +0900
+Subject: [PATCH] overlayfs: do not re-enter the filesystem from readdir
+ callbacks
+
+jffs2_readdir() holds the directory's f->sem while it calls filldir.
+ovl_fill_upper() called lookup_one_len() and ovl_unlink_whiteout()
+called vfs_unlink() from inside filldir; both end up in jffs2_lookup()
+or jffs2_do_unlink(), which take the same f->sem, so the task
+deadlocks.  With a jffs2 upper layer this hangs "rm -rf" of a merged
+directory, and listing a merged directory that holds whiteouts once the
+dcache is cold (e.g. after remount):
+
+  INFO: task rm blocked for more than 120 seconds.
+  jffs2_do_unlink <- vfs_unlink <- ovl_unlink_whiteout <- jffs2_readdir
+  <- vfs_readdir <- ovl_dir_read <- ovl_remove_whiteouts <- ovl_rmdir
+
+Only collect entries in the callbacks.  Mark whiteouts and unlink them
+after vfs_readdir() has returned, retaking the upper directory i_mutex,
+which is the structure mainline overlayfs uses (ovl_dir_mark_whiteouts()
+and ovl_cleanup_whiteouts() in 3.18).  Filesystems that do not hold a
+private lock across filldir (ext2, tmpfs) were not affected.
+
+Signed-off-by: Daigorian <apps@daigorian.com>
+---
+ fs/overlayfs/overlayfs.c | 86 ++++++++++++++++++++++++++--------------
+ 1 file changed, 57 insertions(+), 29 deletions(-)
+
+diff --git a/fs/overlayfs/overlayfs.c b/fs/overlayfs/overlayfs.c
+index 014784f..08eee8e 100644
+--- a/fs/overlayfs/overlayfs.c
++++ b/fs/overlayfs/overlayfs.c
+@@ -276,29 +276,40 @@ static int ovl_fill_upper(void *buf, const char *name, int namlen,
+ 			  loff_t offset, u64 ino, unsigned int d_type)
+ {
+ 	struct ovl_readdir_data *rdd = buf;
+-	bool is_whiteout = false;
+ 
+ 	rdd->count++;
+-	if (d_type == DT_LNK) {
+-		struct dentry *dentry;
++	rdd->err = ovl_cache_add_entry(rdd, name, namlen, ino, d_type, false);
+ 
+-		dentry = lookup_one_len(name, rdd->dir, strlen(name));
++	return rdd->err;
++}
++
++/* Lookups must not run inside ->readdir: jffs2 holds its f->sem there. */
++static int ovl_dir_mark_whiteouts(struct ovl_readdir_data *rdd)
++{
++	struct ovl_cache_entry *p;
++	struct dentry *dentry;
++	int err = 0;
++
++	mutex_lock(&rdd->dir->d_inode->i_mutex);
++	for (p = rdd->list; p; p = p->next) {
++		if (p->type != DT_LNK)
++			continue;
++
++		dentry = lookup_one_len(p->name.name, rdd->dir, p->name.len);
+ 		if (IS_ERR(dentry)) {
+-			rdd->err = PTR_ERR(dentry);
+-			goto out;
++			err = PTR_ERR(dentry);
++			break;
+ 		}
+-		is_whiteout = ovl_is_whiteout(dentry);
++		p->is_whiteout = ovl_is_whiteout(dentry);
+ 		dput(dentry);
+ 	}
++	mutex_unlock(&rdd->dir->d_inode->i_mutex);
+ 
+-	rdd->err = ovl_cache_add_entry(rdd, name, namlen, ino, d_type, is_whiteout);
+-
+-out:
+-	return rdd->err;
++	return err;
+ }
+ 
+ static int ovl_dir_read(struct path *realpath, struct ovl_readdir_data *rdd,
+-			  filldir_t filler)
++			filldir_t filler, int (*post)(struct ovl_readdir_data *))
+ {
+ 	const struct cred *old_cred;
+ 	struct cred *override_cred;
+@@ -328,6 +339,9 @@ static int ovl_dir_read(struct path *realpath, struct ovl_readdir_data *rdd,
+ 				err = rdd->err;
+ 		} while (!err && rdd->count);
+ 
++		if (!err && post)
++			err = post(rdd);
++
+ 		revert_creds(old_cred);
+ 		put_cred(override_cred);
+ 	}
+@@ -386,9 +400,10 @@ static int ovl_readdir(struct file *file, void *buf, filldir_t filler)
+ 		ovl_path_upper(file->f_path.dentry, &upperpath);
+ 
+ 		rdd.dir = upperpath.dentry;
+-		res = ovl_dir_read(&upperpath, &rdd, ovl_fill_upper);
++		res = ovl_dir_read(&upperpath, &rdd, ovl_fill_upper,
++				   ovl_dir_mark_whiteouts);
+ 		if (!res)
+-			res = ovl_dir_read(&lowerpath, &rdd, ovl_fill_lower);
++			res = ovl_dir_read(&lowerpath, &rdd, ovl_fill_lower, NULL);
+ 
+ 		if (res)
+ 			return res;
+@@ -1553,11 +1568,12 @@ static int ovl_check_empty_dir(struct dentry *dentry)
+ 
+ 	if (upperpath.dentry) {
+ 		rdd.dir = upperpath.dentry;
+-		err = ovl_dir_read(&upperpath, &rdd, ovl_fill_upper);
++		err = ovl_dir_read(&upperpath, &rdd, ovl_fill_upper,
++				   ovl_dir_mark_whiteouts);
+ 		if (err)
+ 			return err;
+ 	}
+-	err = ovl_dir_read(&lowerpath, &rdd, ovl_fill_lower);
++	err = ovl_dir_read(&lowerpath, &rdd, ovl_fill_lower, NULL);
+ 	if (err)
+ 		return err;
+ 
+@@ -1581,37 +1597,49 @@ static int ovl_check_empty_dir(struct dentry *dentry)
+ 	return err;
+ }
+ 
+-static int ovl_unlink_whiteout(void *buf, const char *name, int namlen,
+-				 loff_t offset, u64 ino, unsigned int d_type)
++/* Called after ->readdir returns; unlinking inside it deadlocks on jffs2. */
++static int ovl_unlink_whiteouts(struct ovl_readdir_data *rdd)
+ {
+-	struct ovl_readdir_data *rdd = buf;
++	struct ovl_cache_entry *p;
++	struct dentry *dentry;
++	int err = 0;
+ 
+-	rdd->count++;
+-	/* check d_type to filter out "." and ".." */
+-	if (d_type == DT_LNK) {
+-		struct dentry *dentry;
++	mutex_lock(&rdd->dir->d_inode->i_mutex);
++	for (p = rdd->list; p && !err; p = p->next) {
++		/* check d_type to filter out "." and ".." */
++		if (p->type != DT_LNK)
++			continue;
+ 
+-		dentry = lookup_one_len(name, rdd->dir, strlen(name));
++		dentry = lookup_one_len(p->name.name, rdd->dir, p->name.len);
+ 		if (IS_ERR(dentry)) {
+-			rdd->err = PTR_ERR(dentry);
++			err = PTR_ERR(dentry);
+ 		} else {
+-			rdd->err = vfs_unlink(rdd->dir->d_inode, dentry);
++			err = vfs_unlink(rdd->dir->d_inode, dentry);
+ 			dput(dentry);
+ 		}
+ 	}
++	mutex_unlock(&rdd->dir->d_inode->i_mutex);
+ 
+-	return rdd->err;
++	return err;
+ }
+ 
+ static int ovl_remove_whiteouts(struct dentry *dentry)
+ {
+ 	struct path upperpath;
+-	struct ovl_readdir_data rdd = {	.list = NULL };
++	struct ovl_readdir_data rdd = {
++		.list = NULL,
++		.endp = &rdd.list,
++	};
++	int err;
+ 
+ 	ovl_path_upper(dentry, &upperpath);
+ 	rdd.dir = upperpath.dentry;
+ 
+-	return ovl_dir_read(&upperpath, &rdd, ovl_unlink_whiteout);
++	err = ovl_dir_read(&upperpath, &rdd, ovl_fill_upper,
++			   ovl_unlink_whiteouts);
++	ovl_cache_free(rdd.list);
++
++	return err;
+ }
+ 
+ static int ovl_rmdir(struct inode *dir, struct dentry *dentry)
