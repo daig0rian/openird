@@ -1,0 +1,63 @@
+# OpenIRD: SB-TV02-WFPL ファーストエイド rootfs（区画切り直しのための足場）
+# ビルド: make BOARD=mb86h61_softbank_sb-tv02-wfpl_firstaid
+# 出力:   output/<BOARD>/images/rootfs.squashfs（旧 mtd6 容量 1MB に収まることを post-image で検査）
+#
+# 役割: mtd ツールだけを持つ最小 rootfs。起動しても MTD には一切触れない（受動）。
+#       区画の読み書きは利用者がシリアルから手で行う。カーネル・/dev は
+#       旧区画表（mtd0–mtd10）のまま動く。詳細は board/mb86h61/firstaid/README.md。
+# カーネルは本 defconfig ではビルドしない（make kernel で別途・検証済み像を使う）。
+
+# --- アーキテクチャ / toolchain（Bootlin 公式 fragment のとおり） ---
+# SoC は ARM1176JZF-S(ARMv6) だが、ビルド済み toolchain に合わせ ARMv5TE soft-float で作る
+# （ARMv6 は ARMv5TE の上位互換）。musl 1.2.6 の 2.6.31 上での動作は QEMU で確認済み。
+BR2_arm=y
+BR2_arm926t=y
+BR2_ARM_EABI=y
+BR2_ARM_SOFT_FLOAT=y
+BR2_TOOLCHAIN_EXTERNAL=y
+BR2_TOOLCHAIN_EXTERNAL_CUSTOM=y
+BR2_TOOLCHAIN_EXTERNAL_DOWNLOAD=y
+BR2_TOOLCHAIN_EXTERNAL_URL="https://toolchains.bootlin.com/downloads/releases/toolchains/armv5-eabi/tarballs/armv5-eabi--musl--stable-2026.08-1.tar.xz"
+BR2_TOOLCHAIN_EXTERNAL_GCC_15=y
+BR2_TOOLCHAIN_EXTERNAL_HEADERS_5_10=y
+BR2_TOOLCHAIN_EXTERNAL_CXX=y
+BR2_TOOLCHAIN_EXTERNAL_OPENMP=y
+BR2_TOOLCHAIN_EXTERNAL_HAS_SSP=y
+BR2_TOOLCHAIN_EXTERNAL_HAS_THREADS_DEBUG=y
+BR2_TOOLCHAIN_EXTERNAL_HAS_THREADS=y
+BR2_TOOLCHAIN_EXTERNAL_HAS_THREADS_NPTL=y
+BR2_TOOLCHAIN_EXTERNAL_CUSTOM_MUSL=y
+
+# --- ダウンロードの完全性（全ソースを .hash で検証。toolchain の hash は patches/ 側） ---
+BR2_DOWNLOAD_FORCE_CHECK_HASHES=y
+BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_IRD_FUJITSU_PATH)/board/mb86h61/patches"
+
+# --- 静的リンク・サイズ優先（旧 mtd6 = 1MB に収める） ---
+BR2_STATIC_LIBS=y
+BR2_OPTIMIZE_S=y
+
+# --- system ---
+BR2_TARGET_GENERIC_HOSTNAME="openird-firstaid"
+BR2_TARGET_GENERIC_ISSUE="OpenIRD first-aid"
+BR2_INIT_BUSYBOX=y
+# 2.6.31 は devtmpfs 無し → 静的 /dev（mtd0–mtd15 を追加）
+BR2_ROOTFS_DEVICE_CREATION_STATIC=y
+BR2_ROOTFS_STATIC_DEVICE_TABLE="system/device_table_dev.txt $(BR2_EXTERNAL_IRD_FUJITSU_PATH)/board/mb86h61/firstaid/device_table_dev.txt"
+# squashfs は RO。getty/remount は使わず inittab で直接シェルを出す
+# BR2_TARGET_GENERIC_REMOUNT_ROOTFS_RW is not set
+# BR2_TARGET_GENERIC_GETTY is not set
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_IRD_FUJITSU_PATH)/board/mb86h61/firstaid/rootfs_overlay"
+BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_IRD_FUJITSU_PATH)/board/mb86h61/firstaid/post-build.sh"
+BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_IRD_FUJITSU_PATH)/board/mb86h61/firstaid/post-image.sh"
+
+# --- packages ---
+BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_IRD_FUJITSU_PATH)/board/mb86h61/firstaid/busybox.fragment"
+# BR2_PACKAGE_IFUPDOWN_SCRIPTS is not set
+# / が RO なので乱数種を保存できない（毎回エラーを出すだけ）
+# BR2_PACKAGE_URANDOM_SCRIPTS is not set
+BR2_PACKAGE_OPENWRT_MTD=y
+
+# --- rootfs 像（2.6.31 の squashfs は gzip のみ・xattr 非対応） ---
+BR2_TARGET_ROOTFS_SQUASHFS=y
+BR2_TARGET_ROOTFS_SQUASHFS4_GZIP=y
+# BR2_TARGET_ROOTFS_TAR is not set

@@ -1,0 +1,17 @@
+# /etc/inittab — OpenIRD first-aid rootfs（BusyBox init）
+#
+# ファーストエイド版は MTD に一切触れない。起動時に行うのは RAM 上の擬似 FS の
+# マウントだけで、区画の読み書き・ネットワーク設定はシリアルのシェルから手で行う。
+# / は squashfs（RO）のまま。書き込みが要る場所は tmpfs（/tmp, /run, /dev/shm）。
+
+::sysinit:/bin/mount -t proc proc /proc
+::sysinit:/bin/mount -a
+::sysinit:/bin/mkdir -p /run/lock/subsys
+::sysinit:/bin/hostname -F /etc/hostname
+::sysinit:/etc/init.d/rcS
+
+# シリアル（ttyAMA0）に直接 root シェル。ログインは挟まない（救助用途）
+ttyAMA0::respawn:-/bin/sh
+
+::shutdown:/etc/init.d/rcK
+::shutdown:/bin/umount -a -r

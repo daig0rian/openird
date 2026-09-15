@@ -1,0 +1,10 @@
+# /etc/fstab — OpenIRD first-aid rootfs
+# Buildroot 既定との差分: devpts の ptmxmode を外す（2.6.31 は
+# CONFIG_DEVPTS_MULTIPLE_INSTANCES 無効だと未知オプションでマウント失敗）。/dev/root 行も無し。
+# <file system>	<mount pt>	<type>	<options>	<dump>	<pass>
+proc		/proc		proc	defaults	0	0
+devpts		/dev/pts	devpts	defaults,gid=5,mode=620	0	0
+tmpfs		/dev/shm	tmpfs	mode=1777	0	0
+tmpfs		/tmp		tmpfs	mode=1777	0	0
+tmpfs		/run		tmpfs	mode=0755,nosuid,nodev	0	0
+sysfs		/sys		sysfs	defaults	0	0

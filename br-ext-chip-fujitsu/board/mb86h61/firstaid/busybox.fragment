@@ -1,0 +1,15 @@
+# OpenIRD mb86h61 first-aid: Buildroot 既定 busybox.config への差分
+# 足す: 独立した予備の書き込み手段（flashcp）と、tftp 以外の受け取り口（nc）
+CONFIG_FLASHCP=y
+CONFIG_NC=y
+CONFIG_NC_SERVER=y
+CONFIG_NC_EXTRA=y
+CONFIG_STAT=y
+CONFIG_TIMEOUT=y
+# 削る: 常駐デーモン（救助用途に不要。起動スクリプトも入らなくなる）
+# CONFIG_CROND is not set
+# CONFIG_CRONTAB is not set
+# CONFIG_TELNETD is not set
+# CONFIG_HTTPD is not set
+# 削る: seedrng は /var/lib に種を書くが / は RO＝毎回エラーを出すだけ
+# CONFIG_SEEDRNG is not set
