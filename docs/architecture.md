@@ -38,6 +38,8 @@ openird/
 │   └─ package/ird-tuner-tc90532/
 │
 ├─ host/openird-mkimage/    # factory コンテナ生成（鍵は埋めず外から渡す）
+├─ scripts/build-kernel.sh  # 検証済みカーネル（mtd5 像）の再現ビルド（make kernel）
+├─ tests/overlayfs/         # カーネルパッチの QEMU 機能テスト（make test-overlayfs）
 └─ docs/
 ```
 

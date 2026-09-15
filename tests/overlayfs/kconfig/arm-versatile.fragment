@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# QEMU versatilepb（ARM926）向け。実機 mb86h61 の設定（EABI・非プリエンプション）に揃える。
+CONFIG_AEABI=y
+# CONFIG_OABI_COMPAT is not set
+# CONFIG_PREEMPT is not set

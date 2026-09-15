@@ -4,6 +4,7 @@
 #   make BOARD=<device>              … 当該機種をビルド（共通+ベンダの外部ツリーを自動合成）
 #   make BOARD=<device> menuconfig   … 設定編集
 #   make BOARD=<device> clean        … 当該機種の output を掃除
+#   make test-overlayfs BOARD=<device> … overlayfs カーネルパッチの QEMU 機能テスト（TEST_ARGS="-n 5" 等）
 #   make hooks                       … git フック/テンプレートを有効化
 #
 # 外部ツリーは常に「br-ext-common : 該当ベンダツリー」を重ねる。ベンダツリーは
@@ -21,12 +22,13 @@ O               := $(ROOT)/output/$(BOARD)
 
 BR_MAKE = $(MAKE) -C $(BR) BR2_EXTERNAL="$(BR2_EXTERNAL)" O="$(O)"
 
-.PHONY: help list-boards all kernel menuconfig linux-menuconfig savedefconfig clean distclean hooks check-buildroot check-board
+.PHONY: help list-boards all kernel test-overlayfs menuconfig linux-menuconfig savedefconfig clean distclean hooks check-buildroot check-board
 
 help:
 	@echo "OpenIRD — make list-boards | make BOARD=<device> [menuconfig|clean]"
 	@echo "例: make BOARD=emma3sep_softbank_poe-br100-yb1"
 	@echo "     make kernel BOARD=<device> … 検証済みカーネル(mtd5像)を再現ビルド (要 Linux/WSL)"
+	@echo "     make test-overlayfs BOARD=<device> … overlayfs パッチの QEMU 機能テスト"
 	@$(MAKE) -s list-boards
 
 list-boards:
@@ -57,6 +59,10 @@ all: check-buildroot check-board
 # 検証済みカーネル(mtd5 像)を再現ビルド（Buildroot 不使用・要 Linux/WSL）。詳細は docs/BUILDING.md
 kernel: check-board
 	@$(ROOT)/scripts/build-kernel.sh $(BOARD)
+
+# カーネルパッチの QEMU 機能テスト（要 Linux/WSL・qemu-system-<arch>）。詳細は tests/overlayfs/README.md
+test-overlayfs: check-board
+	@$(ROOT)/tests/overlayfs/run.sh $(TEST_ARGS) $(BOARD)
 
 menuconfig linux-menuconfig savedefconfig: check-buildroot check-board
 	$(BR_MAKE) $@

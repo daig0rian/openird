@@ -52,6 +52,14 @@ make kernel BOARD=mb86h61_softbank_sb-tv02-wfpl
   `dione_server -w`）を参照。**mtd5 は単一面のため SPI クリップの復旧手段を用意してから**。
   overlayfs 入りの像は実機での起動がまだ確認されていない（上表）。
 
+## カーネルパッチの機能テスト（QEMU）
+同じ GPL ツリーとパッチを QEMU の汎用ボード向けにビルドし、overlayfs の動作を確かめる
+（実機は焼かない）。`make kernel` を一度通した後に:
+```
+make test-overlayfs BOARD=mb86h61_softbank_sb-tv02-wfpl
+```
+詳細は `tests/overlayfs/README.md`、移植の経緯は `docs/kernel-overlayfs.md`。
+
 ## 再現性について
 同一の pin（toolchain / patches / linux.config / GPL ソース）から**機能的に等価な起動可能カーネル**を
 再現する。ビルド identity（`KBUILD_BUILD_USER/HOST/TIMESTAMP`）は固定を試みるが、2.6.31 が

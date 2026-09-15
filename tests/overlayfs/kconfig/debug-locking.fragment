@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# run.sh --debug で追加するロック/メモリ系デバッグ設定。
+# 注意: mb86h61 の 2.6.31.6-rt19 ツリーでは、DEBUG_SPINLOCK 系を入れただけで start_kernel 内
+# （kmem_cache_create の BUG_ON、FS 初期化より前）で落ちて起動しない。別のカーネルでは試す価値がある。
+CONFIG_DEBUG_KERNEL=y
+CONFIG_DEBUG_SPINLOCK=y
+CONFIG_DEBUG_MUTEXES=y
+CONFIG_DEBUG_SPINLOCK_SLEEP=y
+CONFIG_DEBUG_LOCK_ALLOC=y
+CONFIG_PROVE_LOCKING=y
+CONFIG_DEBUG_LIST=y
