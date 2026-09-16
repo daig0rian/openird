@@ -1,7 +1,7 @@
 # ビルド手順（再現ビルド）
 
-clone した人が、検証済みの像を再現するための手順。現状は **カーネル**（`mtd5.img`）と
-**ファーストエイド rootfs**（区画切り直しの足場）まで。本番 rootfs は今後。
+clone した人が、検証済みの像を再現するための手順。**カーネル**（`mtd5.img`）と
+**rootfs**（本番＋復旧用の 2 種）を、pin した外部ソースから再現できる。
 
 ## 対応状況
 | 機種 (BOARD) | カーネル再現ビルド | rootfs | 実機起動確認 |
@@ -56,9 +56,9 @@ make kernel BOARD=mb86h61_softbank_sb-tv02-wfpl
 
 ## 出力と実機への適用
 - `output/<BOARD>/mtd5.img` … libooter が起動できる RDHB カーネル像。
-- 実機 mtd5 への書き込みは `docs/devices`（Wiki）と `host/openird-mkimage`（`flash-script` /
-  `dione_server -w`）を参照。**mtd5 は単一面のため SPI クリップの復旧手段を用意してから**。
-  overlayfs 入りの像は実機での起動がまだ確認されていない（上表）。
+- 実機への書き込み手順は `br-ext-chip-fujitsu/board/mb86h61/README.md`（区画・導入順・
+  復旧）と `host/openird-mkimage`（`flash-script`）を参照。
+  **mtd5 は単一面のため、SPI クリップの復旧手段を用意してから書くこと。**
 
 ## rootfs（Buildroot）
 Buildroot 本体はリポジトリに含めない。`scripts/buildroot.env` の pin（版・URL・sha256）から
@@ -72,12 +72,13 @@ make BOARD=mb86h61_softbank_sb-tv02-wfpl_firstaid   # 救助用（mtd ツール�
 1. `scripts/fetch-buildroot.sh` が Buildroot を取得・展開
 2. defconfig 適用 → Buildroot が外部 toolchain（Bootlin musl・sha256 は
    `board/mb86h61/patches/toolchain-external-custom/`）と各ソースを取得（全て hash 検証）
-3. BusyBox ＋ `openwrt-mtd`（OpenWrt の `mtd`。commit 固定・ファイル単位で取得）を静的リンクでビルド
+3. BusyBox ＋ `openwrt-mtd`（OpenWrt の `mtd`。commit 固定・ファイル単位で取得）ほかをビルド
+   （本番は dropbear と `ird-base-files` も入る。救助用は静的リンクの最小構成）
 4. squashfs 4.0/gzip を生成し、`openird-mkimage pack-rootfs` が
-   **カーネルが読める形式か（gzip・xattr 無し）と旧 mtd6 容量 1MB に収まるか**を検査
+   **カーネルが読める形式か（gzip・xattr 無し）と対象区画に収まるか**を検査
 
-ファーストエイド rootfs の中身と実機への入れ方は
-`br-ext-chip-fujitsu/board/mb86h61/firstaid/README.md`。
+区画の設計と実機への入れ方は `br-ext-chip-fujitsu/board/mb86h61/README.md`、
+救助用 rootfs の中身は `board/mb86h61/firstaid/README.md`。
 
 ## カーネルパッチの機能テスト（QEMU）
 同じ GPL ツリーとパッチを QEMU の汎用ボード向けにビルドし、overlayfs の動作を確かめる

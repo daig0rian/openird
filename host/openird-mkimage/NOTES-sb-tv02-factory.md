@@ -1,89 +1,44 @@
-# SB-TV02-WFPL factory.bin 生成 — 確定事項と不足情報（更新: 2026-09-13 実ダンプ反映）
+# SB-TV02-WFPL の導入経路 — 確定事項と未解明点
 
-> 目的: SB-TV02-WFPL（Fujitsu MB86H61）で OpenIRD を初回導入する image を作る。
-> 方針（ユーザ指示）: **不明点は推測で埋めず HOLD に書き出し、確定作業を先に進める**。
-> 今回、実機全ダンプ `temp/sbtv02_fw.bin`（mtd0..10 連結 16MB）が得られ、**H1 を解決**した。
+このファイルは `openird-mkimage` の実装方針に効く「残っている不確実性」を管理する。
+確定した形式・機構は `docs/specs/` にあるので、ここには重複を置かない。
 
-## 0. 結論（更新）
+## 確定している経路（開発者向け・実機で検証済み）
 
-SB-TV02 の factory は AES コンテナではなく「**booter-root → `dione_server -w /dev/mtdN:<file>`
-の暗号ゲート無し生書き込み**」（確定・spec §8.6/§8.9）。必要な成果物 2 つのうち:
+libooter のシリアルシェルから root で起動し、機器上のツールで MTD を直接書く。
+暗号ゲートは無い。
 
-- `rootfs.squashfs` → mtd6（raw・確定。`pack-rootfs`）
-- kernel 像 → mtd5（**RDHB ラッパー＝今回解明**。`pack-kernel` 実装・実機 round-trip 検証済）
+1. `openird_mkimage.py pack-kernel` … 生カーネル `Image` を RDHB で梱包 → mtd5
+   （形式: [rdhb-kernel-container.md](../../docs/specs/rdhb-kernel-container.md)）
+2. `openird_mkimage.py pack-rootfs` … squashfs を検査して rootfs 区画の像に → mtd6
+3. 機器上で `mtd write`（OpenIRD の rootfs に同梱）で書き込む
+   — 区画レイアウトと導入順は
+   [board/mb86h61/README.md](../../br-ext-chip-fujitsu/board/mb86h61/README.md)
 
-→ **factory パイプラインは一通り動く**。残る唯一の不確実性は RDHB の `0x08`
-チェックサム（H1b）で、これは「libooter が検証するか」の実機確認に帰着する。
+区画切り直し前のベンダ状態では、機器に mtd ツールが無いのでベンダ app 層の
+書き込みコマンドを使う（`flash-script --via dione` が生成する）。
 
-## 1. H1 解決の内容（実ダンプ検証・Open＝構造の静的読み）
+## 未解明点（推測で埋めない）
 
-mtd5(0x140000) のカーネルラッパー **RDHB** を完全に同定。仕様は
-[docs/specs/rdhb-kernel-container.md](../../docs/specs/rdhb-kernel-container.md)。要点:
+| # | 不明点 | 状態 | 影響 |
+|---|---|---|---|
+| H2 | `updater.full` の外側ラッパの変換（`Updater_decode`） | 未解明。純正 `.full` の入手待ち | 高。**一般ユーザ向け USB 導入経路の唯一の関門**。開発者向けの直接書き込みには不要 |
+| H3 | `Updater_Header` の byte レイアウト | H2 と一体で解明する | 高（同上） |
 
-- 76B ヘッダ ＋ ペイロード(zlib `78 9c` + deflate)。inflate 結果＝**生 ARM カーネル Image**
-  （`Linux version 2.6.31.6-rt19 (airtuner@shiki) gcc4.5.1 Buildroot2010.11`）。
-- `0x44/0x48` = load=entry = **0x42e08000**（GPL Makefile.boot と一致）。
-- サイズ 3 種は **÷4 の語数**: `0x40`=展開後/4, `0x3c`=payload/4, `0x30`=総長/4（実機値で算出一致）。
-- libooter は **zlib 末尾 adler が欠損(2B+0xff)でも起動**＝checksum 検証は緩い公算。
-- **検証**: 実機 mtd5 を `unpack-kernel` → 生 Image 取り出し → `pack-kernel` で再梱包 →
-  再 unpack が **元 Image と byte 完全一致**。さらに再梱包ヘッダの size/load/name が
-  **実機と同値**。圧縮 deflate も実機と byte 一致（= zlib lv6）。唯一 `0x08` のみ相違。
+`full` サブコマンドは H2/H3 が未解明のうちは実装せず、理由を示して停止する。
 
-## 2. 不足情報（HOLD — 推測で埋めない）
+## 解決済み（記録）
 
-| # | 不明点 | 状態 | 解決手順 | 影響 |
-|---|---|---|---|---|
-| ~~H1~~ | RDHB 構造 | **解決** | 実ダンプで同定・spec 化・pack-kernel 実装 | — |
-| ~~H1b~~ | RDHB `0x08` チェックサムを libooter が検証するか | **解決** | 2026-09-13 実機テストで決着＝**libooter は検証しない**。`0x08=0` の自前カーネルを `dione_server -w` で mtd5 に焼き、`ARM jumps to 0x42e08000`→自前カーネル(`user@…`/gcc4.9.4)起動→squashfs(mtd6) mount まで確認。→ `pack-kernel` 既定(0x08=0)で起動像が作れる。詳細は docs/specs/rdhb-kernel-container.md | — |
-| H2 | `.full`(`updater.full`) の `Updater_decode` 本体変換 | **昇格** | **end-user USB factory 経路の唯一の関門**（dev の `-w` 生書きには不要だが、ユーザ配布には必須）。純正 `.full` 入手→構造解析 / `dione_server -d` 素通しテスト。割れたら `pack-full` 実装 | 高(配布) |
-| H3 | `Updater_Header` の byte レイアウト | 昇格 | H2 と一体で解明 | 高(配布) |
-| H4 | kernel .config 確定版 | 進行可 | §C から menuconfig。実ビルドで確定 | 中 |
-| H6 | userland libc（musl / uClibc-ng） | 未定 | 段階A=musl 基本。blob 併用なら uClibc 系。CLAUDE.md §10 | 中 |
-| H7 | rootfs が 1MB(mtd6) に収まるか | 実ビルド待ち | ビルド後 `pack-rootfs` で実測。超過なら slot 併用/構成削減 | 中 |
+- **RDHB カーネル容器**（旧 H1）… 実機ダンプの構造読みで同定し、`pack-kernel` を実装。
+  実機 mtd5 の像を展開 → 再梱包 → 再展開して元と byte 一致、ヘッダの size/load/name も一致。
+- **RDHB `0x08` のチェックサム**（旧 H1b）… **libooter は検証しない**。`0x08=0` で梱包した
+  自前カーネルが実機で起動することを確認（2026-09-13）。アルゴリズムの特定は不要になった。
+- **rootfs が区画に収まるか**（旧 H7）… 収まる。実測で本番 rootfs 2.02MB（区画 5MB）、
+  救助用 612KB（区画 1MB）。区画は切り直し済み。
+- **libc の選択**（旧 H6）… musl（Bootlin の外部 toolchain）。2.6.31 上での動作を QEMU と
+  実機で確認。ベンダ blob を併用する段階 B では、blob 側の libc に合わせる判断が別途要る。
+- **カーネル設定**（旧 H4）… `board/mb86h61/kernel/linux.config` として確定。GPL の
+  devkit defconfig からの差分は `CONFIG_MEM_SIZE_RAMIFS=0`（load アドレスが実機と一致する）、
+  squashfs / overlayfs / jffs2 の有効化、区画表の差し替え（パッチ 0015）。
 
-### C 補足（H4 の出発点・GPL 由来の確定デルタ）
-
-GPL `ubqmb86h61devkit-mtd_defconfig` を出発点に、実機へ合わせる差分:
-
-- `CONFIG_MEM_SIZE_RAMIFS=0`（defconfig は 0x08000000）。0 でないと load が 0x22e08000 に
-  なる。実機は 0x40000000 起動＝RAMIFS=0 分岐 → C3 の 0x42e08000 に一致。
-- `CONFIG_CMDLINE` を `root=/dev/mtdblock6 ... squashfs` に（cmdline は libooter が渡す）。
-- SQUASHFS を有効化（実機 rootfs は squashfs 4.0）。
-- 区画は `mb86h61_devkit.c` の静的配列（Pixela #24244 2-slot 版）を使う。
-- 出力は `arch/arm/boot/Image`（**非圧縮**）。これを `pack-kernel` に渡す。
-
-## 3. 作った物（今夜・確定範囲）
-
-- `boards/sb-tv02-wfpl.json` … 区画/ロード/install の機械可読データ（provenance 付き・MAC 非格納）。
-- `docs/specs/rdhb-kernel-container.md` … RDHB 形式の Open 仕様（clean-room firewall）。
-- `openird_mkimage.py` … CLI。**確定・動作確認済**:
-  - `partitions` / `pack-rootfs`（squashfs 検証）/ `pack-kernel`（RDHB 梱包・実機 round-trip 検証）/
-    `unpack-kernel`（展開・検証）/ `flash-script`（`dione_server -w`・preserve 区画ガード）/ `probe-kernel-header`。
-  - HOLD refuse: `full`(H2/H3)。
-- 検証ログ: 実機 mtd5 round-trip byte 一致、size/load/name 一致、factory flow（kernel+rootfs）生成。
-
-### 確定経路での factory 手順（現状）
-
-```
-1. kernel をビルド → arch/arm/boot/Image（非圧縮, §C デルタ適用）
-   openird_mkimage.py pack-kernel  sb-tv02-wfpl Image        mtd5.img
-2. rootfs をビルド → squashfs4.0 (≤1MB)
-   openird_mkimage.py pack-rootfs  sb-tv02-wfpl rootfs.sqfs  mtd6.img
-3. 実機: libooter で init=/bin/sh root（可逆）→ slot_entry 相当を再現 → dione_server 起動
-4. openird_mkimage.py flash-script sb-tv02-wfpl --kernel mtd5.img --rootfs mtd6.img -o flash.sh
-   を実機で実行（dione_server -w /dev/mtd5:... , /dev/mtd6:...）
-5. ★初回は mtd5=0x08 未検証＝起動可否を確認。失敗時は全ダンプから mtd5 を書き戻し
-   （dione_server -w /dev/mtd5:<元mtd5>）。mtd0/1 は無傷＝ブリック回避。
-```
-
-## 4. 次に進められること（HOLD を待たず）
-
-1. **kernel クリーンビルド**（GPL 2.6.31.6-rt19 + §C）→ `Image` → `pack-kernel`。
-   → `0x08=0` で1本作り、**H1b の実機起動テスト**（最小の決定的実験）。
-2. 段階A 最小 rootfs（musl/uClibc-ng）→ squashfs → `pack-rootfs` で mtd6 収まり実測（H7）。
-3. `br-ext-chip-fujitsu` の linux.config に §C デルタを反映。
-4. （任意）`0x08` 追い込み: deflate が実機と byte 一致＝既知バイト列上の検査値。
-   標準アルゴリズムは外したので、独自（テーブル/16bit/加算系の変種）を広めに総当たりする
-   余地はある。ただし優先は H1b 実機テスト（検証が緩ければ 0x08 はそもそも不問）。
-
-> GPL tarball は `dl/` に置き commit しない。ダンプ `temp/sbtv02_fw.bin` は解析専用＝commit 禁止。
+> ダンプ（`temp/`）は解析専用。commit しない。GPL tarball は `dl/` に置く。

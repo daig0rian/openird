@@ -96,8 +96,8 @@ commit が起きず半端な状態**になる。したがって OpenIRD 側で�
 - **`updater.full` の `.full` ラッパ形式**（`dione_server -d` の復号＝Updater_decode）。
   中身(updater.tar)は完全判明だが、外側を作る encode が未特定。
   解決策: (a) 純正 `.full` を入手し BLUR/RDHB と同様に構造解析、(b) 実機で `dione_server -d` が
-  非暗号入力を素通しするか test。割れ次第 `openird-mkimage pack-full`（updater.tar→updater.full）
-  を実装し、USB factory が完成。
+  非暗号入力を素通しするか確かめる。形式が確定したら `openird-mkimage pack-full`
+  （updater.tar→updater.full）を実装し、USB factory が完成する。
 
 ## OpenIRD への落とし込み（まとめ）
 

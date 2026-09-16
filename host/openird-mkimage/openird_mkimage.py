@@ -4,9 +4,8 @@
 """openird-mkimage - OpenIRD install-image ツール（ボード別バックエンド）。
 
 現状の実装範囲:
-  mb86h61 / sb-tv02-wfpl : 確定経路（booter-root + dione_server -w 生書き込み）。
-      raw 書き込みは暗号ゲート無し（spec §8.6/§8.9）＝確定。
-  emma3sep / *-yb1       : BLUR_UPDATE_v1b (AES-ECB) 版は鍵回収後（未実装・別途）。
+  mb86h61 / sb-tv02-wfpl : 確定経路（booter-root から MTD を直接書く。暗号ゲート無し）。
+  emma3sep / *-yb1       : 純正の更新コンテナを使う経路（未実装・別途）。
 
 不明点（HOLD）は推測で埋めない。refuse して理由を示す。詳細は
 NOTES-sb-tv02-factory.md を参照。配布物にベンダバイナリ/鍵を含めない。
