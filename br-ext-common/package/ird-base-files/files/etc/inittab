@@ -1,0 +1,16 @@
+# /etc/inittab - OpenIRD (BusyBox init)
+#
+# The root filesystem is already the overlay by the time init runs: sbin/init
+# is the preinit script, which mounts the overlay and pivot_root()s into it.
+
+::sysinit:/bin/mount -t proc proc /proc
+::sysinit:/bin/mount -a
+::sysinit:/bin/mkdir -p /run/lock/subsys
+::sysinit:/bin/hostname -F /etc/hostname
+::sysinit:/etc/init.d/rcS
+
+# Root shell on the serial console (physical access already means full control)
+ttyAMA0::respawn:-/bin/sh
+
+::shutdown:/etc/init.d/rcK
+::shutdown:/bin/umount -a -r

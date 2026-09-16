@@ -1,4 +1,16 @@
 config BR2_PACKAGE_IRD_BASE_FILES
 	bool "ird-base-files"
+	depends on BR2_PACKAGE_BUSYBOX
+	depends on BR2_INIT_BUSYBOX
 	help
-	  OpenIRD: ird-base-files（プレースホルダ。実装は後続マイルストーン）。
+	  OpenIRD: 共通の rootfs スケルトン。
+
+	  squashfs(RO) を lower、書き込み可能な区画を upper にした
+	  overlayfs を preinit が組み立て、pivot_root して BusyBox
+	  init に渡す（OpenWrt と同じ形）。upper がマウントできない
+	  ときは tmpfs にフォールバックして起動する。
+
+	  inittab / fstab / ネットワーク起動スクリプトもここに入る。
+
+comment "ird-base-files needs BusyBox as init"
+	depends on !BR2_INIT_BUSYBOX || !BR2_PACKAGE_BUSYBOX

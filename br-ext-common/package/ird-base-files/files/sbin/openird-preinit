@@ -1,0 +1,53 @@
+#!/bin/sh
+# OpenIRD preinit - runs as PID 1 from the read-only squashfs root.
+#
+# Builds the writable root: squashfs (lower) + a writable partition (upper)
+# joined by overlayfs, then pivot_root()s into it and hands over to BusyBox
+# init.  The old read-only root stays visible at /rom.
+#
+# If the upper layer cannot be mounted the system still boots: first with a
+# tmpfs upper (changes are lost on reboot), and if even that fails, directly
+# on the read-only squashfs.  Messages are ASCII only - this is a serial console.
+
+PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export PATH
+
+OVERLAY_DEV=/dev/mtdblock7
+OVERLAY_FSTYPE=jffs2
+[ -r /etc/openird/board.conf ] && . /etc/openird/board.conf
+
+mount -t proc proc /proc
+
+# openird_overlay=<device>|none on the kernel command line wins over board.conf
+for arg in $(cat /proc/cmdline 2>/dev/null); do
+	case "$arg" in
+		openird_overlay=*) OVERLAY_DEV="${arg#openird_overlay=}" ;;
+	esac
+done
+
+boot_readonly() {
+	echo "openird: booting read-only, nothing will be saved"
+	exec /bin/busybox init
+}
+
+if [ "$OVERLAY_DEV" = none ] ||
+   ! mount -t "$OVERLAY_FSTYPE" -o noatime "$OVERLAY_DEV" /overlay 2>/dev/null; then
+	echo "openird: cannot mount $OVERLAY_FSTYPE on $OVERLAY_DEV, using a tmpfs overlay"
+	echo "openird: changes will be lost on reboot - see 'mtd erase' to reformat it"
+	mount -t tmpfs -o noatime,mode=0755 tmpfs /overlay || boot_readonly
+fi
+
+if ! mount -t overlayfs -o lowerdir=/,upperdir=/overlay overlayfs /mnt; then
+	echo "openird: overlayfs mount failed"
+	umount /overlay 2>/dev/null
+	boot_readonly
+fi
+
+mount -o move /proc /mnt/proc
+if ! pivot_root /mnt /mnt/rom; then
+	echo "openird: pivot_root failed"
+	boot_readonly
+fi
+mount -o move /rom/overlay /overlay
+
+exec /bin/busybox init
