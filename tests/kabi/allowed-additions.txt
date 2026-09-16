@@ -1,0 +1,9 @@
+# 既存メンバの位置を変えずに足したメンバ（1 行 1 メンバ: <struct|union> <型名> <メンバ>）。
+# ベンダ製 .ko が持つ古い形の構造体に対して、カーネルがそのメンバを読まない理由を必ず添える。
+#
+# 0003: __dentry_open() が inode->i_fop から読む。文字/ブロックデバイスの i_fop はカーネル側の
+#       def_chr_fops/def_blk_fops で、ドライバの fops は open 後に差し替わる。モジュールの fops が
+#       i_fop に直接入る debugfs は CONFIG_DEBUG_FS=n。
+struct file_operations open_other
+# 0004: vfs_rename() が d_sb->s_op から読む。ベンダ .ko にファイルシステムは無い。
+struct super_operations is_same_inode

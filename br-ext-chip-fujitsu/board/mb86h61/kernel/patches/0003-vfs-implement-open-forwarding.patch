@@ -15,6 +15,10 @@ test we don't need the first.
 Signed-off-by: Miklos Szeredi <mszeredi@suse.cz>
 
 [OpenIRD: refreshed for linux-2.6.31.6-rt19; no functional change.
+ open_other is appended at the end of struct file_operations instead of
+ after ->open, so every existing member keeps its offset.  Prebuilt vendor
+ modules (compiled without this patch) must still find ->flush/->release
+ where they put them.  Checked by tests/kabi.
  Source: linux-fsdevel "[PATCH 1/8 v4] vfs: implement open "forwarding"",
  https://marc.info/?l=linux-fsdevel&m=128809035323067 ]
 ---
@@ -85,11 +89,11 @@ diff --git a/include/linux/fs.h b/include/linux/fs.h
 index 73e9b64..1ad8543 100644
 --- a/include/linux/fs.h
 +++ b/include/linux/fs.h
-@@ -1497,6 +1497,7 @@ struct file_operations {
- 	long (*compat_ioctl) (struct file *, unsigned int, unsigned long);
- 	int (*mmap) (struct file *, struct vm_area_struct *);
- 	int (*open) (struct inode *, struct file *);
+@@ -1510,6 +1510,7 @@ struct file_operations {
+ 	ssize_t (*splice_write)(struct pipe_inode_info *, struct file *, loff_t *, size_t, unsigned int);
+ 	ssize_t (*splice_read)(struct file *, loff_t *, struct pipe_inode_info *, size_t, unsigned int);
+ 	int (*setlease)(struct file *, long, struct file_lock **);
 +	struct file *(*open_other) (struct file *);
- 	int (*flush) (struct file *, fl_owner_t id);
- 	int (*release) (struct inode *, struct file *);
- 	int (*fsync) (struct file *, struct dentry *, int datasync);
+ };
+ 
+ struct inode_operations {

@@ -35,7 +35,7 @@ GitHub の torvalds/linux ミラーの raw（例: `v3.18/fs/overlayfs/readdir.c`
 
 | # | 内容 | 由来 | 2.6.31 での扱い |
 |---|---|---|---|
-| 0003 | vfs: open forwarding（`f_op->open_other`） | v4 1/8 | refresh |
+| 0003 | vfs: open forwarding（`f_op->open_other`） | v4 1/8 | refresh。`open_other` は `struct file_operations` の**末尾**に置く（v4 は `->open` の直後。ベンダ製 .ko の `->flush` 以降がずれる。[tests/kabi](../tests/kabi/README.md)） |
 | 0004 | vfs: `s_op->is_same_inode()` | v4 3/8 | refresh。宣言の hunk だけ `vfs_statfs()` の直後へ移した |
 | 0005 | vfs: `do_splice_direct()` を export | v4 4/8 | refresh |
 | 0006 | `security_inode_permission` を export | v4 5/8 | refresh |
@@ -129,6 +129,8 @@ GitHub の torvalds/linux ミラーの raw（例: `v3.18/fs/overlayfs/readdir.c`
 4. `tests/overlayfs/targets/<ARCH>.env` を用意して `make test-overlayfs BOARD=…`。
    コンパイルが通っても意味の違いは実行しないと分からない（§5 はどちらもそうだった）。
 5. 完走しなければ run.sh の自動診断を読む。どのパッチが原因かは `--skip-patch` で切り分ける。
+6. `make test-kabi BOARD=…` で、ベンダ製 .ko から見た構造体の位置が変わっていないことを確かめる
+   （その機種でベンダの受信部品を動かす段階 B の前提）。
 
 ### 8.2 2.6.27 で問題になる API 差
 

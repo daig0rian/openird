@@ -88,6 +88,14 @@ make test-overlayfs BOARD=mb86h61_softbank_sb-tv02-wfpl
 ```
 詳細は `tests/overlayfs/README.md`、移植の経緯は `docs/kernel-overlayfs.md`。
 
+## カーネル内部 ABI の互換テスト
+カーネルパッチや `linux.config` を変えたら、ベンダ製の .ko（段階 B で実行時に使う）から見た
+構造体の位置が変わっていないことを確かめる。`make kernel` を一度通した後に:
+```
+make test-kabi BOARD=mb86h61_softbank_sb-tv02-wfpl
+```
+詳細は `tests/kabi/README.md`。
+
 ## 再現性について
 同一の pin（toolchain / patches / linux.config / GPL ソース）から**機能的に等価な起動可能カーネル**を
 再現する。ビルド identity（`KBUILD_BUILD_USER/HOST/TIMESTAMP`）は固定を試みるが、2.6.31 が
