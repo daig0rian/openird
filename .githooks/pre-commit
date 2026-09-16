@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-2.0-only
-# OpenIRD pre-commit hook: ベンダ blob・鍵・Close 層・巨大ファイルの混入を拒否。
+# OpenIRD pre-commit hook: ベンダ blob・鍵・公開しない作業メモ・巨大ファイルの混入を拒否。
 # ガードレール（CLAUDE.md §1/§2, CONTRIBUTING.md §0）の機械強制。
 added="$(git diff --cached --name-only --diff-filter=AM)"
 fail=0
@@ -11,7 +11,7 @@ for f in $added; do
 
   # パス/拡張子での拒否
   case "$f" in
-    *_Close.md|*_close.md) echo "✗ Close 層ドキュメントは commit 禁止: $f"; fail=1; continue ;;
+    *_Close.md|*_close.md) echo "✗ 公開しない作業メモは commit 禁止: $f"; fail=1; continue ;;
     CLAUDE.md)            echo "✗ CLAUDE.md は commit 禁止: $f"; fail=1; continue ;;
     *.bin|*.img|*.rom|*.nand|*.dump|*.mtd|*.ko|*.so|*.so.*) \
                           echo "✗ バイナリ/blob は commit 禁止: $f"; fail=1; continue ;;

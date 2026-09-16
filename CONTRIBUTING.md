@@ -110,7 +110,7 @@ tools/setup-hooks.sh
 
 これで以下が commit 前後に走る:
 
-- `pre-commit` … blob・鍵・`*_Close.md`・巨大ファイルの混入を拒否（ガードレール）。
+- `pre-commit` … blob・鍵・公開しない作業メモ・巨大ファイルの混入を拒否（ガードレール）。
 - `commit-msg` … subject 形式・`Signed-off-by`・`Origin`、および `clean-room`
   実装に対する `Spec-Ref` の有無を検査。
 

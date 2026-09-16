@@ -53,7 +53,7 @@ desktop.ini
 
 # ===ローカル作業用の一時ディレクトリ
 temp/
-# === clean-room: 逆アセ由来の Close 層は公開しない（CONTRIBUTING.md §3） ===
+# === 公開しない作業メモ（手元の下書き・調査中のメモ） ===
 *_Close.md
 *_close.md
 
