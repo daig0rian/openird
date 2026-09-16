@@ -6,7 +6,7 @@ clone した人が、検証済みの像を再現するための手順。現状�
 ## 対応状況
 | 機種 (BOARD) | カーネル再現ビルド | rootfs | 実機起動確認 |
 |---|---|---|---|
-| `mb86h61_softbank_sb-tv02-wfpl` (SB-TV02-WFPL) | ✅ `make kernel`（区画切り直し済み＝パッチ 0015） | ✅ `make BOARD=…`（overlay root + SSH） | ✅ カーネル・区画切り直しまで実機確認済。rootfs は QEMU のみ |
+| `mb86h61_softbank_sb-tv02-wfpl` (SB-TV02-WFPL) | ✅ `make kernel`（区画切り直し済み＝パッチ 0015） | ✅ `make BOARD=…`（overlay root + SSH） | ✅ 実機で起動・overlay root・SSH ログインまで確認 |
 | `mb86h61_softbank_sb-tv02-wfpl_firstaid` | （同上のカーネルを使う） | ✅ `make BOARD=…_firstaid` | ✅ mtd6 / mtd8 の両方で起動確認（`board/mb86h61/firstaid/README.md`） |
 | その他 | 未 | 未 | 未 |
 
