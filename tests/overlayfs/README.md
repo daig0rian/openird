@@ -1,7 +1,7 @@
 # overlayfs カーネルパッチの QEMU 機能テスト
 
 機種のベンダカーネル（GPL tarball ＋ `board/<family>/kernel/patches`）を、QEMU で動く汎用ボード
-向けにビルドし、overlayfs の動作を約 80 項目で確かめる。実機を焼かずに、**コンパイルでは
+向けにビルドし、overlayfs の動作を約 90 項目で確かめる。実機を焼かずに、**コンパイルでは
 見つからない意味の違い**（デッドロック、データ破損、権限）を拾うのが目的。
 移植の経緯と見つかったバグは [docs/kernel-overlayfs.md](../../docs/kernel-overlayfs.md)。
 
@@ -42,6 +42,7 @@ lower = squashfs（loop）、upper = jffs2＋xattr（mtdram 16MB・消去単位 
 |---|---|
 | S | mount |
 | B | 読み取り、copy-up（追記・O_TRUNC・1MB チャンクを跨ぐ 2.5MB の md5）、chmod/chown/touch、symlink、FIFO・デバイスノード、statfs |
+| D | デバイスノード: overlay 上（lower・upper で作成・copy-up 後）のブロックデバイスノードで loop を mount できる、一般ユーザは 0600 のノードを開けない、overlay 上で作った文字デバイスが使える |
 | W / R | whiteout、不透明ディレクトリ、`rm -rf`、ディレクトリ一覧のマージ、ディレクトリの fsync |
 | N | rename（lower ファイル・上書き・マージ済みディレクトリ）、hardlink |
 | P | uid 1000 での権限（読めない・書けない・辿れない・実行できない、自分のファイルの copy-up と whiteout）、ro/rw remount |

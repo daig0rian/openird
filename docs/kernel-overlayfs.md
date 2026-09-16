@@ -8,12 +8,12 @@ rootfs を「squashfs（読み取り専用）＋書き込み層」にする Open
 
 | 項目 | 状態 |
 |---|---|
-| パッチ | `br-ext-chip-fujitsu/board/mb86h61/kernel/patches/0003`〜`0014`（fuzz 0 で適用） |
+| パッチ | `br-ext-chip-fujitsu/board/mb86h61/kernel/patches/0003`〜`0014` と `0016`（fuzz 0 で適用） |
 | 設定 | `linux.config` に `CONFIG_OVERLAYFS_FS=y` |
 | mtd5 への影響 | Image 2,364,128B → RDHB 1,193,701B（上限 1,572,864B の 75%、取り込み前比 +約 6KB） |
-| QEMU 機能テスト | 82 項目 × 5 回 PASS、カーネル異常ログ 0（[tests/overlayfs](../tests/overlayfs/README.md)） |
-| 実機 | **未確認**（起動・動作とも） |
-| upper 層に使う FS | 実機の `linux.config` では未有効（区画の切り直しと合わせて jffs2+XATTR か ubifs を入れる） |
+| QEMU 機能テスト | 89 項目 × 5 回 PASS、カーネル異常ログ 0（[tests/overlayfs](../tests/overlayfs/README.md)） |
+| 実機 | 起動・overlay root（squashfs＋jffs2）・whiteout・remount 後の永続性を確認（2026-09-16）。0016 は 2026-09-17 |
+| upper 層に使う FS | jffs2＋XATTR（`linux.config` で有効、区画 mtd7） |
 
 ## 2. なぜ 2010 年の v4 か
 
@@ -48,6 +48,7 @@ GitHub の torvalds/linux ミラーの raw（例: `v3.18/fs/overlayfs/readdir.c`
 | 0012 | 2.6.31 への移植 | OpenIRD | §4 |
 | 0013 | readdir コールバックからの再入によるデッドロック修正 | OpenIRD | §5.1 |
 | 0014 | 1MB 超ファイルの copy-up 切り詰め修正 | OpenIRD | §5.2 |
+| 0016 | デバイスノードの inode に本当の種類とデバイス番号を持たせる | OpenIRD | §5.3 |
 
 ## 4. 移植で変えたこと（0012）
 
@@ -64,7 +65,8 @@ GitHub の torvalds/linux ミラーの raw（例: `v3.18/fs/overlayfs/readdir.c`
 
 ## 5. 動かして初めて見つかったバグ
 
-どちらもコンパイルは警告なしで通り、QEMU で実際に動かして見つかった。
+5.1 と 5.2 はコンパイルは警告なしで通り、QEMU で実際に動かして見つかった。5.3 は実機で
+overlay root を使い始めてから見つかった。
 
 ### 5.1 upper が jffs2 だとデッドロック（0013）
 
@@ -91,6 +93,20 @@ GitHub の torvalds/linux ミラーの raw（例: `v3.18/fs/overlayfs/readdir.c`
   file を閉じずに return していた upstream のリークも直した。
 - **テスト**: B09, Z10。
 
+### 5.3 overlay 上のブロックデバイスノードを mount に使えない（0016）
+
+- **症状**: overlay root の実機で `mount -o loop` が `mounting /dev/loop0 … failed` になる。
+  strace では `LOOP_SET_FD` までは成功し、`mount("/dev/loop0", …)` が `ENOTBLK`。
+  tmpfs 上に `mknod` したノードなら通る。
+- **原因**: v4 は通常ファイル・ディレクトリ・symlink 以外の inode を**すべて `S_IFSOCK`** で作り、
+  open は `->open_other` で本物の inode に回す。open はそれで動くが、`lookup_bdev()`（mount・
+  swapon が使う）はパスで引いた inode の種類を開かずに見るので、ブロックデバイスと認めない。
+  overlay root では `/dev` 全体がこの状態になる。
+- **修正**: ブロック・文字デバイスの inode は `init_special_inode()` で本当の種類とデバイス番号を
+  持たせる（mainline の overlayfs と同じ）。open はドライバに直接届き、権限は `ovl_permission()`、
+  属性は `ovl_getattr()` を通るのは変わらない。FIFO とソケットは従来どおり。
+- **テスト**: D01〜D07（0016 を外すと D02・D05・D06 が `Block device required` で FAIL）。
+
 ## 6. rootfs・区画設計への含意
 
 - **upper 層の FS は `trusted.*` xattr が必須。** whiteout は `trusted.overlay.whiteout` 付きの
@@ -107,7 +123,7 @@ GitHub の torvalds/linux ミラーの raw（例: `v3.18/fs/overlayfs/readdir.c`
 
 ## 7. 検証できていないこと
 
-- 実機（ARM1176 / MB86H61）での起動と動作。QEMU は ARM926（versatilepb）。
+- 競合系（X01〜X03）を実機（ARM1176）で流すこと。QEMU は ARM926（versatilepb）。
 - **ロック検証。** この 2.6.31.6-rt19 ツリーは `DEBUG_SPINLOCK`/`DEBUG_MUTEXES`/
   `DEBUG_SPINLOCK_SLEEP`、lockdep、`DEBUG_SLAB`、kmemleak のどれを入れても `start_kernel`
   の中（`kmem_cache_create` の `BUG_ON` など、FS 初期化より前）で落ちる。ロックの正しさは
@@ -122,7 +138,7 @@ GitHub の torvalds/linux ミラーの raw（例: `v3.18/fs/overlayfs/readdir.c`
 
 1. 機種の `board/<family>/kernel/build.env` と `make kernel BOARD=…` を先に整える
    （テストはそのツリー・パッチ・toolchain を使う）。
-2. 0003〜0014 をその機種の `patches/` に写して当てる。**reject を fuzz を上げて押し込まない**。
+2. 0003〜0014 と 0016 をその機種の `patches/` に写して当てる。**reject を fuzz を上げて押し込まない**。
    今回、`-F3` で当てたら宣言の hunk が文脈と無関係な位置に当たった。reject は文脈を読んで
    手で直す。
 3. 下の API 差を直してコンパイルを通す。

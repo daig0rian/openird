@@ -51,7 +51,7 @@ md5sum "$L/big.bin" | cut -d' ' -f1 > expected_lower.md5
   esac
   echo "$p m $m $o"
 done > pseudo.txt
-printf 'fifo i 0644 0 0 f\nnulldev c 0666 0 0 1 3\n' >> pseudo.txt
+printf 'fifo i 0644 0 0 f\nnulldev c 0666 0 0 1 3\nblkdev b 0600 0 0 7 2\n' >> pseudo.txt
 # 2.6.31 以前の squashfs 4.0 は xattr を読めない
 mksquashfs "$L" lower.sqfs -comp gzip -no-xattrs -quiet -pf pseudo.txt \
   -root-uid 0 -root-gid 0 -root-mode 0755 >/dev/null

@@ -63,6 +63,19 @@ t  "B17 fifo type" "[ -p $M/fifo ]"
 t  "B18 char device open/write (lower dev node)" "[ -c $M/nulldev ] && echo x > $M/nulldev"
 t  "B19 statfs" "stat -f $M >/dev/null"
 
+echo "===== device nodes (usable by mount through the overlay, as /dev is on a root overlay) ====="
+mkdir -p /mnt/d
+t  "D01 lower block node has block type" "[ -b $M/blkdev ]"
+t  "D02 mount via lower block node (lookup_bdev)" "losetup $M/blkdev /lower.sqfs && mount -t squashfs -o ro $M/blkdev /mnt/d && [ \"\$(cat /mnt/d/etc/config/network)\" = lower-network ]"
+umount /mnt/d 2>/dev/null; losetup -d $M/blkdev 2>/dev/null
+tf "D03 user cannot open 0600 root block node" "U 'head -c 1 $M/blkdev'"
+t  "D04 mknod block node on overlay" "mknod $M/blkdev_up b 7 3 && [ -b $UP/blkdev_up ] && [ \"\$(stat -c %t:%T $M/blkdev_up)\" = 7:3 ]"
+t  "D05 mount via block node created on overlay" "losetup $M/blkdev_up /lower.sqfs && mount -t squashfs -o ro $M/blkdev_up /mnt/d && [ -f /mnt/d/big.bin ]"
+umount /mnt/d 2>/dev/null; losetup -d $M/blkdev_up 2>/dev/null
+t  "D06 copied-up block node (chmod) still mounts" "chmod 640 $M/blkdev && [ -b $UP/blkdev ] && losetup $M/blkdev /lower.sqfs && mount -t squashfs -o ro $M/blkdev /mnt/d && [ -f /mnt/d/big.bin ]"
+umount /mnt/d 2>/dev/null; losetup -d $M/blkdev 2>/dev/null
+t  "D07 char node created on overlay reads/writes" "mknod $M/null_up c 1 3 && [ -c $M/null_up ] && echo x > $M/null_up && [ \"\$(head -c 1 $M/null_up | wc -c)\" -eq 0 ]"
+
 echo "===== whiteout / opaque / readdir ====="
 t  "W01 unlink lower file" "rm $M/etc/todelete"
 t  "W02 hidden in merged" "[ ! -e $M/etc/todelete ] && ! ls $M/etc | grep -qx todelete"

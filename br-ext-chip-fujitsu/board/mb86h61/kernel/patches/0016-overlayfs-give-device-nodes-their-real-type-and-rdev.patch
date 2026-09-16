@@ -1,0 +1,85 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Daigorian <apps@daigorian.com>
+Date: Thu, 17 Sep 2026 08:10:00 +0900
+Subject: [PATCH] overlayfs: give device nodes their real type and rdev
+
+v4 creates every inode that is not a directory, regular file or symlink
+as S_IFSOCK with ovl_file_operations, and relies on ->open_other to open
+the real inode.  Opening a device node that way works, but anything that
+looks at the inode found by path without opening it does not.  In
+particular lookup_bdev() rejects it with -ENOTBLK, so mount, swapon and
+losetup+mount cannot use a block device node that lives on the overlay.
+On a system whose root is the overlay that means every node under /dev.
+
+Give block and character device inodes their real type and device
+number with init_special_inode(), as mainline overlayfs does and as any
+other filesystem does.  Opens of such inodes then reach the driver
+directly; permission checks still go through ovl_permission() and
+attributes through ovl_getattr().  FIFOs and sockets are unchanged.
+
+Signed-off-by: Daigorian <apps@daigorian.com>
+---
+ fs/overlayfs/overlayfs.c | 23 +++++++++++++++++++----
+ 1 file changed, 19 insertions(+), 4 deletions(-)
+
+diff --git a/fs/overlayfs/overlayfs.c b/fs/overlayfs/overlayfs.c
+--- a/fs/overlayfs/overlayfs.c
++++ b/fs/overlayfs/overlayfs.c
+@@ -536,7 +536,8 @@ static const struct inode_operations ovl
+ static const struct file_operations ovl_file_operations;
+ 
+ /* Per-dentry inodes so ->permission(inode) can find its dentry (no VFS change). */
+-static struct inode *ovl_new_inode(struct super_block *sb, umode_t mode)
++static struct inode *ovl_new_inode(struct super_block *sb, umode_t mode,
++				   dev_t rdev)
+ {
+ 	struct inode *inode;
+ 
+@@ -575,6 +576,19 @@ static struct inode *ovl_new_inode(struc
+ 		inode->i_op = &ovl_file_inode_operations;
+ 		inode->i_fop = &ovl_file_operations;
+ 		break;
++	case S_IFBLK:
++	case S_IFCHR:
++		/*
++		 * Device nodes carry their real type and number, as on any other
++		 * filesystem (and as mainline overlayfs does).  lookup_bdev(),
++		 * used by mount and swapon, checks the type of the inode it finds
++		 * by path without opening it.  Opening such an inode goes straight
++		 * to the driver.  FIFOs and sockets keep forwarding to the real
++		 * inode through ->open_other.
++		 */
++		inode->i_op = &ovl_file_inode_operations;
++		init_special_inode(inode, mode & S_IFMT, rdev);
++		break;
+ 	default:
+ 		inode->i_mode = S_IFSOCK;
+ 		inode->i_op = &ovl_file_inode_operations;
+@@ -679,7 +693,8 @@ static struct dentry *ovl_lookup(struct
+ 
+ 		realdentry = upperdentry ? upperdentry : lowerdentry;
+ 		err = -ENOMEM;
+-		inode = ovl_new_inode(dir->i_sb, realdentry->d_inode->i_mode);
++		inode = ovl_new_inode(dir->i_sb, realdentry->d_inode->i_mode,
++				      realdentry->d_inode->i_rdev);
+ 		if (!inode)
+ 			goto out_dput;
+ 	}
+@@ -1332,7 +1347,7 @@ static int ovl_create_object(struct dent
+ 	};
+ 
+ 	err = -ENOMEM;
+-	inode = ovl_new_inode(dentry->d_sb, mode);
++	inode = ovl_new_inode(dentry->d_sb, mode, rdev);
+ 	if (!inode)
+ 		goto out;
+ 
+@@ -2135,7 +2150,7 @@ static int ovl_fill_super(struct super_b
+ 	if (!ufs)
+ 		goto out_free_config;
+ 
+-	root_inode = ovl_new_inode(sb, S_IFDIR);
++	root_inode = ovl_new_inode(sb, S_IFDIR, 0);
+ 	if (!root_inode)
+ 		goto out_free_ufs;
+ 
