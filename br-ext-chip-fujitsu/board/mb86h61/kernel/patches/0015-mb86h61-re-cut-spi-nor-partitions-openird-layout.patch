@@ -1,0 +1,86 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Daigorian <apps@daigorian.com>
+Date: Wed, 16 Sep 2026 23:20:00 +0900
+Subject: [PATCH] mb86h61: re-cut the SPI-NOR partitions for the OpenIRD layout
+
+The vendor layout gives the root filesystem 1MB and spends 12MB on two
+6MB application slots (slot0/slot1) that only the vendor userland uses.
+OpenIRD does not need them, so the 13MB from 0x2C0000 to 0xFC0000 is
+re-cut as a 5MB read-only rootfs, a 7MB writable overlay (the upper
+layer of overlayfs) and a 1MB recovery rootfs.
+
+The first six partitions are left alone: libooter reads the boot loader,
+its environment, the slot info and the kernel slot directly, and the
+kernel image itself must stay at 0x140000.
+
+Two constraints shaped the layout:
+
+ - rootfs keeps its 0x2C0000 start.  Installing this kernel is a
+   separate step from installing a new root filesystem, so the root
+   filesystem that is already in flash has to keep working with the new
+   partition table.
+
+ - "slot info1" is preserved.  It is a byte-for-byte copy of "slot
+   info0" (both hold the same 44-byte "TOLS" record), and it is not
+   known whether libooter falls back to it, so it is not worth the
+   64KB to find out.  "reserved" (192KB, erased) is kept for the same
+   reason.
+
+The recovery partition holds a small root filesystem that carries the
+mtd utility.  A squashfs root cannot rewrite the partition it is running
+from, and once the vendor slots are gone there is no other writer left
+in flash, so without it recovering from a bad image would need a SPI-NOR
+clip.
+
+Signed-off-by: Daigorian <apps@daigorian.com>
+---
+ arch/arm/mach-mb86hxx/mb86h61_devkit.c | 34 ++++++++++++++++----------
+ 1 file changed, 19 insertions(+), 15 deletions(-)
+
+--- a/arch/arm/mach-mb86hxx/mb86h61_devkit.c
++++ b/arch/arm/mach-mb86hxx/mb86h61_devkit.c
+@@ -448,29 +448,33 @@
+ 		.offset = (1024 + 64 + 64 + 64 + 64) * SIZE_1PAGE,
+ 		.size = 1536 * SIZE_1PAGE,
+ 	},
++	/* OpenIRD: mtd6 以降を切り直す。mtd0-5 (libooter/env/slot info0/nvram/kernel)
++	 * は libooter が見るので不変。rootfs は 0x2C0000 開始を保つ（区画表だけを
++	 * 差し替えた新カーネルで、既存の rootfs がそのまま起動できるようにするため）。
++	 * slot info1 は slot info0 と同内容の冗長面なので温存する。 */
+ 	{
+-		.name = "rootfs",
+-		.offset = (1024 + 64 + 64 + 64 + 64 + 1536) * SIZE_1PAGE,
+-		.size = 1024 * SIZE_1PAGE,
++		.name = "rootfs",			/* squashfs (RO) */
++		.offset = 2816 * SIZE_1PAGE,		/* 0x2C0000 */
++		.size = 5120 * SIZE_1PAGE,		/* 5MB */
+ 	},
+ 	{
+-		.name = "slot0",
+-		.offset = (1024 + 64 + 64 + 64 + 64 + 1536 + 1024) * SIZE_1PAGE,
+-		.size = 6 * 1024 * SIZE_1PAGE,
++		.name = "rootfs_data",			/* overlayfs upper (jffs2) */
++		.offset = 7936 * SIZE_1PAGE,		/* 0x7C0000 */
++		.size = 7168 * SIZE_1PAGE,		/* 7MB */
+ 	},
+ 	{
+-		.name = "slot1",
+-		.offset = (1024 + 64 + 64 + 64 + 64 + 1536 + 1024 + 6*1024) * SIZE_1PAGE,
+-		.size = 6 * 1024 * SIZE_1PAGE,
++		.name = "firstaid",			/* 復旧用 rootfs (squashfs, RO) */
++		.offset = 15104 * SIZE_1PAGE,		/* 0xEC0000 */
++		.size = 1024 * SIZE_1PAGE,		/* 1MB */
+ 	},
+ 	{
+ 		.name = "slot info1",
+-		.offset = (1024 + 64 + 64 + 64 + 64 + 1536 + 1024 + 6*1024 + 6*1024) * SIZE_1PAGE,
++		.offset = 16128 * SIZE_1PAGE,		/* 0xFC0000 */
+ 		.size = 64 * SIZE_1PAGE
+ 	},
+ 	{
+ 		.name = "reserved",
+-		.offset = (1024 + 64 + 64 + 64 + 64 + 1536 + 1024 + 6*1024 + 6*1024 + 64) * SIZE_1PAGE,
++		.offset = 16192 * SIZE_1PAGE,		/* 0xFD0000 */
+ 		.size = 192 * SIZE_1PAGE
+ 	}
+ };
