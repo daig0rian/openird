@@ -8,11 +8,18 @@
 IFACE=eth0
 FALLBACK_IP=192.168.1.1
 FALLBACK_MASK=255.255.255.0
+# MAC= in network.conf restores the factory address if the boot loader command
+# line lost its mac_adrs= (that command line is the only place it is stored).
+MAC=
 [ -r /etc/openird/network.conf ] && . /etc/openird/network.conf
 
 start() {
 	printf "Starting network: "
 	ifconfig lo 127.0.0.1 up
+	if [ -n "$MAC" ]; then
+		ifconfig "$IFACE" down
+		ifconfig "$IFACE" hw ether "$MAC" || echo "(cannot set MAC $MAC) "
+	fi
 	ifconfig "$IFACE" "$FALLBACK_IP" netmask "$FALLBACK_MASK" up || { echo "FAIL"; exit 1; }
 	udhcpc -b -i "$IFACE" -t 4 -T 3 -x "hostname:$(hostname)" \
 		-p "/run/udhcpc.$IFACE.pid" >/dev/null 2>&1

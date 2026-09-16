@@ -95,6 +95,18 @@ cmdline は区画切り直し後も変えない（`root=/dev/mtdblock6 rootfstyp
 upper を別のデバイスにするときは `openird_overlay=<device>|none` を足す
 （none は RO 起動）。既定値は `rootfs_overlay/etc/openird/board.conf`。
 
+### ⚠ cmdline の `mac_adrs=` を落とさないこと
+
+**個体の MAC アドレスはフラッシュ上、libooter env(mtd1) に入っている cmdline 文字列の
+中にしか無い**（全ダンプを検索してバイナリ形式のコピーは存在しないことを確認済み）。
+カーネル側も `macadrs_setup_from_cmdline()` が cmdline の `mac_adrs=` を読むだけなので、
+**`mac_adrs=` を含まない cmdline を `saveparam` するとその個体の MAC は失われる**。
+
+- `setparam` では既存の 1 行から `root=` だけを差し替える。インストーラを書くときも同じ
+  （cmdline を組み立て直さず、既存行を編集する）。
+- 保険として、overlay 上の `/etc/openird/network.conf` に `MAC=xx:xx:…` を書いておくと
+  S40network が起動時に復元する。ラベルの値を控えておくこと。
+
 > `mtd write` は書いたブロックだけを消去する。区画を丸ごと消すのは `mtd erase`。
 > 旧 `slot0`/`slot1` のデータは新 `rootfs_data` の領域に残っているので、
 > overlay を初めて使う前に **必ず `mtd erase /dev/mtd7`**（jffs2 は他の FS が
