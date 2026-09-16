@@ -1,8 +1,0 @@
-# OpenIRD mb86h61 first-aid: system/device_table_dev.txt への追加分（package/makedevs/README の書式）
-# 2.6.31 には devtmpfs が無いので /dev は静的。標準表の MTD は mtd0–3 までなので、
-# 実機の mtd4–mtd10（と区画切り直し後の余裕）として mtd4–mtd15 を足す。
-# minor は mtdN=2N（奇数は mtdNro）、mtdblockN=N。
-#
-# <name>	<type>	<mode>	<uid>	<gid>	<major>	<minor>	<start>	<inc>	<count>
-/dev/mtd	c	640	0	0	90	8	4	2	12
-/dev/mtdblock	b	640	0	0	31	4	4	1	12

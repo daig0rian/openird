@@ -42,7 +42,7 @@ BR2_TARGET_GENERIC_ISSUE="OpenIRD first-aid"
 BR2_INIT_BUSYBOX=y
 # 2.6.31 は devtmpfs 無し → 静的 /dev（mtd0–mtd15 を追加）
 BR2_ROOTFS_DEVICE_CREATION_STATIC=y
-BR2_ROOTFS_STATIC_DEVICE_TABLE="system/device_table_dev.txt $(BR2_EXTERNAL_IRD_FUJITSU_PATH)/board/mb86h61/firstaid/device_table_dev.txt"
+BR2_ROOTFS_STATIC_DEVICE_TABLE="system/device_table_dev.txt $(BR2_EXTERNAL_IRD_FUJITSU_PATH)/board/mb86h61/device_table_dev.txt"
 # squashfs は RO。getty/remount は使わず inittab で直接シェルを出す
 # BR2_TARGET_GENERIC_REMOUNT_ROOTFS_RW is not set
 # BR2_TARGET_GENERIC_GETTY is not set

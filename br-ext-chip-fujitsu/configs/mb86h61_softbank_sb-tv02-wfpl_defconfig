@@ -1,30 +1,62 @@
-# OpenIRD: SB-TV02-WFPL  (Fujitsu MB86H61, ARM1176 ARMv6 LE)
+# OpenIRD: SB-TV02-WFPL（Fujitsu MB86H61, ARM1176 ARMv6 LE）本番 rootfs
 # ビルド: make BOARD=mb86h61_softbank_sb-tv02-wfpl
-# 骨格。SPI-NOR 16MB / kernel=mtd5 / rootfs=mtd6（spec §2.3）。
+# 出力:   output/<BOARD>/images/openird-sb-tv02-wfpl-rootfs.squashfs（mtd6 用）
+#
+# 段階A v1 の中身: overlayfs root（squashfs mtd6 + jffs2 mtd7）／SSH(dropbear)／
+# ネットワーク／mtd。チューナは段階C（Milestone 2）で足す。
+# カーネルは別建て（make kernel BOARD=…＝検証済み像の再現ビルド）。区画は
+# board/mb86h61/kernel/patches/0015-*.patch のレイアウト。
 
-# --- アーキテクチャ ---
+# --- アーキテクチャ / toolchain（Bootlin 公式 fragment のとおり） ---
 BR2_arm=y
-BR2_arm1176jzf_s=y
-# (little-endian はデフォルト)
+BR2_arm926t=y
+BR2_ARM_EABI=y
+BR2_ARM_SOFT_FLOAT=y
+BR2_TOOLCHAIN_EXTERNAL=y
+BR2_TOOLCHAIN_EXTERNAL_CUSTOM=y
+BR2_TOOLCHAIN_EXTERNAL_DOWNLOAD=y
+BR2_TOOLCHAIN_EXTERNAL_URL="https://toolchains.bootlin.com/downloads/releases/toolchains/armv5-eabi/tarballs/armv5-eabi--musl--stable-2026.08-1.tar.xz"
+BR2_TOOLCHAIN_EXTERNAL_GCC_15=y
+BR2_TOOLCHAIN_EXTERNAL_HEADERS_5_10=y
+BR2_TOOLCHAIN_EXTERNAL_CXX=y
+BR2_TOOLCHAIN_EXTERNAL_OPENMP=y
+BR2_TOOLCHAIN_EXTERNAL_HAS_SSP=y
+BR2_TOOLCHAIN_EXTERNAL_HAS_THREADS_DEBUG=y
+BR2_TOOLCHAIN_EXTERNAL_HAS_THREADS=y
+BR2_TOOLCHAIN_EXTERNAL_HAS_THREADS_NPTL=y
+BR2_TOOLCHAIN_EXTERNAL_CUSTOM_MUSL=y
 
-# --- toolchain / libc ---
-# vendor は uClibc-0.9.31。段階B で blob 併用なら uClibc-ng に寄せる（§10）。
-BR2_TOOLCHAIN_BUILDROOT=y
-BR2_TOOLCHAIN_BUILDROOT_UCLIBC=y
+# --- ダウンロードの完全性（全ソースを .hash で検証） ---
+BR2_DOWNLOAD_FORCE_CHECK_HASHES=y
+BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_IRD_FUJITSU_PATH)/board/mb86h61/patches"
 
-# --- kernel (GPL 再ビルド) ---
-BR2_LINUX_KERNEL=y
-BR2_LINUX_KERNEL_CUSTOM_VERSION=y
-BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="2.6.31.6"
-# TODO: PREEMPT_RT パッチ / pristine tarball を dl/ に（*.hash で検証）。
-BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG=y
-BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="$(BR2_EXTERNAL_IRD_FUJITSU_PATH)/board/mb86h61/kernel/linux.config"
-# TODO: kernel イメージ形式（mtd5 は 'RDHB'+'PIX-' 独自コンテナ。libooter が食う形式を確認）。
+BR2_OPTIMIZE_S=y
 
-# --- rootfs ---
-# TODO: squashfs（実機 mtd6 は squashfs 4.0）。単一面につき非起動イメージ厳禁。
+# --- system ---
+BR2_TARGET_GENERIC_HOSTNAME="openird"
+BR2_TARGET_GENERIC_ISSUE="OpenIRD"
+BR2_INIT_BUSYBOX=y
+# 2.6.31 は devtmpfs 無し → 静的 /dev（mtd4–15 を追加）
+BR2_ROOTFS_DEVICE_CREATION_STATIC=y
+BR2_ROOTFS_STATIC_DEVICE_TABLE="system/device_table_dev.txt $(BR2_EXTERNAL_IRD_FUJITSU_PATH)/board/mb86h61/device_table_dev.txt"
+# / は preinit が組み立てる overlayfs。squashfs の remount も getty も使わない
+# BR2_TARGET_GENERIC_REMOUNT_ROOTFS_RW is not set
+# BR2_TARGET_GENERIC_GETTY is not set
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_IRD_FUJITSU_PATH)/board/mb86h61/rootfs_overlay"
+BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_IRD_FUJITSU_PATH)/board/mb86h61/post-build.sh"
+BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_IRD_FUJITSU_PATH)/board/mb86h61/post-image.sh"
 
 # --- packages ---
+BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_IRD_FUJITSU_PATH)/board/mb86h61/busybox.fragment"
+# ネットワークは ird-base-files の S40network（フォールバック IP → DHCP）
+# BR2_PACKAGE_IFUPDOWN_SCRIPTS is not set
 BR2_PACKAGE_IRD_BASE_FILES=y
-BR2_PACKAGE_IRD_CONFIG=y
+BR2_PACKAGE_OPENWRT_MTD=y
+BR2_PACKAGE_DROPBEAR=y
+BR2_PACKAGE_DROPBEAR_DISABLE_REVERSEDNS=y
 # BR2_PACKAGE_IRD_TUNER_TC90532=y  # 段階C（Milestone 2）で有効化
+
+# --- rootfs 像（2.6.31 の squashfs は gzip のみ・xattr 非対応） ---
+BR2_TARGET_ROOTFS_SQUASHFS=y
+BR2_TARGET_ROOTFS_SQUASHFS4_GZIP=y
+# BR2_TARGET_ROOTFS_TAR is not set

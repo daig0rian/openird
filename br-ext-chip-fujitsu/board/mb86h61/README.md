@@ -66,12 +66,34 @@ ARM1176（ARMv6, VFPv2）**リトルエンディアン** / linux-2.6.31.6-rt19�
    ```
    libooter で `root=/dev/mtdblock8` にして起動できることを一度確かめておく
    （復旧経路の実地確認）。確認後は `root=/dev/mtdblock6` に戻す。
-3. **本番 rootfs を mtd6 へ**（firstaid から起動した状態で）
+3. **本番 rootfs を mtd6 へ**（**firstaid から起動した状態で**行う。mtd6 で動いて
+   いる rootfs は自分自身を書き換えられない）
    ```sh
-   mtd write /tmp/openird-rootfs.squashfs /dev/mtd6
-   mtd erase /dev/mtd7      # 旧 slot の残骸を消す。jffs2 は空(0xFF)から自動生成される
+   # libooter で root=/dev/mtdblock8 にして起動しておく
+   ifconfig eth0 <ip> netmask <mask> up
+   tftp -g -r openird-sb-tv02-wfpl-rootfs.squashfs -l /tmp/rootfs.squashfs <server>
+   mtd write /tmp/rootfs.squashfs /dev/mtd6
+   mtd verify /tmp/rootfs.squashfs /dev/mtd6
+   mtd erase /dev/mtd7      # 旧 slot の残骸を消す（数十秒かかる）
    ```
-   `root=/dev/mtdblock6` に戻して再起動。
+   `root=/dev/mtdblock6` に戻して再起動すると、preinit が mtd7 に jffs2 を作って
+   overlay root を組み立てる。**`mtd erase /dev/mtd7` は必須**: 旧 slot0/slot1 の
+   squashfs が残っていると jffs2 はマウントを拒否し、tmpfs フォールバック
+   （＝設定が保存されない状態）で起動してしまう。
+
+## 本番 rootfs の起動シーケンス
+
+```
+libooter → kernel(mtd5) → squashfs(mtd6) を RO で mount → /sbin/init = openird-preinit
+   ├─ jffs2(mtd7) を /overlay に mount（失敗したら tmpfs。警告を出して続行）
+   ├─ overlayfs (lower=/ upper=/overlay) を /mnt に mount
+   ├─ pivot_root /mnt /mnt/rom    ← 以後 / は書き込み可能、元の RO root は /rom
+   └─ exec busybox init → inittab → rcS → S40network → S50dropbear
+```
+
+cmdline は区画切り直し後も変えない（`root=/dev/mtdblock6 rootfstype=squashfs ro`）。
+upper を別のデバイスにするときは `openird_overlay=<device>|none` を足す
+（none は RO 起動）。既定値は `rootfs_overlay/etc/openird/board.conf`。
 
 > `mtd write` は書いたブロックだけを消去する。区画を丸ごと消すのは `mtd erase`。
 > 旧 `slot0`/`slot1` のデータは新 `rootfs_data` の領域に残っているので、

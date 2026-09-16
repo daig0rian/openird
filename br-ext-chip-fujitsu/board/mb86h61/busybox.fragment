@@ -1,0 +1,11 @@
+# OpenIRD mb86h61: differences from the stock Buildroot busybox.config
+# Added: a second transfer path (nc) and two small utilities
+CONFIG_NC=y
+CONFIG_NC_SERVER=y
+CONFIG_NC_EXTRA=y
+CONFIG_STAT=y
+CONFIG_TIMEOUT=y
+# Dropped: cleartext remote shell and the cron daemon (not needed on an appliance)
+# CONFIG_TELNETD is not set
+# CONFIG_CROND is not set
+# CONFIG_CRONTAB is not set

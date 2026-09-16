@@ -6,8 +6,8 @@ clone した人が、検証済みの像を再現するための手順。現状�
 ## 対応状況
 | 機種 (BOARD) | カーネル再現ビルド | rootfs | 実機起動確認 |
 |---|---|---|---|
-| `mb86h61_softbank_sb-tv02-wfpl` (SB-TV02-WFPL) | ✅ `make kernel` | — | ✅ overlayfs 入り（0003–0014 ＋ `CONFIG_OVERLAYFS_FS=y` ＋ jffs2）で起動・overlay 動作を実機確認 |
-| `mb86h61_softbank_sb-tv02-wfpl_firstaid` | （同上のカーネルを使う） | ✅ `make BOARD=…_firstaid` | ⚠ 未（手順は `br-ext-chip-fujitsu/board/mb86h61/firstaid/README.md`） |
+| `mb86h61_softbank_sb-tv02-wfpl` (SB-TV02-WFPL) | ✅ `make kernel`（区画切り直し済み＝パッチ 0015） | ✅ `make BOARD=…`（overlay root + SSH） | ✅ カーネル・区画切り直しまで実機確認済。rootfs は QEMU のみ |
+| `mb86h61_softbank_sb-tv02-wfpl_firstaid` | （同上のカーネルを使う） | ✅ `make BOARD=…_firstaid` | ✅ mtd6 / mtd8 の両方で起動確認（`board/mb86h61/firstaid/README.md`） |
 | その他 | 未 | 未 | 未 |
 
 ## 前提環境
@@ -64,8 +64,9 @@ make kernel BOARD=mb86h61_softbank_sb-tv02-wfpl
 Buildroot 本体はリポジトリに含めない。`scripts/buildroot.env` の pin（版・URL・sha256）から
 `make` が `dl/` に取得・検証して `buildroot/` に展開する（git 管理外）。
 ```
-make BOARD=mb86h61_softbank_sb-tv02-wfpl_firstaid
-# → output/<BOARD>/images/openird-firstaid-sb-tv02-wfpl-rootfs.squashfs（+ .sha256）
+make BOARD=mb86h61_softbank_sb-tv02-wfpl            # 本番（overlay root + SSH）→ mtd6 用
+make BOARD=mb86h61_softbank_sb-tv02-wfpl_firstaid   # 救助用（mtd ツールのみ）→ mtd8 用
+# → output/<BOARD>/images/openird-*-rootfs.squashfs（+ .sha256）
 ```
 `make` が行うこと:
 1. `scripts/fetch-buildroot.sh` が Buildroot を取得・展開

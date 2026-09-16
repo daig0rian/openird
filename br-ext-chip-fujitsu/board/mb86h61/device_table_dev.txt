@@ -1,0 +1,10 @@
+# OpenIRD mb86h61: extra entries for system/device_table_dev.txt
+# (format: package/makedevs/README)
+#
+# 2.6.31 has no devtmpfs, so /dev is static.  The stock table stops at mtd3;
+# add mtd4-mtd15 to cover this board (mtd0-mtd10) with room to spare.
+# Minor numbers: mtdN = 2N (odd ones are mtdNro), mtdblockN = N.
+#
+# <name>	<type>	<mode>	<uid>	<gid>	<major>	<minor>	<start>	<inc>	<count>
+/dev/mtd	c	640	0	0	90	8	4	2	12
+/dev/mtdblock	b	640	0	0	31	4	4	1	12
