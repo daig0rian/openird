@@ -4,6 +4,7 @@
 #
 # 段階A v1 の中身: overlayfs root（squashfs mtd6 + jffs2 mtd7）／SSH(dropbear)／
 # ネットワーク／mtd。チューナは段階C（Milestone 2）で足す。
+# Milestone 1 の間は観察用ツール（strace / tcpdump / gdbserver）も入れている。
 # カーネルは別建て（make kernel BOARD=…＝検証済み像の再現ビルド）。区画は
 # board/mb86h61/kernel/patches/0015-*.patch のレイアウト。
 
@@ -54,6 +55,13 @@ BR2_PACKAGE_IRD_BASE_FILES=y
 BR2_PACKAGE_OPENWRT_MTD=y
 BR2_PACKAGE_DROPBEAR=y
 BR2_PACKAGE_DROPBEAR_DISABLE_REVERSEDNS=y
+
+# --- Milestone 1 の観察用: ベンダ受信部品の syscall・ioctl・通信を見る ---
+# 配布イメージに要るものではない。観察が済んだら外すか、開発用の構成に分ける。
+BR2_PACKAGE_STRACE=y
+BR2_PACKAGE_TCPDUMP=y
+# gdbserver は toolchain 同梱品（ホスト側は同梱の arm-linux-gdb 16.3 と対）
+BR2_TOOLCHAIN_EXTERNAL_GDB_SERVER_COPY=y
 # BR2_PACKAGE_IRD_TUNER_TC90532=y  # 段階C（Milestone 2）で有効化
 
 # --- rootfs 像（2.6.31 の squashfs は gzip のみ・xattr 非対応） ---
