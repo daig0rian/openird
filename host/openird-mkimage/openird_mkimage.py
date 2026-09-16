@@ -83,19 +83,24 @@ def check_squashfs(data, spec):
 
 def cmd_pack_rootfs(a):
     b = load_board(a.board)
-    mtd6 = part_by_mtd(b, 6)
+    part = part_by_mtd(b, a.mtd)
+    if part is None:
+        sys.exit("✗ mtd%d はこのボードに存在しない。" % a.mtd)
+    if part["policy"] != "writable":
+        sys.exit("✗ mtd%d(%s) は policy=%s＝書き込み禁止。" % (a.mtd, part["name"], part["policy"]))
     with open(a.infile, "rb") as f:
         data = f.read()
     if data[:4] != SQUASHFS_MAGIC:
         sys.exit("✗ squashfs マジック 'hsqs' が先頭にありません（得: %r）。" % data[:4])
     check_squashfs(data, b.get("squashfs", {}))
-    cap = h(mtd6["size"])
+    cap = h(part["size"])
     if len(data) > cap:
-        sys.exit("✗ rootfs %dB が mtd6 容量 %dB を超過。" % (len(data), cap))
+        sys.exit("✗ rootfs %dB が mtd%d(%s) 容量 %dB を超過。" % (len(data), a.mtd, part["name"], cap))
     with open(a.outfile, "wb") as f:
         f.write(data)
-    print("✓ rootfs OK: %dB / %dB (%d%%) → %s" % (len(data), cap, 100 * len(data) // cap, a.outfile))
-    print("  → 書き込み: dione_server -w /dev/mtd6:<file>（raw・確定経路）")
+    print("✓ rootfs OK: %dB / %dB (%d%%) mtd%d(%s) → %s"
+          % (len(data), cap, 100 * len(data) // cap, a.mtd, part["name"], a.outfile))
+    print("  → 書き込み: mtd write <file> /dev/mtd%d（区画を切り直した後）" % a.mtd)
 
 
 # --- RDHB コンテナ（docs/specs/rdhb-kernel-container.md より。clean-room） ---
@@ -188,31 +193,39 @@ def cmd_flash_script(a):
             sys.exit("✗ mtd%d(%s) は policy=%s＝書き込み禁止。" % (mtd, p["name"], p["policy"]))
         return p
 
-    lines = [
-        "#!/bin/sh",
-        "# openird-mkimage 生成: %s on-device フラッシュ手順（確定経路・spec §8.5/§8.6/§8.9）" % b["board"],
-        "# 前提: libooter 'Wait for kbd input' で root shell に入り init=/bin/sh 起動済、",
-        "#       あるいは slot_entry.sh 相当を手動再現して dione_server を使える状態。",
+    def write(mtd, path):
+        p = guard(mtd)
+        if a.via == "mtd":
+            return ['echo "[+] %s -> mtd%d"' % (p["name"], mtd),
+                    "mtd write %s /dev/mtd%d" % (path, mtd),
+                    "mtd verify %s /dev/mtd%d" % (path, mtd)]
+        return ['echo "[+] %s -> mtd%d"' % (p["name"], mtd),
+                "dione_server -w /dev/mtd%d:%s" % (mtd, path)]
+
+    if a.via == "mtd":
+        pre = ["# 前提: OpenIRD の rootfs（mtd ツール入り）で起動している状態。",
+               "#       mtd6 を書くときは firstaid(mtd8) から起動すること（自分自身は上書きできない）。"]
+    else:
+        pre = ["# 前提: 区画切り直し前のベンダ状態。libooter 'Wait for kbd input' → init=/bin/sh で起動し、",
+               "#       slot(mtd7/8) を mount して dione_server を使える状態（spec §8.5/§8.6/§8.9）。"]
+    lines = ["#!/bin/sh",
+             "# openird-mkimage 生成: %s on-device フラッシュ手順" % b["board"]] + pre + [
         "# 温存: mtd0(libooter)/mtd1(env=MAC,cmdline)/nvram/slot_info は絶対に書かない。",
         "set -e",
     ]
     if a.rootfs:
-        guard(6)
-        lines += ['echo "[+] rootfs -> mtd6"', "dione_server -w /dev/mtd6:%s" % a.rootfs]
+        lines += write(6, a.rootfs)
     if a.kernel:
-        guard(5)
         lines += [
             "# kernel 像は RDHB 梱包済(pack-kernel)。mtd5 は単一面＝書く前に全ダンプでバックアップ。",
-            "# 残 HOLD(H1b): RDHB 0x08 チェックサム未特定。未検証なら初回は起動可否を要確認。",
-            'echo "[+] kernel -> mtd5 (RDHB)"', "dione_server -w /dev/mtd5:%s" % a.kernel]
-    if a.slot:
-        guard(7)
-        lines += ['echo "[+] slot -> mtd7(slot0)"', "dione_server -w /dev/mtd7:%s" % a.slot]
-    if not (a.rootfs or a.kernel or a.slot):
-        sys.exit("✗ --rootfs / --kernel / --slot のいずれかを指定してください。")
+        ] + write(5, a.kernel)
+    if a.firstaid:
+        lines += write(8, a.firstaid)
+    if not (a.rootfs or a.kernel or a.firstaid):
+        sys.exit("✗ --rootfs / --kernel / --firstaid のいずれかを指定してください。")
     lines += [
-        "# 復旧メモ: 失敗時は libooter で元 cmdline を setparam+saveparam、",
-        '#   または Linux から: libooter_tool set KERNELPARAM "<原文 cmdline>"。mtd0 は無傷。',
+        "# 復旧メモ: 失敗時は libooter の setparam+saveparam で cmdline を戻す",
+        '#   (例: root=/dev/mtdblock8 で firstaid 起動)。mtd0/mtd1 は無傷。',
         'echo "[done] 書き込み完了。reboot で確認。"',
     ]
     out = "\n".join(lines) + "\n"
@@ -256,10 +269,11 @@ def main():
     p.add_argument("board")
     p.set_defaults(fn=cmd_partitions)
 
-    p = sub.add_parser("pack-rootfs", help="squashfs を mtd6 像として検証・出力")
+    p = sub.add_parser("pack-rootfs", help="squashfs を rootfs 区画の像として検証・出力")
     p.add_argument("board")
     p.add_argument("infile")
     p.add_argument("outfile")
+    p.add_argument("--mtd", type=int, default=6, help="対象区画（既定 6=rootfs。復旧用は 8=firstaid）")
     p.set_defaults(fn=cmd_pack_rootfs)
 
     p = sub.add_parser("pack-kernel", help="生カーネル Image を RDHB で包み mtd5 像を作る")
@@ -276,11 +290,13 @@ def main():
     p.add_argument("outfile", nargs="?")
     p.set_defaults(fn=cmd_unpack_kernel)
 
-    p = sub.add_parser("flash-script", help="dione_server -w の確定フラッシュ手順を生成")
+    p = sub.add_parser("flash-script", help="on-device フラッシュ手順を生成")
     p.add_argument("board")
     p.add_argument("--rootfs")
     p.add_argument("--kernel")
-    p.add_argument("--slot")
+    p.add_argument("--firstaid")
+    p.add_argument("--via", choices=["mtd", "dione"], default="mtd",
+                   help="mtd=OpenIRD の mtd ツール(既定) / dione=区画切り直し前のベンダ dione_server")
     p.add_argument("-o", "--outfile")
     p.set_defaults(fn=cmd_flash_script)
 
