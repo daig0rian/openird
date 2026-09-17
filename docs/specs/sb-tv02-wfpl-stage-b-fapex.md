@@ -148,6 +148,41 @@ load、サンドボックス `/dev` に `/dev/h57fmb0` と実 `/dev/bus/usb` を
   無いので «Could not open /dev/mtd1» を出すが、**続行する**（受信の主役ではない）。
 - WiFi（`8192du.ko`）は本カーネルのシンボルに合わず insmod 失敗（受信に無関係）。
 
+## 5.1 USB / Dione(H58) の立ち上げ（2026-09-18 実機）
+
+チューナ電源が Dione(H58/USB) 経由（§5）なので、選局 I2C を見るには USB スタックを
+自前カーネルで動かし、H58 を列挙させる必要がある。
+
+**USB/MUSB は動く（達成）**: 自前カーネルは `CONFIG_USB=m`・`CONFIG_USB_MUSB_HDRC=m`・
+`CONFIG_MUSB_MB86HXX=y`・`CONFIG_NOP_USB_XCEIV=m` をフルに持つ。ベンダの GPL モジュール
+`usbcore` / `nop-usb-xceiv` / `musb_hdrc`（vermagic 一致）を **FAPex の後に**
+insmod できる（`modules.dep`: `musb_hdrc` は `fapex_cfdl`/`fapi_core`/`fapi_sys` に
+依存＝MUSB グルーが FAPex のクロック/電源を使う）。`musb_hdrc use_dma=0`。列挙結果:
+
+| bus | デバイス | 用途 |
+|---|---|---|
+| 1-1 | `0bda:8171`（RTL8192DU） | WiFi |
+| 2-1 | `05e3:0608`（GenesysLogic Hub, 4 port） | 内部ハブ H610-USB-2 |
+
+**H58(`06b8`) は列挙されない＝USB-VBUS が OFF**: FAPex ボード設定
+`mb86h61_dk01.c` に「`// NOTE: by default, USB-VBUS is off`」とあり、USB ポート電源は
+**シフトレジスタ式ラッチ**（`GPO_SFTRG_USB_CBU0`=BIT6 / `GPO_SFTRG_USB_CBU1`=BIT7、
+`SIpin/SOpin/CLKpin/LDpin` でシフト出力）で制御される。H58 はこのラッチで VBUS を
+入れないとハブ配下（`2-1.x`）に現れない。ラッチを叩くのはベンダの board 初期化
+（`FAPI_SYS_INIT_USE_BOARDS`）＝実運用では daemon の BoardControl。
+
+**未解決＝daemon が sandbox で BoardControl 直後にハングする**: full daemon を
+fapex-trace 下で走らせても、`Thread for BoardControl created`（board_control.c:1237）
+の直後で停止し、GPIO ラッチ書き込みに到達しない（fapi199 CLKPWR init のみ）。
+- ネットワークを stub しない（ベンダの `ifconfig`/`udhcpc`/`brctl` を素通し）と、daemon が
+  eth0 をアプライアンス設定に切り替えて ssh が落ちる（AirTuner 独自 DHCP/bridge）。
+- stub する（chroot の PATH 先頭に no-op を置く）と ssh は保てるが、上記の位置で
+  ハングする＝daemon の board 初期化が stub した network 設定の結果に依存して待つ。
+→ 次の一手の候補: (a) daemon を stub せず走らせ、制御をシリアル専用にして H58 が
+  上がるまで待つ、(b) NVRAM(mtd3/4) を read-only で与えて daemon を正規パスに乗せる
+  （mtd は read-only 限定・書き込みは絶対に通さない）、(c) ラッチのシフト手順を GPL の
+  board コードから仕様化し、H58 電源投入だけを自前で行ってから daemon を動かす。
+
 ## 6. 段階 C（クリーン実装）への含意
 
 - OpenIRD が満たすべき chardev 契約は **px4_drv 互換**（CLAUDE.md §4）。FAPex の
