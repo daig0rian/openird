@@ -127,10 +127,12 @@ _IOW(0xFF, 0x62, FAPEX_I2C_RWParamStrT)    I2C_WRITE
 > - **I2C**: `fapi174`=SoC I2C0、`fapi175`=SoC I2C1。**復調器の制御 I2C は SoC FAPex I2C(fapi `0x60`・
 >   I2C ch0・slave `0x20`)経由**（h57fmb0 トンネルではない）。(§5.4)
 > - **init 構造**: FW load → I2C0/1 open → GPIO で reset 解除(pin8=復調器/7=衛星/11=地デジ) → 復調器へ I2C。
-> - **現在の壁**: demod I2C write がハング（slave 0x20 が非 ACK）／bootup が USB 再列挙タイミングで
->   flaky。**復調器 = MB86A22（slave 0x20、CLKPWR 非依存＝クロック無関係）と判明。`fapex_fdlclkpwr`
->   は復調器に不要＝載せなければ BoardControl クラッシュも回避**。非 ACK 真因は reset/バス/レール/
->   Dione 給電（§5.5 で切り分け）。(§5.4/§5.5)
+> - **復調器アクセス＝解決（§5.5、実機確定）**: 復調器は I2C0/block0・slave `0x20`。非 ACK の真因は
+>   **CLKPWR/クロックではなく Dione ゲート**だった。`fapex_fdlclkpwr` を**載せない**＝BoardControl
+>   (setLed=SET_PWM 0x24) クラッシュ回避（§5.1 の壁が消滅）→ daemon が Dione を列挙（2-1.4 06b8:102d）
+>   → **block0 が立ち 0x20 が read/write とも ACK**（実レジスタ値あり）。手段: 自作 `tools/fapex-i2c`。
+> - **残り**: demod init レジスタ列の捕捉（tune 要求→`demod_WriteSomeRegs` を I2C pre-log）。§5.4(b)。
+>   手動 GPIO 単独での Dione 起動は flaky（daemon の board init を使えば確実）。(§5.4/§5.5)
 
 **前提**: OpenIRD 本番 rootfs（strace 入り）で起動、`ssh openird`。ベンダの
 `rootfs.img`(mtd6) と `slot0.img`(mtd7) は所有者のダンプ。
@@ -497,11 +499,34 @@ fapex_fdli2c` を insmod（**`fdlclkpwr` は載せない**）→ `fapex-gpio` �
 
 **解釈と次**: GPIO 電源だけでは前段バス（I2C0/block0）が電気的に立たない＝復調器が現れない。
 §5.4 で daemon の demod write がハングしたのも整合（demod がそもそも応答していない）。∴ 復調器の
-活性化レバーは GPIO 電源ではなく、**Dione の完全起動（FW ロード＋`"Dione: Tuner Power ON"`）で
-前段モジュール（復調器＋チューナ）の電源/クロックがゲート**されている公算が最も高い。
-- **次テスト**: USB スタック＋Dione FW を上げて（§5.3 の bring-up＋daemon か自前 FMB）から
-  block0 を再スキャン。demod `0x20`（reg0=`0x23`）が現れれば「Dione がゲート」を確定。
-- `0x72`/`0x73`（I2C2, reg0=`0x01`）の同定も別途（HDMI DDC/内部バス等の候補）。
+活性化レバーは GPIO 電源ではなく、**Dione の完全起動**で前段モジュール（復調器）が有効化される公算。
+
+### ★ Dione 完全起動 → block0 再スキャン（2026-09-18、確定）
+手動 GPIO では Dione が列挙しなかった（§5.4 の flaky。VBUS 41/42 やハブ再 bind も無効）。そこで
+**ベンダ daemon 自身に board init を任せた**（`fdlclkpwr` は載せない＝task(a) の回避策）。結果:
+- **daemon は BoardControl を越えて起動**（§5.1 のクラッシュは起きない＝**task(a) の fix を実機実証**）。
+  `dione server is ready to work` に到達し、`WirelessDtvPower` で **Dione を列挙・認識**
+  （`usb 2-1.4: 06b8:102d`、stdout `Dione : VendorID=0x6b8`）。手動 GPIO で出せなかった Dione が、
+  daemon のフル board init（CtrlUsbPhy 等）で確実に上がる。
+- トレース（`fapex-trace`）で確認した bring-up: **I2C_OPEN fapi174=blockIndex0 / fapi175=blockIndex1**
+  （speed=1=100k, timeout=0x1f4=500）、`WirelessDtvPower` の GPIO（81/78/77/49/48→0 then →1、74 解除）、
+  demod/衛星 reset 解除（pin `0x08`/`0x07`）。
+- **daemon 停止後（Dione は列挙されたまま、GPIO pad は persist）に `fapex-i2c` で block0 を再スキャン**:
+  **slave `0x20` が read/write とも ACK**（以前は空）。レジスタは実在の値
+  （reg04=`02`, reg28=`60`, reg70=`18`, reg80=`af` と非ゼロで変化）＝スプリアスでない本物の I2C デバイス。
+  0x20〜0x23 が ACK。※ reg0 は `0x00`（dev-kit MB86A22 の chip-ID 期待値 `0x23` ではない）＝未初期化
+  状態か、この基板の chip-ID レジスタ/手順が dev-kit と異なる。init は tune 時の `demod_WriteSomeRegs`
+  で入る見込み（§5.4 (b) で捕捉）。
+- **結論（task(a) をエンドツーエンドで確定）**: 復調器の非 ACK は **CLKPWR/クロックではなく Dione
+  ゲート**。①`fdlclkpwr` を載せない→BoardControl クラッシュ回避→②daemon が Dione を列挙→
+  ③block0 が立ち復調器 0x20 が応答。§5.4 壁1・壁2 とも解消。
+
+### 未解決・次
+- **demod init レジスタ列の捕捉**（§5.4 (b)）: daemon の control port に tune 要求を投げると
+  `TunerInitialize`→`demod_WriteSomeRegs` が走る。`fapex-trace` の I2C pre-log で 0x20 への書き込み
+  バイト列を取る。
+- 手動 GPIO で Dione を上げられない件（§5.4 flaky）は棚上げ（daemon の board init を使えば確実）。
+- `0x72`/`0x73`（I2C2, reg0=`0x01`）の同定は別途（HDMI DDC/内部バス等の候補）。
 
 ## 6. 段階 C（クリーン実装）への含意
 
