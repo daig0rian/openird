@@ -107,6 +107,11 @@ _IOW(0xFF, 0x62, FAPEX_I2C_RWParamStrT)    I2C_WRITE
   （raw syscall ＋ `__errno_location` のみ）なので uClibc ツールチェーン不要、
   カーネルと同じ ARM クロス gcc で作る。`scripts/build-fapex-trace.sh`。
   GPIO の復号が GPL 仕様どおりであることを実機で確認済み（§2 の表）。
+- **注（§5.3）**: 上の「復調/地デジチューナへの I2C は FAPex I2C（`RWParam`, fapi 0x60）」という
+  想定は、**Dione(H58) 内蔵のチューナ/復調には当てはまらない見込み**。それらの I2C は SoC の
+  I2C ではなく **h57fmb0 の ioctl（USB トンネル `fmb_hw_usb_ep_control_i2c`）**を通る（§5.3）。
+  トレーサは FAPex 0xFF に加え **h57fmb0 の ioctl も拾う**必要がある。どちらに実バイト列が出るかは
+  次フェーズ（FW ロード後の選局）で確定する。
 
 ## 5. 実機での観察手順（再現用）
 
@@ -135,8 +140,9 @@ _IOW(0xFF, 0x62, FAPEX_I2C_RWParamStrT)    I2C_WRITE
 
 ∴ 選局 I2C を観察するには **Dione を立ち上げる**必要がある: `usbcore`・
 `musb_hdrc`・`nop-usb-xceiv`（slot 内、vermagic 一致）を insmod し、`h57fmb.ko` を
-load、サンドボックス `/dev` に `/dev/h57fmb0` と実 `/dev/bus/usb` を渡す。次の
-イテレーションで行う（USB/musb を本カーネルで動かす検証を伴う）。
+load、サンドボックス `/dev` に `/dev/h57fmb0` と実 `/dev/bus/usb` を渡す。
+**→ §5.1〜§5.3 で達成**（USB/musb は本カーネルで動作、Dione は自前 GPIO で電源投入、
+`/dev/h57fmb0` open まで到達）。上の I2C minor 0x60 の想定は §4 の注・§5.3 参照。
 
 **観察された落とし穴（重要）**:
 
@@ -149,6 +155,10 @@ load、サンドボックス `/dev` に `/dev/h57fmb0` と実 `/dev/bus/usb` を
 - WiFi（`8192du.ko`）は本カーネルのシンボルに合わず insmod 失敗（受信に無関係）。
 
 ## 5.1 USB / Dione(H58) の立ち上げ（2026-09-18 実機）
+
+> **訂正済み**: 本節は立ち上げ途中の推定を含み、一部（VBUS の原因＝シフトレジスタ・ラッチ
+> という説明）は後の実機観察で**否定された**。確定した電源手順・結論は **§5.3** を正とする。
+> 本節は「USB/MUSB が自前カーネルで動く」「daemon 駆動は不安定」という到達点として残す。
 
 チューナ電源が Dione(H58/USB) 経由（§5）なので、選局 I2C を見るには USB スタックを
 自前カーネルで動かし、H58 を列挙させる必要がある。
@@ -171,6 +181,13 @@ insmod できる（`modules.dep`: `musb_hdrc` は `fapex_cfdl`/`fapi_core`/`fapi
 入れないとハブ配下（`2-1.x`）に現れない。ラッチを叩くのはベンダの board 初期化
 （`FAPI_SYS_INIT_USE_BOARDS`）＝実運用では daemon の BoardControl。
 
+> **訂正（§5.3）**: この「VBUS がシフトレジスタ・ラッチで OFF だから列挙しない」という
+> 原因説明は**誤り**だった。シフトレジスタ・ラッチ（`GPO_SFTRG_USB_CBU0/1`、shift pin
+> `GP_XSI=11/XSO=38/XCK=39/XLD=40`）は **dev kit(dk01) 用**で、我々の `PCB_POE_BA300W_SB1`
+> では pin 11 は地デジチューナ reset・38-42 は pull 固定＝**ラッチは使わない**。H58 が現れ
+> なかった真因は **復調器電源 48/49 が OFF** だったこと（§5.3）。H58 は正しい電源手順を踏め
+> ば VBUS ラッチ無しで列挙する。
+
 **未解決＝USB を載せると daemon が board 初期化で間欠クラッシュ（2026-09-18）**:
 full daemon はチューナ電源(§5)まで進めば H58 を上げるはずだが、次の板挟みがある。
 - **USB モジュール未ロード**（2026-09-17 の最初の run）だと daemon は BoardControl を越えて
@@ -190,21 +207,30 @@ full daemon はチューナ電源(§5)まで進めば H58 を上げるはずだ�
   wdtcounter があった時の話）。
 
 → **daemon 駆動での H58 電源投入は不安定すぎる**（2026-09-18 の結論）。推奨する次の一手:
-  **(c) VBUS ラッチ（`GPO_SFTRG_USB_CBU0/1`）のシフト手順を GPL board コード
-  （`mb86h61_dk01_gpio.c` 等）から仕様化し、H58 の電源投入だけを自前の小コードで行う。**
-  daemon のクラッシュ・network 乗っ取りを避けられ、clean-room 的にも素直。H58 が上がって
-  h57fmb が bind したら `/dev/h57fmb0` を作り、そこで初めて（必要なら）ベンダ部品を最小限
-  走らせて選局 I2C を観察する。
+  **(c) H58 の電源投入だけを自前の小コードで行う。** daemon のクラッシュ・network 乗っ取りを
+  避けられ、clean-room 的にも素直。H58 が上がって h57fmb が bind したら `/dev/h57fmb0` を作り、
+  そこで初めて（必要なら）ベンダ部品を最小限走らせて選局 I2C を観察する。
+
+> **訂正（§5.3）**: 方式 (c) は正しく、**§5.3 で達成**した。ただし電源投入は「VBUS ラッチの
+> シフト」ではなく、**FAPex GPIO chardev で直接 GPIO を叩く**（電源 = 77/78/81 + 48/49 + reset 74）。
+> ラッチは我々の板では不使用（上の訂正参照）。
   代替 (b): NVRAM(mtd3/4) を read-only で与えて daemon を正規パスに乗せる案は、上記の
   USB 相性クラッシュには効かない見込み（クラッシュは network/NVRAM でなく USB/tuner 初期化）。
 
 ## 5.2 電源/リセット GPIO マップ（GPL board コード由来・方式 C の設計図）
 
+> **一部訂正済み**: 本節は GPL 静的解析による phase 1 の設計図。GPIO の意味づけ（表）は正しい
+> が、**Dione 電源手順の推定は不完全**で（復調器 48/49 が抜けていた）、実機で **§5.3** に訂正
+> された。確定手順は §5.3 を正とする。
+
 方式 (c) の phase 1。GPL の FAPexK `config/boards/mb86h61_pdkv1/mb86h61_pdkv1_gpio.c`
 （板 Model=`PIX-WLANTUNER`＝我々の板）の `BOARD_FMC_H61PDKV1_GpioConfig[]` に、板の
 電源・リセット GPIO が**日本語コメント付き**で全部ある（shift_jis）。VBUS はシフト
-レジスタ・ラッチではなく（PIX-WLANTUNER では daemon の `CtrlUsbPhy` は no-op）、
-**直接 GPIO** で制御される。
+レジスタ・ラッチではなく、**直接 GPIO** で制御される。
+
+> **訂正（§5.3）**: 「daemon の `CtrlUsbPhy` は no-op」は誤り。`CtrlUsbPhy` は直接 GPIO
+> `41/42`（`GPIO_USB_CBU0/1`）とラッチ bit を叩く。ただし **41/42 も 75 も Dione 列挙には不要**
+> で、Dione 電源は `77/78/81 + 48/49 + 74` だった（§5.3）。
 
 **重要**: `mb86h61_pdkv1_gpio.c` の GPIO テーブルは PCB 変種を `#if` で切り替える
 （`PCB_DT270` / `PCB_POE_BA300W_SB1` / `PCB_POE_BA300W_SB1_SR1` / `#else`）。我々の
@@ -233,10 +259,13 @@ Pixela が SB-TV02-WFPL 用にどの `#define` でコンパイルしたかは**�
 ハブ(36)とハイサイドスイッチ(72)は ON なので、USB バス自体は生きる（実測で bus1 WiFi・
 bus2 GenesysLogic ハブが列挙されたのと整合）。**H58 が現れないのは Dione の電源(77/78/81)
 が OFF＋リセット(74)保持だから**。daemon の `WirelessDtvPower`（proprietary・GPL 非収録）
-が後から 77/78/81→H、74→H（リセット解除）を順に行う＝ここは GPL に無いので順序・待ちは
-**GPIO の意味から素直に推定**する（電源3系統 ON → 数 ms 待ち → リセット解除）。
+が後から電源 ON・リセット解除を行う。
 
-**phase 2（実装・未着手）**: 上記 GPIO を自前で叩いて H58 を電源投入する。
+> **訂正（§5.3）**: この「77/78/81→H、74→H を順に」という推定は**不完全**だった。実機で
+> `WirelessDtvPower` の GPIO を fapex-trace で観察した確定手順は、**77/78/81 に加えて復調器
+> 48/49 も ON**（全 OFF → `77→81→78→49→48` → ~50ms → 74 解除）。詳細は §5.3。
+
+**phase 2（実装・達成 → §5.3）**: 上記 GPIO を自前で叩いて H58 を電源投入する。
 - カーネルは **gpiolib/sysfs 非搭載**（`/sys/class/gpio` 無し、`CONFIG_GPIO_SYSFS` 無し）。
   → 叩く手段は (i) **FAPex GPIO chardev**（`GPIO_OPEN{pin,function=OUT}`＋`GPIO_WRITEBIT`。
   daemon が実際に使う経路。fapex-trace で確認済みだが GPIO_OPEN の function 符号化＝
@@ -247,6 +276,13 @@ bus2 GenesysLogic ハブが列挙されたのと整合）。**H58 が現れな�
   §5.1 のクラッシュは避けられる見込み）→ 72/36/5 確認 → 77/78/81→H → 74→H → H58 列挙を
   dmesg で確認 → h57fmb bind → `/dev/h57fmb0` を mknod → 選局 I2C 観察（fapex-trace）。
 - **1 本ずつ実機で確かめる**（板変種未確定のため。誤った pin を叩かない）。
+
+> **訂正（§5.3）**: 採ったのは **(i) FAPex GPIO chardev**。(ii) /dev/mem は「最もクリーン」で
+> はなかった＝カーネル GPL の gpio.c はレジスタ構造しか与えず、「素の GPIO 出力 High/Low」の
+> function 符号化は proprietary な `fapi_core`（`reg_gpio.h` は GPL 非収録）にあり、reverse せ
+> ずには書けない。(i) はベンダの検証済み経路を使うので出力符号化を reverse せずに済み、clean-room
+> 的にもこちらが素直。GPIO fapi minor は `fapi186`、function 値は GPL `abst_libgpio.h` から確定
+> （OUT_1=0x0101 等、§5.3）。手順の pin は上の訂正どおり 48/49 を含む。
 
 ## 5.3 phase 2 実施結果（2026-09-18 実機）— Dione H58 をクリーンに立ち上げ
 
@@ -300,9 +336,10 @@ bus2 GenesysLogic ハブが列挙されたのと整合）。**H58 が現れな�
   `/dev/fapi/fapiNNN` はそのままでは px4_drv ではない。段階 C は、ここで観察した
   「復調・チューナへの I2C 手順」を仕様に起こし、px4_drv 互換 chardev の下に
   クリーン実装する。
-- 当面はまず **I2C の実バイト列**（§4 のトレーサ）と、Dione 起動後に開かれる
-  TSD の minor・ioctl 列を取る。生 TS が読める口（TSD の mmap リング）まで辿れば、
-  段階 C の設計に足りる観察が揃う。
+- 当面はまず **I2C の実バイト列**（§4 のトレーサ。Dione 内部は h57fmb0 の USB トンネル＝§5.3）
+  と、Dione 起動後の TS 出力口の ioctl/mmap 列を取る。生 TS が読める口まで辿れば段階 C の
+  設計に足りる観察が揃う。**TS の口が FAPex TSD（fapi 0x90）か h57fmb0 の mmap
+  （`fmb_hw_usb_mmap`）かは次フェーズで確定**（Dione 経由なら後者の可能性）。
 
 ## 7. 参照
 
