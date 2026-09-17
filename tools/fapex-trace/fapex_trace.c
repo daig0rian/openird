@@ -53,7 +53,6 @@ long tr_syscall(long nr, long a, long b, long c, long d, long e, long f)
 	__attribute__((visibility("hidden")));
 extern int *__errno_location(void);
 
-static int log_fd = -1;
 static char fd_path[MAX_FD][PATH_LEN];
 
 struct line {
@@ -151,14 +150,20 @@ static unsigned long clamp(unsigned long len)
 
 static void emit(struct line *l)
 {
+	int fd;
+
 	if (l->n && l->s[l->n - 1] != '\n')
 		l->s[l->n++] = '\n';
-	if (log_fd < 0)
-		log_fd = (int)tr_syscall(SYS_open, (long)LOG_PATH,
-					 O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC,
-					 0644, 0, 0, 0);
-	if (log_fd >= 0)
-		tr_syscall(SYS_write, log_fd, (long)l->s, l->n, 0, 0, 0);
+	/* Open, write, close every line: the vendor daemon daemonizes and sweeps
+	 * a range of fds closed, so a cached log fd would be clobbered.  O_APPEND
+	 * keeps one write() atomic, so lines from threads still do not interleave. */
+	fd = (int)tr_syscall(SYS_open, (long)LOG_PATH,
+			     O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644,
+			     0, 0, 0);
+	if (fd >= 0) {
+		tr_syscall(SYS_write, fd, (long)l->s, l->n, 0, 0, 0);
+		tr_syscall(SYS_close, fd, 0, 0, 0, 0, 0);
+	}
 }
 
 static void stamp(struct line *l)

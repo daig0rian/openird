@@ -49,8 +49,10 @@ core / sys）は proprietary。
 | 用途 | minor | 観察された ioctl（引数は fapex-trace で復号） |
 |---|---|---|
 | GPIO（リセット SW 読み） | `fapi186` | `nr=0x40` GPIO_OPEN(W,8B) pin=0x44・func=0x01010000 → `nr=0x41` GPIO_READBIT(R,4B) → 1 |
+| CLKPWR（起動時のクロック/電源 init） | `fapi199` | `nr=0x00` OPEN → `nr=0x21` CLKPWR(W,8B) in=06 00 00 00 00 00 00 00 |
 
-（TSD・I2C の minor は Dione 起動後に開くので、次のイテレーションで追記する。）
+minor と種別ベース（§3 の NB 表）は対応する: 186→GPIO(0x40)、199→CLKPWR(0x20)。
+I2C(0x60) / TSD(0x90) の minor は **チューナ電源が入ってから**開くので未取得（§5）。
 
 ## 3. ioctl コマンドの符号化（GPL ヘッダ）
 
@@ -122,8 +124,19 @@ _IOW(0xFF, 0x62, FAPEX_I2C_RWParamStrT)    I2C_WRITE
 3. `strace -f -tt -o … chroot … dione_server <引数>` で観察:
    - `-v` … 版だけ出して exit（`01.00.0003`）。ハード非依存。
    - `-s` … `fapi186`（GPIO）を OPEN→READBIT でリセット SW を読む。
-   - 無引数 … 本デーモン。BoardControl スレッド → リセット SW ポーリング →
-     制御ポート（TCP）の accept ループへ到達。
+   - 無引数 … 本デーモン。CLKPWR init（fapi199）→ BoardControl スレッド →
+     チューナ電源投入で `open("/dev/h57fmb0")` を試みる。
+
+**チューナ電源は Dione(H58) 経由（重要）**: 無引数デーモンは
+`WirelessDtvPower.c: start_device()` で `/dev/h57fmb0`（Dione の USB char dev）を
+開いてチューナ電源を入れる。サンドボックスに Dione が無いと
+`open("/dev/h57fmb0") = -1 (ENOENT)` で電源投入に失敗し、**その先の復調・チューナ
+への I2C（fapi の I2C minor 0x60）に到達しない**（2026-09-17 実測、2 回）。
+
+∴ 選局 I2C を観察するには **Dione を立ち上げる**必要がある: `usbcore`・
+`musb_hdrc`・`nop-usb-xceiv`（slot 内、vermagic 一致）を insmod し、`h57fmb.ko` を
+load、サンドボックス `/dev` に `/dev/h57fmb0` と実 `/dev/bus/usb` を渡す。次の
+イテレーションで行う（USB/musb を本カーネルで動かす検証を伴う）。
 
 **観察された落とし穴（重要）**:
 
