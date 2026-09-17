@@ -115,6 +115,21 @@ _IOW(0xFF, 0x62, FAPEX_I2C_RWParamStrT)    I2C_WRITE
 
 ## 5. 実機での観察手順（再現用）
 
+> **確定サマリ（§5.1–§5.4 の結論。経緯と根拠は各節）**
+> - **USB/MUSB は自前カーネルで動く**。ベンダ GPL の `usbcore`/`nop-usb-xceiv`/`musb_hdrc` を
+>   FAPex の後に逐次 insmod（`use_dma=0`）。bus1=WiFi(`0bda:8171`)、bus2=内蔵ハブ(`05e3:0608`)。
+> - **Dione H58 の電源投入はクリーンな GPIO で行う**（daemon 駆動は不安定）。ツール `tools/fapex-gpio`、
+>   FAPex GPIO chardev(`fapi186`)。電源＝**77/78/81(DIONE 1.2/1.8/3.3V)＋48/49(復調器 1.2/3.3V)＋
+>   74(reset)**。手順: 全 OFF →`77/81/78/49/48` ON → ~50ms → `74` 解除。→ H58 が `2-1.4=06b8:102d`
+>   で列挙、`h57fmb` bind、`/dev/h57fmb0`(180:248)。(§5.3)
+> - **FMB(h57fmb0, type=`0xae`)**: GET_INFO=`0x08`、GET_FACTOR=`0x11`。bootup で h57fmb0 ioctl
+>   約 1500 回＝Dione ファーム(`mb86h57_h58_aac_*.bin`)転送。(§5.4)
+> - **I2C**: `fapi174`=SoC I2C0、`fapi175`=SoC I2C1。**復調器の制御 I2C は SoC FAPex I2C(fapi `0x60`・
+>   I2C ch0・slave `0x20`)経由**（h57fmb0 トンネルではない）。(§5.4)
+> - **init 構造**: FW load → I2C0/1 open → GPIO で reset 解除(pin8=復調器/7=衛星/11=地デジ) → 復調器へ I2C。
+> - **現在の壁**: demod I2C write がハング（復調器が非 ACK＝クロック不足の疑い）／`fapex_fdlclkpwr`
+>   load で daemon が BoardControl でクラッシュ／bootup が USB 再列挙タイミングで flaky。(§5.4)
+
 **前提**: OpenIRD 本番 rootfs（strace 入り）で起動、`ssh openird`。ベンダの
 `rootfs.img`(mtd6) と `slot0.img`(mtd7) は所有者のダンプ。
 
@@ -126,6 +141,8 @@ _IOW(0xFF, 0x62, FAPEX_I2C_RWParamStrT)    I2C_WRITE
 2. `chroot /tmp/vendor/root … insmod` を §1 の順で。GPL の modinfo どおり
    `fapi_sys → fapi_core → fapex_cfdl → fapex_fdl{tsd,i2c,gpio,clkpwr}`。
    `lsmod`・`/proc/devices` に major 244 の `fapiNNN` が出る＝chardev 契約が立つ。
+   （**現状 `fapex_fdlclkpwr` を載せると daemon が BoardControl でクラッシュする**ので、
+   Dione bring-up では `gpio`＋`i2c` のみ載せる＝§5.4。）
 3. `strace -f -tt -o … chroot … dione_server <引数>` で観察:
    - `-v` … 版だけ出して exit（`01.00.0003`）。ハード非依存。
    - `-s` … `fapi186`（GPIO）を OPEN→READBIT でリセット SW を読む。
@@ -206,14 +223,11 @@ full daemon はチューナ電源(§5)まで進めば H58 を上げるはずだ�
   arm できず（open ENOENT）、kill してもリセットしない（当初の「kill でリセット」は
   wdtcounter があった時の話）。
 
-→ **daemon 駆動での H58 電源投入は不安定すぎる**（2026-09-18 の結論）。推奨する次の一手:
-  **(c) H58 の電源投入だけを自前の小コードで行う。** daemon のクラッシュ・network 乗っ取りを
-  避けられ、clean-room 的にも素直。H58 が上がって h57fmb が bind したら `/dev/h57fmb0` を作り、
-  そこで初めて（必要なら）ベンダ部品を最小限走らせて選局 I2C を観察する。
-
-> **訂正（§5.3）**: 方式 (c) は正しく、**§5.3 で達成**した。ただし電源投入は「VBUS ラッチの
-> シフト」ではなく、**FAPex GPIO chardev で直接 GPIO を叩く**（電源 = 77/78/81 + 48/49 + reset 74）。
-> ラッチは我々の板では不使用（上の訂正参照）。
+→ **daemon 駆動での H58 電源投入は不安定すぎる**（2026-09-18 の結論）。採った次の一手は
+  **(c) H58 の電源投入だけを自前の小コードで行う**（→ §5.3 で達成。電源投入は VBUS ラッチでなく
+  FAPex GPIO chardev で直接 GPIO を叩く）。daemon のクラッシュ・network 乗っ取りを避けられ、
+  clean-room 的にも素直。H58 が上がって h57fmb が bind したら `/dev/h57fmb0` を作り、そこで
+  ベンダ部品を最小限走らせて観察する。
   代替 (b): NVRAM(mtd3/4) を read-only で与えて daemon を正規パスに乗せる案は、上記の
   USB 相性クラッシュには効かない見込み（クラッシュは network/NVRAM でなく USB/tuner 初期化）。
 
