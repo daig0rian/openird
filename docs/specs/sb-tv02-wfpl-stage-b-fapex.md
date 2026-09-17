@@ -46,9 +46,9 @@ core / sys）は proprietary。
 
 観察された対応（§5 のトレース）:
 
-| 用途 | minor | 観察された ioctl |
+| 用途 | minor | 観察された ioctl（引数は fapex-trace で復号） |
 |---|---|---|
-| GPIO（リセット SW 読み） | `fapi186` | GPIO_OPEN → GPIO_READBIT |
+| GPIO（リセット SW 読み） | `fapi186` | `nr=0x40` GPIO_OPEN(W,8B) pin=0x44・func=0x01010000 → `nr=0x41` GPIO_READBIT(R,4B) → 1 |
 
 （TSD・I2C の minor は Dione 起動後に開くので、次のイテレーションで追記する。）
 
@@ -100,8 +100,11 @@ _IOW(0xFF, 0x62, FAPEX_I2C_RWParamStrT)    I2C_WRITE
   `RWParam.txDataPtr` の先にあり、strace では読めない。
 - 中身を取るには **`ioctl` を横取りする LD_PRELOAD トレーサ**（§3 の番号表で
   種別・機能を判定し、`RWParam`/`OpenParam` を辿ってバイト列を出す）を使う。
-  OpenIRD の clean-room ツールとして別途置く（`tools/fapextrace`、実装予定）。
-  番号表は GPL ヘッダ由来、ダンプ（proprietary）は動かすだけで参照しない。
+  OpenIRD の clean-room ツール `tools/fapex-trace`（実装済み）。番号表は GPL
+  ヘッダ由来、ダンプ（proprietary）は動かすだけで参照しない。libc に非リンク
+  （raw syscall ＋ `__errno_location` のみ）なので uClibc ツールチェーン不要、
+  カーネルと同じ ARM クロス gcc で作る。`scripts/build-fapex-trace.sh`。
+  GPIO の復号が GPL 仕様どおりであることを実機で確認済み（§2 の表）。
 
 ## 5. 実機での観察手順（再現用）
 
