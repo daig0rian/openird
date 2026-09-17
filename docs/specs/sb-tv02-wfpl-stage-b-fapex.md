@@ -521,12 +521,39 @@ fapex_fdli2c` を insmod（**`fdlclkpwr` は載せない**）→ `fapex-gpio` �
   ゲート**。①`fdlclkpwr` を載せない→BoardControl クラッシュ回避→②daemon が Dione を列挙→
   ③block0 が立ち復調器 0x20 が応答。§5.4 壁1・壁2 とも解消。
 
+### demod init 捕捉の試行（2026-09-18）— FW load 突破と最初の demod write、残る timing 壁
+`fapex-trace` を bring-up シムで強化して daemon の bootup を通し、demod init を捕捉しにいった。
+
+**tracer の追加シム**（`tools/fapex-trace`、既定 off・観察専用ではない bring-up 用）:
+- **h57fmb0 rebind シム**: FMB ioctl が `ENODEV(-19)` を返したら、その fd のパスを開き直して
+  `dup2` で同じ fd 番号に貼り替えてから retry。**Dione は FW 起動時に一度自己再列挙する**
+  （USB disconnect addr N → reconnect addr N+1）ため、daemon の既存 h57fmb0 fd が stale になり
+  `ENODEV` になる。これを透過的に吸収する。従来の `EPROTO(-71)` retry（FW 起動待ち）と併用。
+  （`/tmp/fapex-h57-retry` で有効化。§5.4）
+- **h57 quiet モード**: `/tmp/fapex-h57-quiet` があると h57fmb ioctl のログ出力を抑制
+  （シム/passthrough は維持）。FW 転送 ~1500 回のログ I/O を省く。
+
+**結果（実機）**:
+- 上記シムで **daemon の Dione FW load が完遂**（h57fmb0 ioctl ~1500、`GET_INFO`=VID `06b8`/PID
+  `102d`、`GET_FACTOR` は EPROTO→自己再列挙 ENODEV を rebind で突破）。§5.4 の「bootup flaky／
+  stale fd」を rebind シムで解消。
+- 続いて **demod init の最初の I2C write を捕捉**:
+  `fapi174(block0) nr=0x62 W i2c_slave=0x20 tx=[2]:01 00`（＝復調器 reg `0x01` に `0x00`）。
+- **ただしこの write が D-state で無限ハング**（`kill` でも即死なず＝カーネル内でブロック）。直後に
+  daemon の bootup が中断してプロセス終了。以降の `demod_WriteSomeRegs` は取れなかった。
+- **原因（timing 壁）**: 復調器の I2C バス（block0）は Dione にゲートされており、daemon は
+  **FW load 直後（Dione が post-FW 再列挙中で block0 が一時的に死んでいる窓）**に demod へ書くため
+  ACK されずハングする。`fapex-i2c` が成功したのは **Dione が安定列挙した後**（settle 後は 0x20 が
+  read/write とも ACK、reg04=`02` 等）。＝ハードな失敗ではなく **タイミングゲート**。
+
 ### 未解決・次
-- **demod init レジスタ列の捕捉**（§5.4 (b)）: daemon の control port に tune 要求を投げると
-  `TunerInitialize`→`demod_WriteSomeRegs` が走る。`fapex-trace` の I2C pre-log で 0x20 への書き込み
-  バイト列を取る。
-- 手動 GPIO で Dione を上げられない件（§5.4 flaky）は棚上げ（daemon の board init を使えば確実）。
-- `0x72`/`0x73`（I2C2, reg0=`0x01`）の同定は別途（HDMI DDC/内部バス等の候補）。
+- **demod init 全列の捕捉**: daemon の demod write を **Dione が安定した窓**で走らせる必要がある。
+  候補: (i) Dione を安定列挙させてから daemon の再列挙を避ける（WirelessDtvPower の power-cycle を
+  抑える手段が要る）、(ii) daemon の demod write 前に settle 待ちを注入、(iii) tune 要求で
+  `demod_WriteSomeRegs` を走らせる（control port プロトコルの特定が要る）。
+- FAPex I2C ドライバは **非 ACK で無限ブロック**（timeout=500 が効かない場面がある）＝観察時は
+  D-state ハングに注意。`fapex-i2c` は OpenParam timeout＋`busybox timeout` ラッパで回避。
+- `0x72`/`0x73`（I2C2, reg0=`0x01`）の同定は別途。
 
 ## 6. 段階 C（クリーン実装）への含意
 

@@ -20,9 +20,15 @@
   proprietary。struct 未知なので `_IOC_SIZE` 分をダンプ）。ファーム転送・GET_INFO/GET_FACTOR 等。
 - `/dev/*` の mmap（`/dev/mem` 経由のレジスタ窓など）。
 
-**bring-up シム（既定 off・観察専用ではない）**: `/tmp/fapex-h57-retry`（対象プロセスの
-**chroot 内**）が在るとき、h57fmb0 の ioctl が `EPROTO(-71)` を返したら短い待ちを挟んで retry する。
-Dione ファームがリセット解除後に起動するまでの EPROTO を吸収するためのもの（§5.4）。
+**bring-up シム（既定 off・観察専用ではない）**: 対象プロセスの **chroot 内**にフラグファイルを
+置くと有効になる。
+- `/tmp/fapex-h57-retry`: h57fmb0 の ioctl が `EPROTO(-71)` または `ENODEV(-19)` を返したら短い
+  待ちを挟んで retry する。`-71` は Dione ファームがリセット解除後に起動するまでの吸収。
+  `-19` は **Dione が FW 起動時に一度自己再列挙する**（USB disconnect addr N → reconnect N+1）
+  ことで daemon の既存 fd が stale になるため、その fd のパスを開き直して `dup2` で同じ fd 番号に
+  貼り替えてから retry する（＝再列挙後のデバイスに透過的に再束縛。§5.5）。
+- `/tmp/fapex-h57-quiet`: h57fmb0 の ioctl のログ出力を抑制する（シム/passthrough は維持）。
+  Dione FW 転送 ~1500 回のログ I/O を省いて観察ノイズと負荷を下げる（§5.5）。
 
 1 行 = 1 回の `write()`。スレッドをまたいでも行が混ざらない。ログは
 `/tmp/fapex-trace.log`（プロセスの chroot 内）。

@@ -31,8 +31,10 @@
 #define SYS_gettid		224
 #define SYS_clock_gettime	263
 #define SYS_nanosleep		162
+#define SYS_dup2		63
 
 #define O_WRONLY	01
+#define O_RDWR		02
 #define O_CREAT		0100
 #define O_APPEND	02000
 #define O_LARGEFILE	0400000
@@ -245,17 +247,45 @@ static void msleep(long ms)
 }
 
 /* Optional bring-up shim (not observation): when /tmp/fapex-h57-retry exists,
- * retry a Dione (h57fmb0) ioctl that fails with EPROTO.  Our USB path enumerates
- * fine but the vendor daemon queries the Dione ~10 ms after releasing its reset,
- * before the Dione firmware has booted, so the first FMB command returns EPROTO
- * (-71).  Retrying with a short delay lets the firmware come up.  Default off, so
- * the tracer stays a pure observer unless the flag file is present. */
+ * retry a Dione (h57fmb0) ioctl that fails with EPROTO or ENODEV.  Our USB path
+ * enumerates fine but the vendor daemon queries the Dione ~10 ms after releasing
+ * its reset, before the Dione firmware has booted, so the first FMB command
+ * returns EPROTO (-71).  Worse, the Dione *re-enumerates itself* once its
+ * firmware comes up (USB disconnect addr N -> reconnect addr N+1), which makes
+ * the daemon's already-open h57fmb0 fd stale and the next FMB command returns
+ * ENODEV (-19).  On ENODEV the shim re-opens the same device node and dup2()s it
+ * onto the daemon's fd (transparently rebinding to the re-enumerated device),
+ * then retries.  Default off, so the tracer stays a pure observer unless the
+ * flag file is present. */
 static int retry_enabled(void)
 {
 	static int cached = -1;
 
 	if (cached < 0) {
 		int fd = (int)tr_syscall(SYS_open, (long)"/tmp/fapex-h57-retry",
+					 0 /*O_RDONLY*/, 0, 0, 0, 0);
+		if (fd >= 0) {
+			tr_syscall(SYS_close, fd, 0, 0, 0, 0, 0);
+			cached = 1;
+		} else {
+			cached = 0;
+		}
+	}
+	return cached;
+}
+
+/* When /tmp/fapex-h57-quiet exists, suppress the per-ioctl log lines for the
+ * Dione (h57fmb0).  The retry/rebind shim and the passthrough still run; only
+ * the file write is skipped.  This removes the ~1500 log I/Os of the firmware
+ * transfer, whose overhead otherwise slows bootup enough to trip the daemon's
+ * own bootup timeout before it reaches the demod init (§5.5).  FAPex I2C
+ * (the demod register writes we actually want) is unaffected and still logged. */
+static int h57_quiet(void)
+{
+	static int cached = -1;
+
+	if (cached < 0) {
+		int fd = (int)tr_syscall(SYS_open, (long)"/tmp/fapex-h57-quiet",
 					 0 /*O_RDONLY*/, 0, 0, 0, 0);
 		if (fd >= 0) {
 			tr_syscall(SYS_close, fd, 0, 0, 0, 0, 0);
@@ -359,24 +389,50 @@ int ioctl(int fd, unsigned long cmd, ...)
 			if ((dir & IOC_WRITE) && arg && size)
 				put_bytes(&l, "in", arg, size);
 			r = tr_syscall(SYS_ioctl, fd, cmd, (long)arg, 0, 0, 0);
-			if (r == -71 && retry_enabled()) {
+			if ((r == -71 || r == -19) && retry_enabled()) {
 				int tries = 0;
+				int rebinds = 0;
 
-				while (r == -71 && tries < 30) {
+				while ((r == -71 || r == -19) && tries < 40) {
 					msleep(300);
+					if (r == -19 && fd >= 0 && fd < MAX_FD &&
+					    fd_path[fd][0]) {
+						/* device re-enumerated: rebind
+						 * the stale fd to the current
+						 * node (open + dup2). */
+						int nfd = (int)tr_syscall(
+							SYS_open,
+							(long)fd_path[fd],
+							O_RDWR | O_LARGEFILE,
+							0, 0, 0, 0);
+						if (nfd >= 0) {
+							if (nfd != fd) {
+								tr_syscall(SYS_dup2,
+									nfd, fd,
+									0, 0, 0, 0);
+								tr_syscall(SYS_close,
+									nfd, 0, 0,
+									0, 0, 0);
+							}
+							rebinds++;
+						}
+					}
 					r = tr_syscall(SYS_ioctl, fd, cmd,
 						       (long)arg, 0, 0, 0);
 					tries++;
 				}
 				put(&l, " [retried ");
 				put_dec(&l, tries);
+				put(&l, " rebind ");
+				put_dec(&l, rebinds);
 				put(&l, "]");
 			}
 			if (r >= 0 && (dir & IOC_READ) && arg && size)
 				put_bytes(&l, "out", arg, size);
 			put(&l, " = ");
 			put_dec(&l, r < 0 ? r : (long)(int)r);
-			emit(&l);
+			if (!h57_quiet())
+				emit(&l);
 			return set_errno(r);
 		}
 		return set_errno(tr_syscall(SYS_ioctl, fd, cmd, (long)arg,
