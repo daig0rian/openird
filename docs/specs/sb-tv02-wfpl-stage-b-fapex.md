@@ -198,6 +198,56 @@ full daemon はチューナ電源(§5)まで進めば H58 を上げるはずだ�
   代替 (b): NVRAM(mtd3/4) を read-only で与えて daemon を正規パスに乗せる案は、上記の
   USB 相性クラッシュには効かない見込み（クラッシュは network/NVRAM でなく USB/tuner 初期化）。
 
+## 5.2 電源/リセット GPIO マップ（GPL board コード由来・方式 C の設計図）
+
+方式 (c) の phase 1。GPL の FAPexK `config/boards/mb86h61_pdkv1/mb86h61_pdkv1_gpio.c`
+（板 Model=`PIX-WLANTUNER`＝我々の板）の `BOARD_FMC_H61PDKV1_GpioConfig[]` に、板の
+電源・リセット GPIO が**日本語コメント付き**で全部ある（shift_jis）。VBUS はシフト
+レジスタ・ラッチではなく（PIX-WLANTUNER では daemon の `CtrlUsbPhy` は no-op）、
+**直接 GPIO** で制御される。
+
+**重要**: `mb86h61_pdkv1_gpio.c` の GPIO テーブルは PCB 変種を `#if` で切り替える
+（`PCB_DT270` / `PCB_POE_BA300W_SB1` / `PCB_POE_BA300W_SB1_SR1` / `#else`）。我々の
+SB-TV02-WFPL（Wi-Fi＋Dione＋USB ハブ＋Ether、地デジ単）は **`PCB_POE_BA300W_SB1` 系の
+マップと最も一致**する（`#else` は smart-card/SDIO の汎用 devkit で不一致）。ただし
+Pixela が SB-TV02-WFPL 用にどの `#define` でコンパイルしたかは**未確定**＝実装前に
+実機で 1 本ずつ確かめる（下記 phase 2）。
+
+`PCB_POE_BA300W_SB1` マップの USB/Dione 関連（`FAPI_GPIO_OUT_1`=出力 High）:
+
+| GPIO | 初期値 | 意味（コメント訳） |
+|---|---|---|
+| 5  | H | チューナ 3.3V（I2C1 が XC5200 に引かれるため H） |
+| 36 | H | USB ハブ リセット解除 |
+| 66 | H | イーサネット PHY リセット解除 |
+| **72** | **H** | **USB ハイサイドスイッチ イネーブル**（USB 電源） |
+| 74 | L | **DIONE リセット（L=リセット保持）** |
+| 75 | H | DIONE FW 書き込みイネーブル |
+| 77 | L | **DIONE 1.2V（初期 OFF）** |
+| 78 | L | **DIONE 1.8V（初期 OFF）** |
+| 81 | L | **DIONE 3.3V（初期 OFF）** |
+| 48/49 | L | 復調器 1.2V / 3.3V（初期 OFF） |
+| 7/8/11 | L | 衛星チューナ/復調器/地デジチューナ リセット（L=保持。地デジは 8/11） |
+
+∴ **板初期化の時点では Dione 電源(77/78/81)は OFF・Dione リセット(74)は保持**。USB
+ハブ(36)とハイサイドスイッチ(72)は ON なので、USB バス自体は生きる（実測で bus1 WiFi・
+bus2 GenesysLogic ハブが列挙されたのと整合）。**H58 が現れないのは Dione の電源(77/78/81)
+が OFF＋リセット(74)保持だから**。daemon の `WirelessDtvPower`（proprietary・GPL 非収録）
+が後から 77/78/81→H、74→H（リセット解除）を順に行う＝ここは GPL に無いので順序・待ちは
+**GPIO の意味から素直に推定**する（電源3系統 ON → 数 ms 待ち → リセット解除）。
+
+**phase 2（実装・未着手）**: 上記 GPIO を自前で叩いて H58 を電源投入する。
+- カーネルは **gpiolib/sysfs 非搭載**（`/sys/class/gpio` 無し、`CONFIG_GPIO_SYSFS` 無し）。
+  → 叩く手段は (i) **FAPex GPIO chardev**（`GPIO_OPEN{pin,function=OUT}`＋`GPIO_WRITEBIT`。
+  daemon が実際に使う経路。fapex-trace で確認済みだが GPIO_OPEN の function 符号化＝
+  `FAPI_GPIO_OUT_1` の値と GPIO fapi minor の確定が要る）、または (ii) **/dev/mem＋GPL の
+  GPIO レジスタマップ**（`arch/arm/mach-mb86hxx` / `reg_gpio.h`。vendor モジュール不要で
+  最もクリーン）。
+- 手順: FAPex GPIO を使うなら fapi_sys/core/cfdl/fdlgpio を load（USB/tuner に触れないので
+  §5.1 のクラッシュは避けられる見込み）→ 72/36/5 確認 → 77/78/81→H → 74→H → H58 列挙を
+  dmesg で確認 → h57fmb bind → `/dev/h57fmb0` を mknod → 選局 I2C 観察（fapex-trace）。
+- **1 本ずつ実機で確かめる**（板変種未確定のため。誤った pin を叩かない）。
+
 ## 6. 段階 C（クリーン実装）への含意
 
 - OpenIRD が満たすべき chardev 契約は **px4_drv 互換**（CLAUDE.md §4）。FAPex の
