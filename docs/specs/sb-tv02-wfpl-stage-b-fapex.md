@@ -476,6 +476,33 @@ GPL の `MB86A22_FC2581_Detect`（`mb86a22.c`）の検出順が決定的:
   確定＝あとは init レジスタ列の観察（§5.4 (b)/(c)）へ。非 ACK なら上の reset/レール/バス/タイミング
   を順に当たる。
 
+### 実機検証（2026-09-18、§5.5 のテスト実施）
+自前の clean な I2C ツール `tools/fapex-i2c`（FAPex I2C chardev の GPL ABI を叩く。OPEN=`0x4018FF60`・
+READ=`0x8014FF62`・WRITE=`0x4014FF62`、`read/write/scan`。非 ACK でハングしないよう OpenParam の
+`timeOut` を設定）を作り、実機で検証した。手順: `fapi_sys/fapi_core/fapex_cfdl/fapex_fdlgpio/
+fapex_fdli2c` を insmod（**`fdlclkpwr` は載せない**）→ `fapex-gpio` で FE 電源を GPIO 投入
+（`5/72/36 + 77/78/81 + 48/49` ON、`74/7/8/11` reset 解除）→ `fapex-i2c` で demod を read/scan。
+
+**結果（重要）**:
+- **CLKPWR/クロックは無関係が実証された**: `fdlclkpwr` を一切載せずに I2C は正常動作し、
+  **block2（I2C2）で実デバイス 2 個（slave `0x72`/`0x73`, reg0=`0x01`）を検出**＝ツールと ABI は
+  正しく、I2C コントローラのクロックも生きている（§5.5 の分析を実機が裏付け）。
+- **復調器 `0x20` は I2C block0/block1 のどこにも ACK しない**（フル FE 電源 GPIO 投入下でも）。
+  block0/block1 のスキャン（0x03..0x77）は 0 デバイス。
+- **★ バス選択は OpenParam の `blockIndex` で行われ、chardev minor ではない**（`fapi174/175/176/177`
+  のどれで開いても、block2 を指定すれば `0x72`/`0x73` が出る。block0/1 はどの minor でも空）。
+  ＝§5.4 の「`fapi174`=I2C0/`fapi175`=I2C1」は正しくは「daemon が **OpenParam.blockIndex** で
+  I2C0/I2C1 を選んでいる」。minor はハンドルにすぎない。
+- 実機に **kernel oops なし**（`fdlclkpwr` を載せないので §5.4 壁2 のクラッシュも当然起きない）。
+
+**解釈と次**: GPIO 電源だけでは前段バス（I2C0/block0）が電気的に立たない＝復調器が現れない。
+§5.4 で daemon の demod write がハングしたのも整合（demod がそもそも応答していない）。∴ 復調器の
+活性化レバーは GPIO 電源ではなく、**Dione の完全起動（FW ロード＋`"Dione: Tuner Power ON"`）で
+前段モジュール（復調器＋チューナ）の電源/クロックがゲート**されている公算が最も高い。
+- **次テスト**: USB スタック＋Dione FW を上げて（§5.3 の bring-up＋daemon か自前 FMB）から
+  block0 を再スキャン。demod `0x20`（reg0=`0x23`）が現れれば「Dione がゲート」を確定。
+- `0x72`/`0x73`（I2C2, reg0=`0x01`）の同定も別途（HDMI DDC/内部バス等の候補）。
+
 ## 6. 段階 C（クリーン実装）への含意
 
 - OpenIRD が満たすべき chardev 契約は **px4_drv 互換**（CLAUDE.md §4）。FAPex の

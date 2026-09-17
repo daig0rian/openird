@@ -63,3 +63,5 @@ dl/firmware-input/
 
 # fapex-gpio build artifact (source-only in repo)
 tools/fapex-gpio/fapex-gpio
+# fapex-i2c build artifact (source-only in repo)
+tools/fapex-i2c/fapex-i2c
