@@ -14,7 +14,15 @@
 - type=`0xFF`（FAPex）の ioctl すべて。`_IOC_WRITE` は呼び出し前の入力、
   `_IOC_READ` は呼び出し後の出力を、引数のバイト列ごと。
 - I2C read/write（nr=0x62）は、引数構造体が指す送信・受信バッファの中身も。
+  write は非 ACK slave でハングし得るので、**呼び出し前に入力側を `[pre-call]` 行で先出し**する
+  （ハングしても復調器 init のレジスタ列が残る）。
+- **h57fmb0（Dione の USB char dev, type=`0xae`）の ioctl も黒箱ログ**（h57fmb は GPL 非収録＝
+  proprietary。struct 未知なので `_IOC_SIZE` 分をダンプ）。ファーム転送・GET_INFO/GET_FACTOR 等。
 - `/dev/*` の mmap（`/dev/mem` 経由のレジスタ窓など）。
+
+**bring-up シム（既定 off・観察専用ではない）**: `/tmp/fapex-h57-retry`（対象プロセスの
+**chroot 内**）が在るとき、h57fmb0 の ioctl が `EPROTO(-71)` を返したら短い待ちを挟んで retry する。
+Dione ファームがリセット解除後に起動するまでの EPROTO を吸収するためのもの（§5.4）。
 
 1 行 = 1 回の `write()`。スレッドをまたいでも行が混ざらない。ログは
 `/tmp/fapex-trace.log`（プロセスの chroot 内）。

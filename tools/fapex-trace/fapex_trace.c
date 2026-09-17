@@ -30,6 +30,7 @@
 #define SYS_mmap2		192
 #define SYS_gettid		224
 #define SYS_clock_gettime	263
+#define SYS_nanosleep		162
 
 #define O_WRONLY	01
 #define O_CREAT		0100
@@ -192,6 +193,24 @@ static int is_dev(const char *p)
 	       && p[4] == '/';
 }
 
+/* Is this fd the Dione USB char dev (/dev/h57fmb*)?  Its ioctls tunnel the
+ * tuner/demod I2C over USB; the driver is proprietary (no GPL), so we can only
+ * log them black-box (§5.3). */
+static int is_h57(int fd)
+{
+	const char *p;
+	int i;
+
+	if (fd < 0 || fd >= MAX_FD)
+		return 0;
+	p = fd_path[fd];
+	for (i = 0; i < PATH_LEN - 6 && p[i]; i++)
+		if (p[i] == 'h' && p[i + 1] == '5' && p[i + 2] == '7' &&
+		    p[i + 3] == 'f' && p[i + 4] == 'm' && p[i + 5] == 'b')
+			return 1;
+	return 0;
+}
+
 static void remember_fd(int fd, const char *path)
 {
 	int i = 0;
@@ -214,6 +233,38 @@ static void remember_fd(int fd, const char *path)
 		put_dec(&l, fd);
 		emit(&l);
 	}
+}
+
+static void msleep(long ms)
+{
+	long ts[2];
+
+	ts[0] = ms / 1000;
+	ts[1] = (ms % 1000) * 1000000L;
+	tr_syscall(SYS_nanosleep, (long)ts, 0, 0, 0, 0, 0);
+}
+
+/* Optional bring-up shim (not observation): when /tmp/fapex-h57-retry exists,
+ * retry a Dione (h57fmb0) ioctl that fails with EPROTO.  Our USB path enumerates
+ * fine but the vendor daemon queries the Dione ~10 ms after releasing its reset,
+ * before the Dione firmware has booted, so the first FMB command returns EPROTO
+ * (-71).  Retrying with a short delay lets the firmware come up.  Default off, so
+ * the tracer stays a pure observer unless the flag file is present. */
+static int retry_enabled(void)
+{
+	static int cached = -1;
+
+	if (cached < 0) {
+		int fd = (int)tr_syscall(SYS_open, (long)"/tmp/fapex-h57-retry",
+					 0 /*O_RDONLY*/, 0, 0, 0, 0);
+		if (fd >= 0) {
+			tr_syscall(SYS_close, fd, 0, 0, 0, 0, 0);
+			cached = 1;
+		} else {
+			cached = 0;
+		}
+	}
+	return cached;
 }
 
 /* --- interposed libc entry points --------------------------------------- */
@@ -288,9 +339,49 @@ int ioctl(int fd, unsigned long cmd, ...)
 	arg = va_arg(ap, void *);
 	va_end(ap);
 
-	if (type != FAPEX_TYPE)
+	if (type != FAPEX_TYPE) {
+		/* Dione (h57fmb0): black-box log the proprietary USB-tunnel ioctls
+		 * (tuner/demod I2C rides here, §5.3).  We don't know the struct
+		 * layout, so dump the top-level arg by _IOC_SIZE, both sides. */
+		if (is_h57(fd)) {
+			stamp(&l);
+			put(&l, "ioctl ");
+			put(&l, fd_name(fd));
+			put(&l, " type=0x");
+			put_hex(&l, type, 2);
+			put(&l, " nr=0x");
+			put_hex(&l, nr, 2);
+			put(&l, " dir=");
+			put(&l, dir == IOC_WRITE ? "W" : dir == IOC_READ ? "R" :
+				dir == (IOC_READ | IOC_WRITE) ? "RW" : "-");
+			put(&l, " size=");
+			put_dec(&l, size);
+			if ((dir & IOC_WRITE) && arg && size)
+				put_bytes(&l, "in", arg, size);
+			r = tr_syscall(SYS_ioctl, fd, cmd, (long)arg, 0, 0, 0);
+			if (r == -71 && retry_enabled()) {
+				int tries = 0;
+
+				while (r == -71 && tries < 30) {
+					msleep(300);
+					r = tr_syscall(SYS_ioctl, fd, cmd,
+						       (long)arg, 0, 0, 0);
+					tries++;
+				}
+				put(&l, " [retried ");
+				put_dec(&l, tries);
+				put(&l, "]");
+			}
+			if (r >= 0 && (dir & IOC_READ) && arg && size)
+				put_bytes(&l, "out", arg, size);
+			put(&l, " = ");
+			put_dec(&l, r < 0 ? r : (long)(int)r);
+			emit(&l);
+			return set_errno(r);
+		}
 		return set_errno(tr_syscall(SYS_ioctl, fd, cmd, (long)arg,
 					    0, 0, 0));
+	}
 
 	stamp(&l);
 	put(&l, "ioctl ");
@@ -317,6 +408,20 @@ int ioctl(int fd, unsigned long cmd, ...)
 		put(&l, " i2c_slave=0x");
 		put_hex(&l, slave, 2);
 		put_bytes(&l, "tx", *txp, clamp(txlen));
+	}
+
+	/* I2C writes can block forever on a slave that never ACKs (e.g. a demod
+	 * held in reset / without its clock).  Emit the input side now so the
+	 * register bytes are captured even if the call never returns. */
+	if (nr == FAPEX_I2C_RW && (dir & IOC_WRITE) && arg) {
+		put(&l, " [pre-call]");
+		emit(&l);
+		l.n = 0;
+		stamp(&l);
+		put(&l, "ioctl ");
+		put(&l, fd_name(fd));
+		put(&l, " nr=0x");
+		put_hex(&l, nr, 2);
 	}
 
 	r = tr_syscall(SYS_ioctl, fd, cmd, (long)arg, 0, 0, 0);

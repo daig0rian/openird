@@ -107,11 +107,11 @@ _IOW(0xFF, 0x62, FAPEX_I2C_RWParamStrT)    I2C_WRITE
   （raw syscall ＋ `__errno_location` のみ）なので uClibc ツールチェーン不要、
   カーネルと同じ ARM クロス gcc で作る。`scripts/build-fapex-trace.sh`。
   GPIO の復号が GPL 仕様どおりであることを実機で確認済み（§2 の表）。
-- **注（§5.3）**: 上の「復調/地デジチューナへの I2C は FAPex I2C（`RWParam`, fapi 0x60）」という
-  想定は、**Dione(H58) 内蔵のチューナ/復調には当てはまらない見込み**。それらの I2C は SoC の
-  I2C ではなく **h57fmb0 の ioctl（USB トンネル `fmb_hw_usb_ep_control_i2c`）**を通る（§5.3）。
-  トレーサは FAPex 0xFF に加え **h57fmb0 の ioctl も拾う**必要がある。どちらに実バイト列が出るかは
-  次フェーズ（FW ロード後の選局）で確定する。
+- **注（§5.4 で確定）**: 復調器/チューナの**制御 I2C は FAPex I2C（`RWParam`, fapi `0x60`）で
+  正しい**（当初の想定どおり）。実測で demod は **I2C ch0・slave `0x20`**（`fe_i2c.c`）。h57fmb0
+  の USB トンネル（`fmb_hw_usb_ep_control_i2c`）は **Dione のファーム転送・TS 面**であって復調器
+  レジスタ I2C ではない。トレーサは FAPex 0xFF の I2C 復号（既存）で demod bytes を拾える。h57fmb0
+  の ioctl も拾えるよう拡張済み（ファーム転送の観察用）。詳細は §5.4。
 
 ## 5. 実機での観察手順（再現用）
 
@@ -326,9 +326,59 @@ bus2 GenesysLogic ハブが列挙されたのと整合）。**H58 が現れな�
 - 現状 daemon の `bootup()` は `FMB_API_GET_FACTOR err=-1 errno=71(EPROTO)` で失敗。原因は
   (a) FW 未ロードの cold 状態、(b) daemon 自身の `WirelessDtvPower` が再度 74 を叩いて Dione を
   再列挙（`USB disconnect address3 → new address4`）させ、open 済み h57fmb0 fd が stale 化。
-- **選局のトリガ**は Factory Port の passcommand 方針だが passcommand 未回収＝別途。Dione 内部の
-  チューナ/復調 I2C は SoC の I2C（fapi 0x60）ではなく **USB トンネル（h57fmb0 の ioctl＝
-  `fmb_hw_usb_ep_control_i2c`）**を通る。観察は h57fmb0 の ioctl を fapex-trace で拾う。
+- **選局のトリガ**は Factory Port の passcommand 方針だが passcommand 未回収＝別途。
+- **↑ この節の想定は §5.4 で更新**: 復調器の制御 I2C は h57fmb0 トンネルではなく **SoC の
+  FAPex I2C（fapi 0x60・slave 0x20）**経由と実測で判明。h57fmb0 は Dione ファーム転送・TS 面。
+  bootup 失敗の主因も (a)/(b) に加え「GET_FACTOR をリセット解除の ~10ms 後に発行＝ファーム
+  未起動」であることが分かった。詳細は §5.4。
+
+## 5.4 phase 2 続き（2026-09-18 実機）— Dione bootup とチューナ init I2C の観察
+
+§5.3 で H58 を上げた後、ベンダ daemon を fapex-trace 下で走らせて **Dione の bootup と
+チューナ初期化の構造**まで観察した。要点と、§5.3 で誤っていた I2C 経路の訂正。
+
+**fapex-trace の拡張**（すべて自前・観察用、`tools/fapex-trace`）:
+- **h57fmb0 の ioctl を黒箱ログ**（h57fmb は GPL 非収録＝proprietary。type/nr/dir/size と
+  arg を `_IOC_SIZE` 分ダンプ）。
+- **EPROTO retry シム**（既定 off、`/tmp/fapex-h57-retry` が **chroot 内**に在るとき有効。
+  Dione ファーム起動待ちの EPROTO を吸収）。
+- **FAPex I2C write を syscall 前に pre-log**（write は非 ACK slave でハングし得るので、
+  ハングしても register bytes が残るよう `[pre-call]` 行を先に出す）。
+
+**FMB ioctl（h57fmb0, type=`0xae`）**:
+- `nr=0x08` GET_INFO（12B read）= `b8 06 / 2d 10 / 03`（VID 0x06b8, PID 0x102d, index 3）。
+- `nr=0x11` GET_FACTOR（20B read）。**Dione ファームがリセット解除後に起動するまで EPROTO(-71)**。
+  daemon は 74→1 の **~10ms 後**に問い合わせるので、device が安定していないと失敗する。
+- bootup 成功時、**h57fmb0 の ioctl 約 1500 回で Dione ファームを流す**（slot 内
+  `mb86h57_h58_aac_{idle,trc}.bin`）。
+
+**I2C バス対応（実測）**: **`fapi174` = SoC I2C0、`fapi175` = SoC I2C1**。I2C_OPEN（`nr=0x60`,
+24B）の OpenParam = blockIndex, speed(1=100k), …, timeout=0x1f4(500)。
+
+**★ §5.3 の I2C 経路想定を訂正**: 復調器/チューナの制御 I2C は **h57fmb0 の USB トンネルでは
+なく、SoC の FAPex I2C（`fe_i2c.c` → fapi `0x60`）経由**だった。daemon の `TunerInitialize`
+→ `demod_WriteSomeRegs` が **I2C ch0・slave `0x20`・subaddr 0x01**（＝復調器レジスタ）へ書く。
+＝fapex-trace の既存 I2C 復号（RWParam の tx/rx 追跡）でそのまま実バイトが取れる口。h57fmb0 は
+Dione のファーム/TS 面、復調器レジスタは SoC I2C、と役割が分かれている。
+
+**チューナ初期化の構造（観察）**: FW load（h57fmb0）→ I2C0/1 open（fapi174/175）→ GPIO で
+reset 解除（pin 8=復調器, 7=衛星, 11=地デジ）→ 復調器へ I2C 書き込み（slave 0x20）。
+
+**未解決の壁（次フェーズ）**:
+1. **demod への I2C write がハング**（slave 0x20 が ACK しない）。復調器のクロック不足の疑い。
+2. **`fapex_fdlclkpwr` を load すると daemon が `BoardControl_setLed(CLKPWR)` でクラッシュ**
+   （§5.1 の不安定性）。→ 「復調器クロックに CLKPWR が要る」対「CLKPWR でクラッシュ」のジレンマ。
+   `fdli2c` だけなら daemon は TunerInitialize まで進む（が demod が応答しない）。
+3. **daemon の bootup が run 毎に不安定**: USB 再列挙のタイミングと DrvOpen の競合で、
+   daemon が過渡状態の h57fmb0 を open→ **stale fd**（retry シムは「接続中で未起動」には効くが
+   stale fd には無効）。hotplug 連動 node（`/tmp/hotplug.sh` を `/proc/sys/kernel/hotplug`）と
+   retry で緩和するが、なお flaky。
+- 診断ツール: `h57probe`（scratchpad、任意の type/nr/size/dir の ioctl を叩く）。安定した Dione
+  では GET_INFO/GET_FACTOR とも成功する＝USB スタック自体は健全、を確認済み。
+- **次の一手候補**: (a) 復調器クロック源を GPL/回路から特定し CLKPWR 依存なら fdlclkpwr の
+  クラッシュ回避を探す、(b) demod write の pre-log で少なくとも init レジスタ列（意図）を捕捉、
+  (c) daemon を介さず自前で FMB(type 0xae)＋FAPex I2C を叩いて init を再現（protocol は
+  observe した bytes からの再構成＝clean-room）。
 
 ## 6. 段階 C（クリーン実装）への含意
 
@@ -336,9 +386,9 @@ bus2 GenesysLogic ハブが列挙されたのと整合）。**H58 が現れな�
   `/dev/fapi/fapiNNN` はそのままでは px4_drv ではない。段階 C は、ここで観察した
   「復調・チューナへの I2C 手順」を仕様に起こし、px4_drv 互換 chardev の下に
   クリーン実装する。
-- 当面はまず **I2C の実バイト列**（§4 のトレーサ。Dione 内部は h57fmb0 の USB トンネル＝§5.3）
-  と、Dione 起動後の TS 出力口の ioctl/mmap 列を取る。生 TS が読める口まで辿れば段階 C の
-  設計に足りる観察が揃う。**TS の口が FAPex TSD（fapi 0x90）か h57fmb0 の mmap
+- 当面はまず **復調器の I2C 実バイト列**（§4 のトレーサ。**復調器は SoC FAPex I2C fapi 0x60・
+  slave 0x20**＝§5.4）と、Dione 起動後の TS 出力口の ioctl/mmap 列を取る。生 TS が読める口まで
+  辿れば段階 C の設計に足りる観察が揃う。**TS の口が FAPex TSD（fapi 0x90）か h57fmb0 の mmap
   （`fmb_hw_usb_mmap`）かは次フェーズで確定**（Dione 経由なら後者の可能性）。
 
 ## 7. 参照
