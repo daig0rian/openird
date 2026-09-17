@@ -171,17 +171,32 @@ insmod できる（`modules.dep`: `musb_hdrc` は `fapex_cfdl`/`fapi_core`/`fapi
 入れないとハブ配下（`2-1.x`）に現れない。ラッチを叩くのはベンダの board 初期化
 （`FAPI_SYS_INIT_USE_BOARDS`）＝実運用では daemon の BoardControl。
 
-**未解決＝daemon が sandbox で BoardControl 直後にハングする**: full daemon を
-fapex-trace 下で走らせても、`Thread for BoardControl created`（board_control.c:1237）
-の直後で停止し、GPIO ラッチ書き込みに到達しない（fapi199 CLKPWR init のみ）。
-- ネットワークを stub しない（ベンダの `ifconfig`/`udhcpc`/`brctl` を素通し）と、daemon が
-  eth0 をアプライアンス設定に切り替えて ssh が落ちる（AirTuner 独自 DHCP/bridge）。
-- stub する（chroot の PATH 先頭に no-op を置く）と ssh は保てるが、上記の位置で
-  ハングする＝daemon の board 初期化が stub した network 設定の結果に依存して待つ。
-→ 次の一手の候補: (a) daemon を stub せず走らせ、制御をシリアル専用にして H58 が
-  上がるまで待つ、(b) NVRAM(mtd3/4) を read-only で与えて daemon を正規パスに乗せる
-  （mtd は read-only 限定・書き込みは絶対に通さない）、(c) ラッチのシフト手順を GPL の
-  board コードから仕様化し、H58 電源投入だけを自前で行ってから daemon を動かす。
+**未解決＝USB を載せると daemon が board 初期化で間欠クラッシュ（2026-09-18）**:
+full daemon はチューナ電源(§5)まで進めば H58 を上げるはずだが、次の板挟みがある。
+- **USB モジュール未ロード**（2026-09-17 の最初の run）だと daemon は BoardControl を越えて
+  `WirelessDtvPower`＝`/dev/h57fmb0` open まで進む。しかし h57fmb 未ロード＝H58 も未電源で
+  ノードが無く、tuner 電源投入に失敗してそこで止まる。
+- **USB モジュールをロード**（H58 に必要）すると、daemon の BoardControl/tuner 初期化が
+  **タイミング競合でクラッシュ**する（`Thread for BoardControl created` 直後にプロセス消滅、
+  fapi199 CLKPWR init のみ記録）。strace のオーバーヘッドを噛ませると**時々**越えて
+  network 設定段まで進むが不安定で、越えても間もなく死ぬ。＝**ベンダの board/tuner 初期化
+  コードが自前カーネルの USB スタックと相性が悪く、間欠的に落ちる**。
+- 併発する厄介事: daemon は eth0 を予測不能に再設定する（bridge br0＝DHCP Server Mode で
+  192.168.200.1/24＋udhcpd 192.168.200.2-254、または別アドレス）。観察は
+  **実機⇄有線LAN⇄PC 直結＋PC 静的 192.168.200.100 で回避**でき、ssh は br0(192.168.200.1)へ
+  張り直せる（`~/.ssh/config` の `openird-ap`）。ただし daemon が死ぬと観察が続かない。
+- **ウォッチドッグ**: sandbox に `/dev/wdtcounter` を置かないと daemon は HW watchdog を
+  arm できず（open ENOENT）、kill してもリセットしない（当初の「kill でリセット」は
+  wdtcounter があった時の話）。
+
+→ **daemon 駆動での H58 電源投入は不安定すぎる**（2026-09-18 の結論）。推奨する次の一手:
+  **(c) VBUS ラッチ（`GPO_SFTRG_USB_CBU0/1`）のシフト手順を GPL board コード
+  （`mb86h61_dk01_gpio.c` 等）から仕様化し、H58 の電源投入だけを自前の小コードで行う。**
+  daemon のクラッシュ・network 乗っ取りを避けられ、clean-room 的にも素直。H58 が上がって
+  h57fmb が bind したら `/dev/h57fmb0` を作り、そこで初めて（必要なら）ベンダ部品を最小限
+  走らせて選局 I2C を観察する。
+  代替 (b): NVRAM(mtd3/4) を read-only で与えて daemon を正規パスに乗せる案は、上記の
+  USB 相性クラッシュには効かない見込み（クラッシュは network/NVRAM でなく USB/tuner 初期化）。
 
 ## 6. 段階 C（クリーン実装）への含意
 
