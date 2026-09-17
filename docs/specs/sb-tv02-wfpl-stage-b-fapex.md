@@ -127,8 +127,10 @@ _IOW(0xFF, 0x62, FAPEX_I2C_RWParamStrT)    I2C_WRITE
 > - **I2C**: `fapi174`=SoC I2C0、`fapi175`=SoC I2C1。**復調器の制御 I2C は SoC FAPex I2C(fapi `0x60`・
 >   I2C ch0・slave `0x20`)経由**（h57fmb0 トンネルではない）。(§5.4)
 > - **init 構造**: FW load → I2C0/1 open → GPIO で reset 解除(pin8=復調器/7=衛星/11=地デジ) → 復調器へ I2C。
-> - **現在の壁**: demod I2C write がハング（復調器が非 ACK＝クロック不足の疑い）／`fapex_fdlclkpwr`
->   load で daemon が BoardControl でクラッシュ／bootup が USB 再列挙タイミングで flaky。(§5.4)
+> - **現在の壁**: demod I2C write がハング（slave 0x20 が非 ACK）／bootup が USB 再列挙タイミングで
+>   flaky。**復調器 = MB86A22（slave 0x20、CLKPWR 非依存＝クロック無関係）と判明。`fapex_fdlclkpwr`
+>   は復調器に不要＝載せなければ BoardControl クラッシュも回避**。非 ACK 真因は reset/バス/レール/
+>   Dione 給電（§5.5 で切り分け）。(§5.4/§5.5)
 
 **前提**: OpenIRD 本番 rootfs（strace 入り）で起動、`ssh openird`。ベンダの
 `rootfs.img`(mtd6) と `slot0.img`(mtd7) は所有者のダンプ。
@@ -141,8 +143,9 @@ _IOW(0xFF, 0x62, FAPEX_I2C_RWParamStrT)    I2C_WRITE
 2. `chroot /tmp/vendor/root … insmod` を §1 の順で。GPL の modinfo どおり
    `fapi_sys → fapi_core → fapex_cfdl → fapex_fdl{tsd,i2c,gpio,clkpwr}`。
    `lsmod`・`/proc/devices` に major 244 の `fapiNNN` が出る＝chardev 契約が立つ。
-   （**現状 `fapex_fdlclkpwr` を載せると daemon が BoardControl でクラッシュする**ので、
-   Dione bring-up では `gpio`＋`i2c` のみ載せる＝§5.4。）
+   （**`fapex_fdlclkpwr` を載せると daemon が BoardControl(setLed=SET_PWM) でクラッシュする**が、
+   §5.5 で **復調器(MB86A22)は CLKPWR 非依存＝fdlclkpwr は不要**と判明したので、載せない＝
+   クラッシュ回避で問題ない。Dione bring-up では `gpio`＋`i2c` のみ載せる＝§5.4/§5.5。）
 3. `strace -f -tt -o … chroot … dione_server <引数>` で観察:
    - `-v` … 版だけ出して exit（`01.00.0003`）。ハード非依存。
    - `-s` … `fapi186`（GPIO）を OPEN→READBIT でリセット SW を読む。
@@ -379,10 +382,13 @@ Dione のファーム/TS 面、復調器レジスタは SoC I2C、と役割が�
 reset 解除（pin 8=復調器, 7=衛星, 11=地デジ）→ 復調器へ I2C 書き込み（slave 0x20）。
 
 **未解決の壁（次フェーズ）**:
-1. **demod への I2C write がハング**（slave 0x20 が ACK しない）。復調器のクロック不足の疑い。
+1. **demod への I2C write がハング**（slave 0x20 が ACK しない）。当初クロック不足を疑ったが、
+   **§5.5 の分析で復調器(MB86A22)は CLKPWR 非依存＝クロック無関係**と判明。真因は
+   reset/バス/電源レール/タイミング、または front-end の Dione 経由給電（§5.5 で切り分け）。
 2. **`fapex_fdlclkpwr` を load すると daemon が `BoardControl_setLed(CLKPWR)` でクラッシュ**
-   （§5.1 の不安定性）。→ 「復調器クロックに CLKPWR が要る」対「CLKPWR でクラッシュ」のジレンマ。
-   `fdli2c` だけなら daemon は TunerInitialize まで進む（が demod が応答しない）。
+   （§5.1 の不安定性）。→ **§5.5 でジレンマは解消**: `setLed` = SET_PWM(`0x24`) はクロック
+   START(`0x20`) とは別 ioctl で、復調器は CLKPWR 不要。∴ **`fdlclkpwr` を載せない＝クラッシュ
+   回避、復調器に影響なし**。`fdli2c` だけで daemon は TunerInitialize まで進む。
 3. **daemon の bootup が run 毎に不安定**: USB 再列挙のタイミングと DrvOpen の競合で、
    daemon が過渡状態の h57fmb0 を open→ **stale fd**（retry シムは「接続中で未起動」には効くが
    stale fd には無効）。hotplug 連動 node（`/tmp/hotplug.sh` を `/proc/sys/kernel/hotplug`）と
@@ -390,9 +396,85 @@ reset 解除（pin 8=復調器, 7=衛星, 11=地デジ）→ 復調器へ I2C �
 - 診断ツール: `h57probe`（scratchpad、任意の type/nr/size/dir の ioctl を叩く）。安定した Dione
   では GET_INFO/GET_FACTOR とも成功する＝USB スタック自体は健全、を確認済み。
 - **次の一手候補**: (a) 復調器クロック源を GPL/回路から特定し CLKPWR 依存なら fdlclkpwr の
-  クラッシュ回避を探す、(b) demod write の pre-log で少なくとも init レジスタ列（意図）を捕捉、
+  クラッシュ回避を探す **→ §5.5 で完了**（MB86A22＝CLKPWR 非依存、fdlclkpwr は不要と判明）、
+  (b) demod write の pre-log で少なくとも init レジスタ列（意図）を捕捉、
   (c) daemon を介さず自前で FMB(type 0xae)＋FAPex I2C を叩いて init を再現（protocol は
   observe した bytes からの再構成＝clean-room）。
+
+## 5.5 復調器のクロック源と fdlclkpwr クラッシュの分析（2026-09-18・GPL/回路）
+
+§5.4 の壁 1/2（「復調器が非 ACK＝クロック不足の疑い」「CLKPWR を載せるとクラッシュ」の
+ジレンマ）を、GPL ソース（FAPex U/K・カーネル board ファイル）と ioctl ABI だけから分析した。
+**ベンダバイナリの逆アセは見ていない**（clean-room の「仕様化」ステップ）。
+
+### 復調器の同定とクロック源
+- **復調器 = MB86A22**（Fujitsu ISDB-T OFDM 復調器）。GPL の板 `mb86h61_pdkv1`
+  （Model=PIX-WLANTUNER。我々の `PCB_POE_BA300W_SB1` の親戚）の FE 検出
+  `BOARD_FMC_H61PDKV1_ControlFeDetect` は **`MB86A22_Detect` を最初に試す**。
+- I2C アドレスは `MB86A22_API_defs.h` の `MB86A2x_DEV_ADR_20 = 0x20`（ADR1=0, ADR0=0）
+  ＝**観測の slave `0x20` と一致**。チューナは `mb86a22/src/{FC2581,Mxl136RF}` のいずれか。
+- MB86A22 の **PLL 参照クロックはチップ自身の水晶/参照クロック**（`MB86A2x_REFSEL` =
+  4/16/26/32MHz を選ぶ内蔵 PLL。ペアの FC2581 が `FREQ_XTAL=16MHz` なので 16MHz が濃厚）。
+  **SoC の CLKPWR ではゲートされない**。
+- FE の reset/power（pdkv1 `ControlFeResetPower`）は **GPIO のみ**（`RESET_PULSE` =
+  active 50ms → release 50ms）で、**クロック有効化を含まない**。
+
+### CLKPWR は復調器のクロック源ではない
+- CLKPWR は **SoC 内部**のクロック/電源ゲート専用。マスク（`abst_libclkpwr.h`）は
+  ARM/AUDIO/AXI/DDR2/DMA/ETH/**I2C(bit7)**/GPIO/SFLASH/SSP/**TSD(bit13)**/UART/USB/VIDEO…で、
+  **外部チップ（復調器/チューナ）の参照クロックビットは存在しない**。phys `0xCA000000` →
+  VA `0xFF60A000` に board ファイルが静的マップ（`iotable_init`）する。
+- SoC の I2C コントローラのクロック（CLKPWR bit7）は**既に稼働**（§5.3/§5.4 でバス open 済み・
+  USB 列挙済み）。
+- **∴ 復調器（MB86A22）を I2C で ACK させるのに `fapex_fdlclkpwr` は不要**。§5.4 壁 2 の
+  「復調器クロックに CLKPWR が要る」という前提が**誤り**＝ジレンマは成立しない。
+
+### fdlclkpwr クラッシュの正体（分析）
+- CLKPWR の ioctl 番号（NB_CLKPWR=`0x20`）: **START(PowerUp)=`0x20`**・STOP(PowerDown)=`0x21`・
+  GET_STATUS=`0x22`・WATCHDOG_START=`0x23`・**SET_PWM=`0x24`**・GET_PWM=`0x25`。
+- **`BoardControl_setLed` = SET_PWM(`0x24`)**（LED を PWM で駆動）＝クラッシュ箇所。
+  クロック/電源の START(`0x20`) とは**別 ioctl**。§5.4 の起動時トレース `nr=0x21 in=06 00` は
+  **STOP**（AUDIO|AUDIO_PROCESSOR の電源断）であって START ではない。
+- OUR カーネルは **`CONFIG_MB86H61_WATCHDOG` 未設定**（`.config` で確認）＝HW watchdog 不使用。
+  FDL の WATCHDOG_START ハンドラの `stop_watchdog_ext()` はこの config ではコンパイルされず、
+  watchdog リセットも起きない＝watchdog はクラッシュ原因ではない。
+- FDL（`fapex_fdlclkpwr_main.c`）はグルーのみ。実レジスタ操作 `FAPI_CLKPWR_*`（SetPwm 含む）は
+  **proprietary な fapicore（`fapi_core.ko`）側**。カーネルツリーに `drivers/media/fapex` は無い
+  ＝ソース非公開。SET_PWM は PWM レジスタ（CLKPWR VA + offset）への書き込みで、静的マップが
+  我々の board ファイルで作られていれば本来 fault しない。→ クラッシュが kernel oops か
+  userspace segfault かは**ハードで特性化が要る**（候補: PWM レジスタ配置差／daemon の setLed 戻り値
+  誤処理／fapicore の CLKPWR ctx open 不整合）。
+
+### 回避策（結論）
+- **復調器は CLKPWR に依存しないので、`fapex_fdlclkpwr` を load しない＝BoardControl_setLed を
+  通さない＝クラッシュ回避、で復調器には一切影響しない**。Dione bring-up は既に `gpio`+`i2c`
+  のみで成立（§5.3）。
+- 万一 SoC 内部クロックの明示 enable が要る場面が出たら、**CLKPWR START(`0x20`) を自前の小ツール
+  （`fapex-gpio` 相当）で直接叩き、SET_PWM(`0x24`) は絶対に呼ばない**、で分離できる。
+
+### 復調器は自前クロックで独立（検出順から確定）
+GPL の `MB86A22_FC2581_Detect`（`mb86a22.c`）の検出順が決定的:
+1. demod の I2C アドレス設定（0x20 / 0x24）
+2. `MB86A22_Reset(slot)`（HW リセット。`feResetFct`→`FE_ControlFeReset(FE_RESET_PULSE)`→board hook
+   →**GPIO reset**。pdkv1 は `GPIO_OP_FE_RES_A/B=12/26`、active-low、active50ms→release50ms）
+3. **demod のチップ ID レジスタ `0x00` を I2C read**（`0x23`=MB86A22 / `0x13`=MB86A20S）
+4. その後にチューナ（RF）アドレスを ping（0xA8…）
+
+**demod の ID read はチューナに触れる前**に成功する必要がある＝**復調器は自前の参照クロック
+（水晶）で独立して動く**。チューナ電源（"Dione: Tuner Power"）や tuner の有無は demod の ACK に
+無関係。
+
+### 真の非 ACK 原因（次に切り分ける）
+クロック・チューナ・Dione ではなく、**復調器自身の reset / 電源レール / バス / タイミング**に絞れる:
+- **reset**: 観測の pin8=復調器 reset が実際に MB86A22 の reset か、極性（active-low）・パルス長
+  （~50ms×2）・解除が正しいか（pdkv1 GPL は 12/26 なので pin は要再確認）。
+- **電源レール**: 48/49 が本当に MB86A22 の 1.2/3.3V か、他レールが要らないか。
+- **バス**: demod が I2C ch0（fapi174）か ch1（fapi175）か。
+- **タイミング/速度**: reset 解除後の settle、I2C 速度（100k）。
+- **次の実機テスト**: 復調器（48/49 電源＋reset 解除）の後、**`fdlclkpwr` 無し**で I2C `0x20` の
+  **レジスタ `0x00` read**（期待値 `0x23`）を自前の小ツールで叩く。ACK すればクロック無関係が
+  確定＝あとは init レジスタ列の観察（§5.4 (b)/(c)）へ。非 ACK なら上の reset/レール/バス/タイミング
+  を順に当たる。
 
 ## 6. 段階 C（クリーン実装）への含意
 
