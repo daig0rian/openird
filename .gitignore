@@ -60,3 +60,6 @@ temp/
 # === fwcutter: ユーザが自機から切り出した非再配布ファーム（配布・commit 禁止） ===
 *.fw
 dl/firmware-input/
+
+# fapex-gpio build artifact (source-only in repo)
+tools/fapex-gpio/fapex-gpio

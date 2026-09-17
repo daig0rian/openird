@@ -248,6 +248,52 @@ bus2 GenesysLogic ハブが列挙されたのと整合）。**H58 が現れな�
   dmesg で確認 → h57fmb bind → `/dev/h57fmb0` を mknod → 選局 I2C 観察（fapex-trace）。
 - **1 本ずつ実機で確かめる**（板変種未確定のため。誤った pin を叩かない）。
 
+## 5.3 phase 2 実施結果（2026-09-18 実機）— Dione H58 をクリーンに立ち上げ
+
+方式 (i)（FAPex GPIO chardev）で **H58 を自前カーネルにクリーンに列挙**させ、
+`h57fmb` を bind、`/dev/h57fmb0` まで到達した。ツールは `tools/fapex-gpio`
+（FAPex GPIO chardev を GPL の ABI で叩く自作 clean ツール。ベンダコード非依存）。
+
+- **ツール要点**: minor は `fapi186`（major 244）。`GPIO_OPEN=_IOW(0xFF,0x40,{u32 pin;u32 fn})
+  =0x4008FF40`、`READBIT=0x8004FF41`、`WRITEBIT=0x4004FF41`。fn: 出力 `OUT_0=0x0100`/
+  `OUT_1=0x0101`、入力 `IN_GENERIC_SW=0x01010000`。すべて GPL `abst_libgpio.h`/`abst_lib.h`。
+- **出力は board init 無しで効く（実機確認）**: `fdlgpio`（＋deps `fapi_sys/fapi_core/
+  fapex_cfdl`）だけ load すれば任意 pin を OPEN で駆動できる（BoardIfc_Register は不要）。
+  検証: pin 66（Ether PHY reset）を pulse すると `fmac3h Link DOWN`→`UP`＝出力が物理 pad に
+  効く。副産物として **pin 66 がテーブルどおり＝我々は `PCB_POE_BA300W_SB1` 変種**と確認。
+- **§5.2 の推定は不完全だった**。当初 77/78/81/74（＋41/42・75）を叩いても H58 が現れず。
+  **fapex-trace で daemon の `WirelessDtvPower` の実 GPIO シーケンスを観察**して正解を確定:
+  - 対象 pin = **77/78/81（DIONE 1.2/1.8/3.3V）＋ 48/49（復調器 1.2/3.3V）＋ 74（DIONE reset）**。
+    **41/42（USB CBU）と 75 は不使用**。＝欠けていたのは **48/49 の復調器電源**。
+  - 手順（すべて fapi186、`OPEN` は fn=`OUT_0` で開き `WRITEBIT` で値設定）:
+    OFF 相 81→0,78→0,77→0,49→0,48→0,74→0(reset assert) → ON 相 **77→1,81→1,78→1,49→1,48→1**
+    → ~50ms → **74→1(reset 解除)**。
+  - **`OPEN` の fd を close しても pad 状態は保持**される（daemon は pin ごとに open/set/close を
+    繰り返すが電源は入ったまま）。本ツールは `hold`/`seq` で fd を保持して明示的に維持する。
+- **再現コマンド**（USB は `usbcore`/`nop-usb-xceiv`/`musb_hdrc use_dma=0` を逐次 load 済み前提）:
+  ```
+  fapex-gpio /dev/fapi/fapi186 seq \
+    81:0 78:0 77:0 49:0 48:0 74:0 \
+    w:77:1 w:81:1 w:78:1 w:49:1 w:48:1 s:50 w:74:1
+  ```
+  → **H58 が内蔵ハブ配下 `2-1.4 = 06b8:102d` で列挙**（h57fmb の bind ID の一つ。もう一方は
+  `1221:201e`）→ `h57fmb` が interface bind → `/sys/class/usb/h57fmb0` の dev＝**major 180,
+  minor 248** を読んで `mknod /dev/h57fmb0` → open OK。
+- **ベンダスタックが Dione を認識**: daemon を（Dione 列挙済みの状態で）trace 下に再実行すると
+  `Dione : VendorID=0x6b8` まで到達（`/dev/h57fmb0` 経由）。以前（USB 未ロード）は h57fmb0 が
+  ENOENT で停止していた地点を越えた。§5.1 の「USB を載せると daemon がクラッシュ」は board/tuner を
+  daemon 自身に初期化させた場合の話で、**GPIO で先に Dione を上げておけば回避できる**。
+
+**次フェーズ（未了）= Dione FW ロード → フル bootup → 選局 I2C 観察**:
+- Dione FW は slot 内 `/slot/firm/mb86h57_h58_aac_{idle,trc}.bin`（＋`spirom_writer_usb_pixela_102Dh.bin`
+  ＝PID 102D）。daemon の `bootup()` がこれを Dione に流す。
+- 現状 daemon の `bootup()` は `FMB_API_GET_FACTOR err=-1 errno=71(EPROTO)` で失敗。原因は
+  (a) FW 未ロードの cold 状態、(b) daemon 自身の `WirelessDtvPower` が再度 74 を叩いて Dione を
+  再列挙（`USB disconnect address3 → new address4`）させ、open 済み h57fmb0 fd が stale 化。
+- **選局のトリガ**は Factory Port の passcommand 方針だが passcommand 未回収＝別途。Dione 内部の
+  チューナ/復調 I2C は SoC の I2C（fapi 0x60）ではなく **USB トンネル（h57fmb0 の ioctl＝
+  `fmb_hw_usb_ep_control_i2c`）**を通る。観察は h57fmb0 の ioctl を fapex-trace で拾う。
+
 ## 6. 段階 C（クリーン実装）への含意
 
 - OpenIRD が満たすべき chardev 契約は **px4_drv 互換**（CLAUDE.md §4）。FAPex の
