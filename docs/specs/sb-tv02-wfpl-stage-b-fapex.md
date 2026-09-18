@@ -450,10 +450,29 @@ TC90522 の 0xfe ゲートウェイ protocol（`tc90522_master_xfer`: tuner read
   reg00=`05`, 01=`26`, 02=`40`, 03=`00`, 08=`df`, 0a=`10`, 10=`0f`。
   **Sharp QM1D1C0042/0045 ではない**（QM1D1C004x は reg00=`0x48`/`0x68`。実機は `0x05`）。正確な型番は
   silk `D2818` のまま未確定だが、**I2C 0x60・上記署名**まで確定。
-- **地上チューナ（XC5200／XC5000 系）は 0x20 ゲートウェイの奥で未応答**（0x40〜0x67 を gateway scan
-  しても出ない）。＝地上チューナの電源/初期化が別途要る（pin5＝tuner 3.3V＋reset 解除だけでは不足。
-  daemon の地上 tuner power 手順の観察が次課題。XC5000 は FW ロードも要る）。
-- ＝**ゲートウェイ機構と `fapex-i2c xfer` は実機で動作確認済み**。段階C の tuner 検証はこの口で行える。
+- **地上チューナ（XC5200／XC5000 系）は 0x20 ゲートウェイの奥で未応答**（0x08〜0x77 を bare read も
+  XC5000 流の reg-ptr read も gateway scan しても出ない）。追加で:
+  - **ISDB-T サブモジュール自体は制御可**: `tc90522.c` の wakeup（reg `0x01`=`0x00` で ter reset 解除、
+    reg `0x03`=`0x80` で ter wakeup）を fresh `fapex-i2c` で書くと reg03 が `0x00`→`0x80` に変わる
+    （demod 0x20 は read/write とも可）。＝daemon がハングした「0x20 reg 0x01=0x00」は ter reset 解除で
+    tc90522 の wakeup 前段と整合。
+  - **それでも 0x20 ゲートウェイの奥に tuner が出ない**＝**XC5000 が未給電**。`pin5`(tuner 3.3V)＋
+    `pin11`(地上 reset、**両極性 0/1 とも試行**)＋`pin7` 解除 では地上チューナは立たない
+    （同条件で衛星チューナ 0x60 は応答する＝pin5 は衛星側を給電）。
+  - **地上チューナの電源レールは未特定**。daemon の実 GPIO トレース（ハングまで）は Dione(77/78/81/49/48/74)＋
+    reset 解除(7/8) のみで、**pin5/pin11 も地上 tuner power も含まれない**＝地上 tuner init は demod write
+    ハングの先（未観測）にある。XC5000 は FW ロードも要る。
+- ＝**ゲートウェイ機構と `fapex-i2c xfer` は実機で動作確認済み**（衛星で実証）。段階C の tuner 検証は
+  この口で行えるが、**地上パスは demod write ハングの解消（＝daemon の地上 tuner init 観察）か回路図が要る**。
+
+### 段階C 完成への鍵＝demod write ハングの解消
+今回の地上チューナ調査で、段階C 完成の鍵が明確になった:
+- **mainline `tc90522.c` の init は「非公開ゆえ不完全」**（ドライバ自身が明言）。demod の完全な init
+  （`demod_WriteSomeRegs` 相当）と**地上 tuner の電源/init 手順**は、ベンダ daemon だけが持つ。
+- その daemon は **demod への最初の I2C write（0x20 reg 0x01=0x00）で D-state ハング**（§5.5 上述。
+  fresh ハンドルなら同じ write は通るのに daemon 自身のハンドルだけハング）。∴ **このハングを解消できれば、
+  daemon が demod 全 init ＋ 地上 tuner power/init まで進み、`fapex-trace` で全列を観察できる**＝段階C の
+  仕様が一気に揃う。次フェーズの最重要ターゲット。
 
 ### クロック源
 - 復調器のクロックは CLKPWR 非依存（以下）。この結論はチップ種別に依らず成立する（TC90532 も水晶
