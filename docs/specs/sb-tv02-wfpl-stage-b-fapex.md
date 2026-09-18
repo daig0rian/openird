@@ -770,6 +770,39 @@ probe は既定 **pid=0x0000（PAT＝常時存在・非スクランブル）** �
   観察（Path D で生 TS を得る場合に必要。Path H なら不要の可能性）。
 - **LNB 電源**: `SetLNBPower` の実体（GPIO か I2C か Dione コマンドか）を観察して衛星系で ON にする。
 
+### Stage 2: daemon 完走観察（cross-process I2C 委譲、2026-09-18 実機）
+
+demod write ハングを **cross-process 委譲**（`fapex-trace` の `/tmp/fapex-i2c-deleg` シム →
+外部ヘルパ `fapex-i2cd`）で回避し、vendor daemon を board init 完了まで走らせて観察した。
+
+**委譲の実装で踏んだ 3 点（実機で判明）**:
+- **この ARM 2.6.31 は socketcall 多重化でなく直接 socket syscall を持つ**（`__NR_socket=281`, bind=282,
+  connect=283, sendto=290, recvfrom=292）。socketcall(281,args) は `sys_socket` にルートされ `EINVAL(-22)`。
+- **connect + peer 送信では届かない**。connect をやめ**明示アドレス sendto**。
+- **返信が返らない（autobind 不発）**。tracer 側ソケットを**一意 abstract アドレス（`\0i2cr`+fd）へ明示 bind**。
+- 結果: daemon の demod write（I2C0 slave `0x20`, reg`0x01`=`0x00`）を helper が代行し **rc=0**
+  （`[deleg] rc=0`, `[delegdiag] sk=27 sd=36 rv=10`）。**demod write ハング解消を実証**。
+
+**daemon は「dione server is ready to work」まで完走**（board_control→network→WirelessDtvPower→
+start_device）:
+- **Dione 列挙（2-1.4 `06b8:102d`）**＝daemon の board init（CtrlUsbPhy 等）で確実（手動 GPIO では不可、§5.3/今回）。
+  daemon 終了後も Dione は列挙維持＝block0 生存（standalone fapex-i2c で demod 駆動可）。
+- **GPIO（fapi186）**: 電源 `81/78/77/49/48` を 0→1、`74`(reset)解除、その後 `07`(衛星 reset)/`08`(復調器 reset)解除。
+- **demod reset 解除の最初の I2C**: slave `0x20` reg`0x01`=`0x00`（tc90522 の ISDB-T ter reset 解除に一致）。
+- dmesg: Dione は **post-FW 再列挙**（addr N→N+1、EPROTO/ENODEV）を一度起こす＝rebind シムが吸収。
+
+**★ Path H 確定（daemon の実 `TSD_OPEN` OpenParam から）**:
+- **TSOUT1 = TSD0（fapi000）: tsSelect=0(CH_A), iflags=1(SP_MODE1=シリアル), sync=0**。
+- **TSOUT2 = TSD1（fapi001）: tsSelect=1(CH_B), iflags=1(シリアル)**。
+- SET_PID_FILTER（fapi004/fapi036）: pid=`0x0000`, flags=`0x04`, bufferSize=`0x3ac000`(3850240), mmap リング。
+- ∴ **入力は packet-RAM でなく HW TS 入力 CH＝復調器 TS は SoC TSD に直結（Path H）**。生 TS は `fapex-ts --input A --mode serial` で読める口。段階C は Dione 非依存（起動ゲートとしては要るが TS 経路には不要）。
+
+**残り（次）**: daemon はサーバで、init 後は**制御ポートでクライアントの選局要求待ち**だが、TCP リスナが立たず
+（net stub の影響）プロセスが終了する（`netstat` に制御ポート無し）。`/dev/ttyUSB0` の **Factory Port
+（"Hello Factory Port (please input passcommand)"）** も痕跡あり。実際の選局列（demod フル init・地上
+tuner 電源・XC5000 FW・周波数）を観察するには **(a) daemon を存続させ制御ポート/Factory で選局要求を送る**、
+または **(b) Dione 起動状態のまま standalone（fapex-i2c で tc90522/xc5000 移植＋fapex-ts で TS 取得）**。
+
 ## 6. 段階 C（クリーン実装）への含意
 
 - OpenIRD が満たすべき chardev 契約は **px4_drv 互換**（CLAUDE.md §4）。FAPex の
