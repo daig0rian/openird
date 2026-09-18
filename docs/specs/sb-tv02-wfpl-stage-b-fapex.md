@@ -695,6 +695,81 @@ reg0e=`77`, reg0f=`10`。地上チューナ = Xceive `XC5200`（XC5000 系）。
   D-state ハングに注意。`fapex-i2c` は OpenParam timeout＋`busybox timeout` ラッパで回避。
 - `0x72`/`0x73`（I2C2, reg0=`0x01`）の同定は別途。
 
+## 5.6 TS データパスの同定・TSD ABI・生 TS 取り出し（2026-09-18）
+
+目標「地上・衛星それぞれで Multi2 復号**前**の生 TS を取り出す」に向けて、**TS の出口**を
+GPL ソースと vendor バイナリ `dione_server`（`grep -a` の printable strings＝挙動の観察。
+逆アセは見ていない＝clean-room の「仕様化」）から特定した。
+
+### 確定サマリ
+- **データフロー**: アンテナ → tuner(XC5200/D2818) → **demod TC90532**（生 MPEG2-TS＝スクランブル
+  済み）→ **Dione MB86H58**（トランスコーダ）→ USB → **SoC TSD** → `TsStreamer` → sink。
+- **TS source は SoC の TSD**（`dione_server`: `TsSourceTsd_create`, `FAPEX_TSD_Open/Mmap/Ioctl`,
+  `FAPEX_IOCCOM_TSD_GET_BUFFER_LEVEL`, "Overflowed in TSD"）。**sink は file か TCP**
+  （`TsSinkFile_create` / `TsSinkSocket`＝HTTP で client へ）。∴ 生 TS はファイルに落とせる。
+- **TS 出口の制御 = Dione の Transcode Mode**（`SetTranscodeMode`/`GetTranscodeMode`）。モード enum に
+  **`THROUGH`/`MPEG2_THROUGH`（素通し＝トランスコードせず生 TS を通す）**, `IDLE`, `TRANSCODE`,
+  `OFFLINE_MPEG2_TO_H264` 等。Dione FW は `aac_idle.bin`/`aac_trc.bin` の 2 種。**通常(app/LASSIE)
+  パスは H.264/AAC にトランスコードして配信**するので生 TS は出さない。**THROUGH に切れば生 TS が
+  SoC TSD に届く**。`SetScrambledPacketNotifier`（GPL `fapex_config_tsd.c`）から TSD が扱う TS は
+  **スクランブル済み**＝目標の生 TS と確定。
+- **Factory Test Mode**（観察の駆動役に最適）: `Factory_EnterFactryTestMode`（"Hello Factory Port
+  (please input passcommand)", usbtty 経由）配下に薄い直叩き原語 —
+  `Factory_SetTunerFreq`（直接選局）, `Factory_CheckTunerLock`/`_CheckTunerBER`/**`_CheckTunerTS`**,
+  `SetLNBPower`/`GetLNBPower`/`GetLNBShortState`（**BS/CS アンテナ電源**）, `TunerPowerOn/Off`,
+  `DTV_POWER_CTRL_*`, `ForceStartSignalMonitorUnlock`（ロック無しでも信号監視）。制御は Option バイト方式
+  （`[CMD-IN] Option = 0x%02x`）。
+- **BS/CS アンテナ電源 = `SetLNBPower`**（`GetLNBShortState`＝過電流検知つき）。衛星選局時に別途 ON にする。
+
+### 生 TS の 2 経路（H を優先・段階C のクリーン性を左右）
+SoC の TSD は入力を **(a) HW TS 入力 CH（`INPUT_CH_A/B/C`, serial/parallel）** と
+**(b) packet-RAM（`LINEAR_AUTO_MODE`=0x29, USB=Dione から流し込み）** の 2 系統から取れる。
+
+- **Path H（demod → SoC TSD 直結, Dione 迂回）**: 生 TS が SoC TSD の HW CH から取れるなら **Dione の
+  プロプラ FW/トランスコード非依存**で最もクリーン。段階C の理想。
+- **Path D（demod → Dione(THROUGH) → USB → TSD packet-RAM）**: vendor daemon が実際に使う経路。生 TS
+  取得に **Dione FW が必須**。
+
+**実機シルク写真（2026-09-18）による配置**: **復調器 TC90532 は SoC MB86H610 の真下に隣接**、
+**Dione MB86H58A は左端で遠い**。復調器の上辺（デジタル面）が SoC を向く。本機は「MB86H61 Reference
+Board」派生（リファレンスは demod→SoC TSD 直結が標準）。→ **Path H が有力**。ただし TS ネットは
+多層内層を通り得るので写真は確証でなく、**経験的プローブ（`fapex-ts scan`）が最終判定**。
+
+### FAPex TSD ABI（GPL `abst_lib.h`/`abst_libtsd.h`・PVR サンプル由来）
+- **minor 割当**（`abst_lib.h`）: TSD=0..131。**TSD0 common=minor0**, TSD1=1, TSD2=2, TSD3=3。
+  channel sub は 4..131（各ブロック 32 ch）＝TSD0 sub=4..35。I2C=174.. と整合（fapi174=I2C0）。
+- **ioctl**（type=0xFF, NB_TSD=0x90, NB_SUBID_TSD=0xFD）:
+  `OPEN`=_IOW(0x90,OpenParam[20]), `SET_INPUT`=_IOW(0x94,同), `SET_PID_FILTER`=_IOW(0x95,PidParam[20]),
+  `OPEN_SUBID`=_IOW(0xFD,{i32 sub_id; i32 channelNo}), `GET_BUFFER_READINFO`=_IOR(0x9C,ReadInfo[24]),
+  `SET_BUFFER_READSIZE`=_IOW(0x9A,u32), `GET_BUFFER_LEVEL`=_IOR(0x9E,u32), 共通 START/STOP/CLOSE_SUBID。
+- **構造体**: `OpenParam{u32 useStc; tsSelect; syncByteDistance; iflags; oflags}`（`InputParam` も同型）。
+  `tsSelect`: CH_A=0/CH_B=1/CH_C=2/LINEAR_AUTO=0x29。`iflags` SP mode: 直列+PS=1/並列-PS=2/並列+PS=3、
+  `|AM_SYNC=0x20 |INV_CLK=0x04`。`PidParam{u32 pid; flags; bufferSize; thH; thL}`（pid=0x1fff は無視、
+  `FLTFLAGS_RM_TS_HEADER=0x1000` を**付けない**と 188B 生パケットのまま）。
+  `ReadInfo{fillSize, readOffset, sectionOffset, sectionLength, sectionNo, bufferStatus}`。
+- **lib の id↔fd（`abst_common_priv.c`）**: 共通=open `/dev/fapi/fapiNNN`→`ioctl(TSD_OPEN)`;
+  channel=open sub ノード→`ioctl(OPEN_SUBID,{sub_id=minor,channelNo})`→`ioctl(SET_PID_FILTER)`→
+  `mmap(fd)`→`START`。
+- **読み出しモデル**: START 後 `GET_BUFFER_READINFO`→ mmap ring の `readOffset` から `fillSize` バイト
+  読む（ラップは linear 末尾でクランプ）→ `SET_BUFFER_READSIZE(consumed)` で read ポインタを進める。
+  read() 直読みも lib にある（`FAPEX_TSD_Read`→`read(fd)`）が、当面 mmap+READINFO を使う。
+
+### ツール `tools/fapex-ts`（実装・ビルド済み）
+上記 ABI だけで TSD demux 出力を読む clean な chardev 利用者。`probe`（単発）/`scan`（HW 入力
+CH_A/B/C × {serial,par,parps}(+amsync) 総当りで sync を探す＝**Path H 判定**）/`capture`（生 TS を
+ファイルへ）。`--input/--mode/--pid/--linauto/--secs/-o …`。musl static ARM（`scripts/build-fapex-ts.sh`）。
+probe は既定 **pid=0x0000（PAT＝常時存在・非スクランブル）** で TS 到来を確認。
+
+### 未解決・次
+- **Path H の実機判定**: 復調器を tune+lock（`fapex-i2c`＋mainline `tc90522.c`/`xc5000.c`）→
+  `fapex-ts scan` で locked な CH を探す。locked → demod 直結＝Path H 確定（Dione 不要の最短経路）。
+  空振り → Path D（Dione を THROUGH で上げ `--linauto` で TSD packet-RAM を読む）。
+- **whole-TS（全 PID）取得機構**: 現状 1 PID=1 channel。channel 31 の `bm_wrap`（`PvrChannelSet`）か、
+  daemon の TSD 設定（`TSD_SET_INPUT`/PID 群）を fapex-trace で観察して確定する。
+- **Transcode THROUGH の設定列**: `SetTranscodeMode(THROUGH)` が h57fmb0 のどの ioctl 列になるかを
+  観察（Path D で生 TS を得る場合に必要。Path H なら不要の可能性）。
+- **LNB 電源**: `SetLNBPower` の実体（GPIO か I2C か Dione コマンドか）を観察して衛星系で ON にする。
+
 ## 6. 段階 C（クリーン実装）への含意
 
 - OpenIRD が満たすべき chardev 契約は **px4_drv 互換**（CLAUDE.md §4）。FAPex の
@@ -702,9 +777,9 @@ reg0e=`77`, reg0f=`10`。地上チューナ = Xceive `XC5200`（XC5000 系）。
   「復調・チューナへの I2C 手順」を仕様に起こし、px4_drv 互換 chardev の下に
   クリーン実装する。
 - 当面はまず **復調器の I2C 実バイト列**（§4 のトレーサ。**復調器は SoC FAPex I2C fapi 0x60・
-  slave 0x20**＝§5.4）と、Dione 起動後の TS 出力口の ioctl/mmap 列を取る。生 TS が読める口まで
-  辿れば段階 C の設計に足りる観察が揃う。**TS の口が FAPex TSD（fapi 0x90）か h57fmb0 の mmap
-  （`fmb_hw_usb_mmap`）かは次フェーズで確定**（Dione 経由なら後者の可能性）。
+  slave 0x20**＝§5.4）と、生 TS の口（**§5.6 で SoC TSD＝fapi 0x90 と確定。読み出しは `fapex-ts`**）を
+  取る。生 TS が読める口まで辿れば段階 C の設計に足りる観察が揃う。**Path H（demod→TSD 直結）なら
+  Dione 非依存でクリーン、Path D なら Dione THROUGH が要る**＝§5.6 の scan で判定する。
 
 ## 7. 参照
 
