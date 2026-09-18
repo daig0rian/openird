@@ -68,3 +68,20 @@ scripts/build-fapex-i2c.sh [BOARD]      # BOARD default: mb86h61_softbank_sb-tv0
 ```
 Output: `tools/fapex-i2c/fapex-i2c` (static ARM/musl binary). `scp` it to the
 device and run as root (needs the FAPex `fdli2c` chardev present).
+
+## fapex-i2cd（cross-process I2C ヘルパ）
+
+`dione_server` の demod I2C write は daemon プロセス内でハングするが、**別プロセスなら通る**
+（§5.5）。`fapex-i2cd` は abstract AF_UNIX datagram ソケット `@fapex-i2cd` で待ち受け、
+`fapex-trace` の `/tmp/fapex-i2c-deleg` シムが転送してくる RW を、自プロセスで fresh ハンドルを
+開いて実行し返す（§5.6）。これで daemon が demod/tuner init を完走し、選局・TS 経路・LNB を
+`fapex-trace` で観察でき、生 TS が SoC TSD に流れれば `fapex-ts` で取得できる。
+
+```
+# 実機（daemon より先に）
+fapex-i2cd /dev/fapi/fapi174 &      # 既定ノード。blockIndex は req 内 OpenParam が選ぶ
+touch /tmp/vendor/root/tmp/fapex-i2c-deleg   # daemon の chroot 内にフラグ
+# その後 dione_server を LD_PRELOAD=fapex_trace.so で起動
+```
+
+ABI は `fapex-i2c` と同一（`I2C_OPEN`/`I2C_READ`/`I2C_WRITE`）。ベンダコード非依存。

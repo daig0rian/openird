@@ -15,7 +15,7 @@ done
 [ -n "$CROSS" ] || { echo "x Buildroot toolchain missing; run make BOARD=$BOARD first"; exit 1; }
 
 make -C "$ROOT/tools/fapex-i2c" clean
-make -C "$ROOT/tools/fapex-i2c" CROSS="$CROSS"
+make -C "$ROOT/tools/fapex-i2c" CROSS="$CROSS" all
 
 bin="$ROOT/tools/fapex-i2c/fapex-i2c"
 echo

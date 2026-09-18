@@ -33,6 +33,7 @@
 #define SYS_clock_gettime	263
 #define SYS_nanosleep		162
 #define SYS_dup2		63
+#define SYS_socketcall		281
 
 #define O_WRONLY	01
 #define O_RDWR		02
@@ -360,6 +361,114 @@ static long settle_ms(void)
 	return cached;
 }
 
+/* Bring-up shim (not observation): CROSS-PROCESS I2C delegation.  The demod
+ * write hang is daemon-process-specific -- a FRESH handle in the daemon's own
+ * process still hangs (in-process proxy above), but the identical transfer in a
+ * SEPARATE process ACKs (§5.5).  So when /tmp/fapex-i2c-deleg exists we forward
+ * each FAPex I2C read/write to an external helper (fapex-i2cd) over an abstract
+ * AF_UNIX datagram socket "\0fapex-i2cd" (netns-scoped, so it crosses the
+ * chroot), and copy the reply's rx bytes back into the daemon's buffer.  The
+ * helper owns the I2C handle in its own process, so nothing hangs and the daemon
+ * proceeds through demod + tuner init for us to observe. */
+#define SYS_SOCKET   1
+#define SYS_CONNECT  3
+#define SYS_SEND     9
+#define SYS_RECV     10
+#define AF_UNIX      1
+#define SOCK_DGRAM   2
+#define DELEG_FAIL   (-1000000L)
+
+static long sockcall(long call, long a0, long a1, long a2, long a3)
+{
+	unsigned long a[6];
+	a[0] = a0; a[1] = a1; a[2] = a2; a[3] = a3; a[4] = 0; a[5] = 0;
+	return tr_syscall(SYS_socketcall, call, (long)a, 0, 0, 0, 0);
+}
+
+static int deleg_enabled(void)
+{
+	static int cached = -1;
+
+	if (cached < 0) {
+		int fd = (int)tr_syscall(SYS_open, (long)"/tmp/fapex-i2c-deleg",
+					 0 /*O_RDONLY*/, 0, 0, 0, 0);
+		if (fd >= 0) {
+			tr_syscall(SYS_close, fd, 0, 0, 0, 0, 0);
+			cached = 1;
+		} else {
+			cached = 0;
+		}
+	}
+	return cached;
+}
+
+/* Forward one FAPex I2C RW to the helper.  arg is the daemon's RWParam (20 B,
+ * ARM EABI): u8 slave; pad; u8* tx@4; u32 txlen@8; u8* rx@12; u32 rxlen@16.
+ * cmd's dir bits say read vs write.  Returns the helper's status (>=0 ok, rx
+ * copied back for reads) or DELEG_FAIL if the channel could not be set up. */
+static long delegate_i2c(int fd, unsigned long cmd, void *arg)
+{
+	unsigned char *a = arg;
+	unsigned dir = (cmd >> 30) & 3;
+	unsigned char slave = a[0];
+	unsigned char *txp = *(unsigned char **)(a + 4);
+	unsigned int txlen = *(unsigned int *)(a + 8);
+	unsigned char *rxp = *(unsigned char **)(a + 12);
+	unsigned int rxlen = *(unsigned int *)(a + 16);
+	unsigned char req[300], rep[300];
+	char addr[24];
+	int i, s, addrlen;
+	long rc, status;
+	unsigned int rl;
+
+	if (txlen > 256) txlen = 256;
+	if (rxlen > 256) rxlen = 256;
+
+	req[0] = 'I'; req[1] = '2'; req[2] = 'C'; req[3] = 'Q';
+	for (i = 0; i < 24; i++) req[4 + i] = i2c_op[fd][i];
+	req[28] = (dir & IOC_WRITE) ? 'W' : 'R';
+	req[29] = slave;
+	req[30] = txlen & 0xff; req[31] = (txlen >> 8) & 0xff;
+	req[32] = rxlen & 0xff; req[33] = (rxlen >> 8) & 0xff;
+	for (i = 0; i < (int)txlen; i++) req[34 + i] = txp ? txp[i] : 0;
+
+	/* abstract sockaddr_un: family(2) + '\0' + "fapex-i2cd" */
+	addr[0] = AF_UNIX; addr[1] = 0; addr[2] = 0;
+	{
+		const char *nm = "fapex-i2cd";
+		for (i = 0; nm[i]; i++)
+			addr[3 + i] = nm[i];
+		addrlen = 2 + 1 + 10;
+	}
+
+	s = (int)sockcall(SYS_SOCKET, AF_UNIX, SOCK_DGRAM, 0, 0);
+	if (s < 0)
+		return DELEG_FAIL;
+	if (sockcall(SYS_CONNECT, s, (long)addr, addrlen, 0) < 0) {
+		tr_syscall(SYS_close, s, 0, 0, 0, 0, 0);
+		return DELEG_FAIL;
+	}
+	if (sockcall(SYS_SEND, s, (long)req, 34 + txlen, 0) < 0) {
+		tr_syscall(SYS_close, s, 0, 0, 0, 0, 0);
+		return DELEG_FAIL;
+	}
+	rc = sockcall(SYS_RECV, s, (long)rep, sizeof rep, 0);
+	tr_syscall(SYS_close, s, 0, 0, 0, 0, 0);
+	if (rc < 10 || rep[0] != 'I' || rep[1] != '2' || rep[2] != 'C' ||
+	    rep[3] != 'R')
+		return DELEG_FAIL;
+
+	status = (long)(int)((unsigned)rep[4] | ((unsigned)rep[5] << 8) |
+			     ((unsigned)rep[6] << 16) | ((unsigned)rep[7] << 24));
+	rl = rep[8] | (rep[9] << 8);
+	if (rl > rxlen)
+		rl = rxlen;
+	if ((dir & IOC_READ) && rxp)
+		for (i = 0; i < (int)rl; i++)
+			rxp[i] = rep[10 + i];
+	return status;
+}
+
 /* --- interposed libc entry points --------------------------------------- */
 
 int open(const char *path, int flags, ...)
@@ -596,6 +705,26 @@ int ioctl(int fd, unsigned long cmd, ...)
 		put(&d, " path=");
 		put(&d, (fd >= 0 && fd < MAX_FD && fd_path[fd][0]) ? fd_path[fd] : "?");
 		emit(&d);
+	}
+
+	/* Cross-process delegation (preferred): forward the RW to the external
+	 * helper so it runs in a separate process and does not hang (§5.5). */
+	if (nr == FAPEX_I2C_RW && deleg_enabled() && arg && fd >= 0 &&
+	    fd < MAX_FD && i2c_op_set[fd]) {
+		long dr = delegate_i2c(fd, cmd, arg);
+		struct line d; d.n = 0;
+		stamp(&d);
+		put(&d, "[deleg] fd=");
+		put_dec(&d, fd);
+		put(&d, " rc=");
+		put_dec(&d, dr);
+		emit(&d);
+		if (dr != DELEG_FAIL) {
+			r = dr;
+			put(&l, " [deleg]");
+			goto after_call;
+		}
+		/* channel down: fall through to the normal (possibly hanging) call */
 	}
 
 	/* Proxy shim: run an I2C RW on a fresh handle (open + re-apply OpenParam)

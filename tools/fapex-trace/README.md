@@ -37,6 +37,11 @@
   `[proxy]` を出す）。**結論（§5.5）**: これでも demod write はハングする＝**ハングは fd 固有でなく
   「daemon プロセス固有」**（別プロセスの fresh ハンドルなら通るのに、daemon プロセス内では fresh でも
   ハング）。in-process では解けず cross-process 委譲が要る、と判明させた診断用シム。
+- `/tmp/fapex-i2c-deleg`: **cross-process I2C 委譲（§5.6）**。FAPex I2C RW を、in-process でなく **別プロセスの
+  ヘルパ `fapex-i2cd`** へ abstract AF_UNIX datagram ソケット `@fapex-i2cd`（netns スコープ＝chroot を跨ぐ）で
+  転送し、reply の rx を daemon のバッファに書き戻す。ヘルパは自プロセスで fresh ハンドルを開くのでハングしない
+  ＝daemon が demod／tuner init を最後まで進み、その列を観察できる。使う前に別途 `fapex-i2cd`（`tools/fapex-i2c`）を
+  実機で起動しておく。診断行 `[deleg] fd=.. rc=..`。ソケット未起動なら `DELEG_FAIL` で通常呼び出しにフォールバック。
 
 1 行 = 1 回の `write()`。スレッドをまたいでも行が混ざらない。ログは
 `/tmp/fapex-trace.log`（プロセスの chroot 内）。
