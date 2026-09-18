@@ -774,7 +774,10 @@ after_call:
 	/* output side, after the call */
 	if (r >= 0 && (dir & IOC_READ) && arg && nr != FAPEX_I2C_RW)
 		put_bytes(&l, "out", arg, size);
-	if (r >= 0 && nr == FAPEX_I2C_RW && arg) {
+	/* rx is only meaningful for a READ.  For a WRITE the RWParam's rxDataPtr
+	 * field is leftover garbage (seen as 0x1), so dereferencing it to log rx
+	 * would SIGSEGV -- guard on the direction. */
+	if (r >= 0 && nr == FAPEX_I2C_RW && (dir & IOC_READ) && arg) {
 		unsigned char *a = arg;
 		unsigned char **rxp = (unsigned char **)(a + 12);
 		unsigned int rxlen = *(unsigned int *)(a + 16);
