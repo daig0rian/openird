@@ -205,13 +205,13 @@ static long long drain(int fd, uint8_t *map, size_t maplen, int outfd,
 		if (secs > 0 && now_ms() - t0 >= (long)secs * 1000) break;
 		if (bytelimit > 0 && total >= bytelimit) break;
 
+		/* FAPex ioctls return their own status as the ioctl() return value
+		 * (not 0/-1+errno).  An empty ring reports a non-zero "no data" code,
+		 * so do NOT treat non-zero as fatal: rely on fillSize (memset to 0
+		 * beforehand, so a failed copy_to_user simply reads as empty). */
 		tsd_readinfo_t ri;
 		memset(&ri, 0, sizeof ri);
-		if (ioctl(fd, TSD_GET_READINFO, &ri) != 0) {
-			if (errno == EINTR) continue;
-			fprintf(stderr, "GET_READINFO: %s\n", strerror(errno));
-			break;
-		}
+		ioctl(fd, TSD_GET_READINFO, &ri);
 		if (ri.fillSize == 0) {
 			struct timespec s = { 0, 20 * 1000000L }; /* 20ms */
 			nanosleep(&s, NULL);
