@@ -98,7 +98,7 @@ _IOW(0xFF, 0x62, FAPEX_I2C_RWParamStrT)    I2C_WRITE
 ## 4. 観察の壁と手段
 
 - **strace は ioctl 番号と arg ポインタまで**しか出さない。I2C の送受信バイト列
-  （どのスレーブ＝復調 CXD2818 / 地上 XC5200C にどの値を書くか）は
+  （どのスレーブ＝復調 東芝 TC90532〔I2C0 slave 0x20〕/ 地上チューナ Xceive XC5200 にどの値を書くか。§5.5 で確定）は
   `RWParam.txDataPtr` の先にあり、strace では読めない。
 - 中身を取るには **`ioctl` を横取りする LD_PRELOAD トレーサ**（§3 の番号表で
   種別・機能を判定し、`RWParam`/`OpenParam` を辿ってバイト列を出す）を使う。
@@ -409,15 +409,24 @@ reset 解除（pin 8=復調器, 7=衛星, 11=地デジ）→ 復調器へ I2C �
 ジレンマ）を、GPL ソース（FAPex U/K・カーネル board ファイル）と ioctl ABI だけから分析した。
 **ベンダバイナリの逆アセは見ていない**（clean-room の「仕様化」ステップ）。
 
-### 復調器の同定とクロック源
-- **復調器（当初 MB86A22 と推定。ただし実測で chip-ID 不一致＝未確定。この節末尾と後述の
-  「復調器チップの同定は未確定」を正とする）**。GPL の板 `mb86h61_pdkv1`
-  （Model=PIX-WLANTUNER。我々の `PCB_POE_BA300W_SB1` の親戚）の FE 検出
-  `BOARD_FMC_H61PDKV1_ControlFeDetect` は **`MB86A22_Detect` を最初に試す**。
-- I2C アドレスは `MB86A22_API_defs.h` の `MB86A2x_DEV_ADR_20 = 0x20`（ADR1=0, ADR0=0）
-  ＝**観測の slave `0x20` と一致**。チューナは `mb86a22/src/{FC2581,Mxl136RF}` のいずれか。
-  ※ **実機の slave 0x20 は reg `0x00`=`0x00`（MB86A22 の期待 `0x23` と不一致）**＝MB86A22 と断定は
-  できない（後述）。クロック源に関する以下の結論（CLKPWR 非依存）はチップ種別に依らず成立する。
+### 復調器の同定（★実機シルク写真で確定＝東芝 TC90532）
+基板上の IC 刻印から確定した（当初の GPL 検出順からの MB86A22 推定は**誤り**だった）:
+- **復調器 = 東芝 `TC90532XBG`**（ISDB-T OFDM ＋ ISDB-S 8PSK の復調器。TC90522 系）。
+  **観測の 0x20〜0x23 の 4 アドレス ACK は、TC90522 系がサブモジュール（2×ISDB-T / 2×ISDB-S）ごとに
+  別 I2C アドレスを持つ構造と一致**。daemon が書く slave `0x20` は地上サブモジュール。
+  ＝reg `0x00`=`0x00`（MB86A22 の期待 `0x23` と不一致）だった理由＝そもそも MB86A22 ではない。
+- **地上波チューナ = Xceive `XC5200`（XC5000 系シリコンチューナ）**。
+- `D2818`（小型 QFN）は未確定だが **ISDB-S（BS/CS）RF チューナの公算**。
+- GPL 板 `mb86h61_pdkv1` の FE 検出が `MB86A22_Detect` を最初に試すのは、単に空振りしていただけ
+  （この板 GPL は我々の実基板の front-end とは別構成）。
+- **★段階C への含意**: TC90532（≒`TC90522`）も XC5000 も **mainline Linux に GPL ドライバがある**
+  （`drivers/media/dvb-frontends/tc90522.c`＝`CONFIG_DVB_TC90522`、`drivers/media/tuners/xc5000.c`）。
+  日本の ISDB エコシステム（px4_drv / earthsoft PT3 系が TC90522 を使用）とも地続き。∴ クリーン実装は
+  **ベンダコードでなく mainline GPL ドライバを仕様の出発点にできる**（clean-room に極めて有利）。
+
+### クロック源
+- 復調器のクロックは CLKPWR 非依存（以下）。この結論はチップ種別に依らず成立する（TC90532 も水晶
+  参照のデジタル復調器）。
 - MB86A22 の **PLL 参照クロックはチップ自身の水晶/参照クロック**（`MB86A2x_REFSEL` =
   4/16/26/32MHz を選ぶ内蔵 PLL。ペアの FC2581 が `FREQ_XTAL=16MHz` なので 16MHz が濃厚）。
   **SoC の CLKPWR ではゲートされない**。
@@ -569,17 +578,19 @@ fapex_fdli2c` を insmod（**`fdlclkpwr` は載せない**）→ `fapex-gpio` �
 （`fapex_subsystems/fe/mb86a22/` の `MB86A22_API.c` 等）。∴ daemon から init 列を丸取りする必要性は
 低い（daemon 観察は板固有パラメータ＝xtal/IF/tuner 種別の確認用）。
 
-**復調器チップの同定は未確定**: 板 `mb86h61_pdkv1` の FE 検出は MB86A22 を最初に試すが、実機の
-slave 0x20 の **reg `0x00` read は `0x00`**（dev-kit MB86A22 の chip-ID 期待値 `0x23` と不一致、
-common/restart とも）。0x20〜0x23 の 4 アドレスが ACK。register dump（Dione 起動後）:
-reg04=`02`, reg0a=`04`, reg0b=`44`, reg0d=`a0`, reg0e=`77`, reg0f=`10`（実在の map）。
-＝MB86A22 と断定はできない（変種／別 chip／ID の取り方が dev-kit と異なる可能性）。段階Cの実装前に
-実部品の同定（型番・データシート）を要する。
+**復調器チップの同定＝確定（実機シルク写真）**: 復調器は **東芝 `TC90532XBG`**（TC90522 系の
+ISDB-T/S 復調器）。実機 slave 0x20 の reg `0x00`=`0x00`（MB86A22 の `0x23` と不一致）だったのは
+MB86A22 ではないため。0x20〜0x23 の 4 アドレス ACK は TC90522 系のサブモジュール別 I2C アドレスと
+一致。register dump（Dione 起動後、参考）: reg04=`02`, reg0a=`04`, reg0b=`44`, reg0d=`a0`,
+reg0e=`77`, reg0f=`10`。地上チューナ = Xceive `XC5200`（XC5000 系）。`D2818` は ISDB-S チューナと推定。
+段階Cは mainline の `tc90522.c` / `xc5000.c`（GPL）を出発点にできる（上記「復調器の同定」参照）。
 
 ### 未解決・次
-- **demod init 列の入手**: (a) GPL の `MB86A22_API.c` 等を仕様の出発点にし、`fapex-i2c` で実機検証
-  （clean-room 順序に沿う）。ただしチップ同定が先。(b) daemon から取るなら、demod write ハングを
-  避ける経路（tune 要求経由＝control port プロトコル特定、または daemon のハンドル問題の回避）が要る。
+- **demod init 列の入手**: チップ同定は完了（TC90532＝TC90522 系／XC5000）。(a) **mainline GPL の
+  `drivers/media/dvb-frontends/tc90522.c` と `drivers/media/tuners/xc5000.c` を仕様の出発点**にし、
+  `fapex-i2c`（I2C0 slave 0x20）で実機検証する（clean-room 順序: 仕様→実装→検証）。ベンダ daemon の
+  init 列を丸取りする必要はない。(b) daemon から確認するなら（板固有の xtal/IF/接続）、demod write
+  ハングを避ける経路（tune 要求＝control port プロトコル特定、または daemon のハンドル問題の回避）が要る。
 - FAPex I2C ドライバは **非 ACK/特定条件で無限ブロック**（timeout=500 が効かない場面）＝観察時は
   D-state ハングに注意。`fapex-i2c` は OpenParam timeout＋`busybox timeout` ラッパで回避。
 - `0x72`/`0x73`（I2C2, reg0=`0x01`）の同定は別途。
