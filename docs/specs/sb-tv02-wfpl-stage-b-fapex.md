@@ -803,6 +803,39 @@ start_device）:
 tuner 電源・XC5000 FW・周波数）を観察するには **(a) daemon を存続させ制御ポート/Factory で選局要求を送る**、
 または **(b) Dione 起動状態のまま standalone（fapex-i2c で tc90522/xc5000 移植＋fapex-ts で TS 取得）**。
 
+### Stage 2 続き: demod/tuner init 列の捕捉・daemon 存続（2026-09-18 実機）
+
+委譲で demod write が完走した後、tracer の潜在バグで daemon が落ちていた:
+- **`after_call` の I2C rx ログが WRITE でも `rxDataPtr` を deref**（write では残骸=`0x1`）→ `put_bytes`
+  が `0x1` を読んで **daemon を SIGSEGV**（`si_addr=0x1`）。`dir & IOC_READ` を条件に加えて修正
+  （READ の時だけ rx ログ）。→ これで daemon が demod 最初の write の後クラッシュせず init を完走。
+
+**★ demod/tuner init 列を捕捉（委譲 54 op、slave 別）**:
+- **復調器 TC90532（I2C0 slave `0x20`＝ISDB-T サブモジュール）: 24 レジスタ書き込み（2 パス）** —
+  `01=00`（ter reset 解除）, `03=90`, `04=03`, `06=80`, `1c=20`, `1d=56`, `1e=6a`, `1f=9a`, `23=4d`,
+  `25=00`, `26=00`, `32=21`, `3b=21`, `3c=3f`, `70=38`, `71=00`, `73=45`, `74=16`, `75=02`, `76=00`,
+  `77=01`, `7d=d2`, `e4=f4`, `f4=80`。＝tc90522 系 ISDB-T の基本 init（周波数非依存＝選局前の初期化）。
+- **地上チューナ XC5200（I2C0 slave `0x c2`＝7bit `0x61`、demod ゲートウェイ越しでなく直接）: `00 3d 00` ×6**。
+  ＝XC5000 の初期化コマンド（周波数はまだ含まない）。
+- GPIO: 電源＋reset 解除（pin7 衛星/pin8 復調器）は §Stage 2 と同じ。
+
+**★ daemon をサーバ状態で存続させる方法（判明）**: daemon の `UdpPort_main_loop`（`udp_port.c`）は
+**stdin（コンソール）も読む**。sandbox で stdin=`/dev/null` だと `read()=0`（EOF）で main が return し
+プロセス終了していた（segfault 修正後の残りの終了要因）。**stdin を保持 FIFO にすると `UdpPort_main_loop`
+が read でブロック→daemon が存続**（demod/tuner init 済みのサーバ状態、eth0/ssh 維持、watchdog 無効）。
+
+**コマンド 3 系統（観察）**: (1) **stdin/コンソール** = `UdpPort_main_loop` のイベント/デバッグメニュー
+（1 バイト=1 イベント。未知は "Internal error!!! (ev=%d)"、別に "->" プロンプトの "…is not entry" メニュー）。
+(2) **`/dev/ttyUSB0`**（USB-serial, 内蔵ハブ 2-1.3）= **Factory Port（passcommand "testmode"→factoryMode→
+`setfreq`/`setfreqd`/`gfreq` 等のテキストコマンド、`SetFrequencyCore(%s,%d Hz)`）**。(3) **UDP ソケット** =
+LASSIE 制御（`CMD_BLOCK_HEADER`）。
+
+**残り（次）**: 実際の**選局（周波数設定→lock→TS）**を起こすには、上記いずれかのコマンド系統で選局要求を送る:
+- 有力 = **Factory Port**: `/dev/ttyUSB0` を pty で与え（`c 136 <ptn>`）、`testmode`→`setfreq <地上ch/Hz>`。
+  daemon が周波数設定＋lock まで実行し、TS が SoC TSD（CH_A シリアル）に流れる → **`fapex-ts --input A --mode
+  serial capture` で生 TS 取得**。demod/tuner の周波数依存レジスタも fapex-trace で観察できる。
+- 代替 = stdin コンソールのデバッグメニュー（`setfreq` がコンソール側なら stdin 直、要確認）。
+
 ## 6. 段階 C（クリーン実装）への含意
 
 - OpenIRD が満たすべき chardev 契約は **px4_drv 互換**（CLAUDE.md §4）。FAPex の
