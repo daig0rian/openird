@@ -32,8 +32,25 @@ returns an error instead of hanging). A READ transaction writes the tx bytes
 fapex-i2c [--speed 100|400] [--timeout MS] [--restart] DEV BLOCK MODE ARGS
   read  SLAVE REG [LEN]        OPEN + read LEN bytes from REG
   write SLAVE REG [BYTE...]    OPEN + write REG (+bytes)
+  xfer  SLAVE RXLEN [TXBYTE...] write TX then read RXLEN (RXLEN=0 = write only)
   scan  [FIRST LAST]           OPEN + read reg0 across a slave-address range
 ```
+
+### TC90522/TC90532 tuner I2C gateway (register 0xfe)
+
+The Toshiba demod reaches its tuners through an I2C repeater at register `0xfe`
+(`TC90522_I2C_THRU_REG`). Use `xfer` to drive a tuner behind the demod (verified
+on SB-TV02-WFPL, §5.5 — the ISDB-S tuner answers at 7-bit `0x60` behind the demod
+ISDB-S submodule `0x22`):
+
+```
+# tuner READ  (demod submodule S, tuner 7-bit A):  write [0xfe, A<<1|1] then read N
+fapex-i2c --restart /dev/fapi/fapi174 0 xfer 0x22 2 0xfe 0xC1     # read 2B from tuner 0x60
+# tuner WRITE (set tuner reg pointer, then read it back):
+fapex-i2c /dev/fapi/fapi174 0 write 0x22 0xfe 0xC0 0x00           # tuner 0x60 <- reg ptr 0x00
+fapex-i2c --restart /dev/fapi/fapi174 0 xfer 0x22 1 0xfe 0xC1     # read 1B
+```
+`--restart` (repeated-start combined transfer) is needed for the gateway read.
 
 ## Example: identify the MB86A22 demod (SB-TV02-WFPL)
 

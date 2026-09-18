@@ -156,6 +156,56 @@ static int cmd_scan(const char *dev, uint32_t block, int argc, char **argv)
 	return found ? 0 : 1;
 }
 
+/* Generic transfer: write TXBYTES to SLAVE, then read RXLEN bytes.
+ *   RXLEN>0, TX given  -> write-then-read (one transaction)
+ *   RXLEN==0, TX given -> pure write
+ *   RXLEN>0, no TX      -> pure read
+ * This covers the Toshiba TC90522/TC90532 tuner I2C gateway (reg 0xfe):
+ *   tuner write:  xfer 0x20 0  0xfe <taddr<<1>   <data...>
+ *   tuner read:   xfer 0x20 N  0xfe <taddr<<1|1>            (write setup, then read N) */
+static int cmd_xfer(const char *dev, uint32_t block, int argc, char **argv)
+{
+	if (argc < 2) { fprintf(stderr, "xfer SLAVE RXLEN [TXBYTE...]\n"); return 2; }
+	uint32_t slave = (uint32_t)strtoul(argv[0], NULL, 0);
+	uint32_t rxlen = (uint32_t)strtoul(argv[1], NULL, 0);
+	uint8_t  tx[256];
+	uint32_t n = 0;
+	for (int i = 2; i < argc && n < sizeof tx; i++)
+		tx[n++] = (uint8_t)strtoul(argv[i], NULL, 0);
+	if (rxlen > 256) { fprintf(stderr, "bad RXLEN\n"); return 2; }
+
+	int fd = i2c_open_bus(dev, block, slave);
+	if (fd < 0) return 1;
+
+	uint8_t rx[256];
+	memset(rx, 0, sizeof rx);
+	if (rxlen == 0) {
+		i2c_rw_t rw = { (uint8_t)slave, tx, n, NULL, 0 };
+		if (ioctl(fd, I2C_WRITE, &rw) != 0) {
+			fprintf(stderr, "I2C_WRITE slave=0x%02x: %s (NO ACK/timeout?)\n",
+				slave, strerror(errno));
+			close(fd); return 1;
+		}
+		printf("xfer w slave 0x%02x:", slave);
+		for (uint32_t i = 0; i < n; i++) printf(" %02x", tx[i]);
+		printf(" OK\n");
+	} else {
+		i2c_rw_t rw = { (uint8_t)slave, n ? tx : NULL, n, rx, rxlen };
+		if (ioctl(fd, I2C_READ, &rw) != 0) {
+			fprintf(stderr, "I2C_READ slave=0x%02x: %s (NO ACK/timeout?)\n",
+				slave, strerror(errno));
+			close(fd); return 1;
+		}
+		printf("xfer slave 0x%02x tx[%u]:", slave, n);
+		for (uint32_t i = 0; i < n; i++) printf(" %02x", tx[i]);
+		printf(" -> rx[%u]:", rxlen);
+		for (uint32_t i = 0; i < rxlen; i++) printf(" %02x", rx[i]);
+		printf("\n");
+	}
+	close(fd);
+	return 0;
+}
+
 static void usage(void)
 {
 	fprintf(stderr,
@@ -164,7 +214,9 @@ static void usage(void)
 	  "  BLOCK = 0 (I2C0) | 1 (I2C1) | 2\n"
 	  "  read  SLAVE REG [LEN]\n"
 	  "  write SLAVE REG [BYTE...]\n"
-	  "  scan  [FIRST LAST]\n");
+	  "  xfer  SLAVE RXLEN [TXBYTE...]   (write TX then read RXLEN; RXLEN=0 = write only)\n"
+	  "  scan  [FIRST LAST]\n"
+	  "  # TC90522 tuner gateway: xfer 0x20 N 0xfe <taddr<<1|1> (read), write 0x20 0xfe <taddr<<1> ...\n");
 }
 
 int main(int argc, char **argv)
@@ -192,6 +244,7 @@ int main(int argc, char **argv)
 
 	if (!strcmp(mode, "read"))  return cmd_read(dev, block, rargc, rargv);
 	if (!strcmp(mode, "write")) return cmd_write(dev, block, rargc, rargv);
+	if (!strcmp(mode, "xfer"))  return cmd_xfer(dev, block, rargc, rargv);
 	if (!strcmp(mode, "scan"))  return cmd_scan(dev, block, rargc, rargv);
 	usage();
 	return 2;

@@ -439,7 +439,21 @@ ISDB-T / ISDB-S サブモジュールを選ぶ**）を実機で検証した（Di
 - `fapi175`（SoC I2C1）は空（0 デバイス）。復調器は I2C0（`fapi174`）のみ。
 - **段階C 手順**: `tc90522.c` を移植する際、地上=I2C0 slave `0x20`（0xfe ゲートウェイの奥に XC5000）、
   衛星=I2C0 slave `0x22`（同・D2818）。tuner init は `0xfe` 経由（`xc5000.c` はゲートウェイ i2c_adapter
-  越しに叩く）。実機検証は `fapex-i2c`（要・ゲートウェイ read 対応の拡張）。
+  越しに叩く）。実機検証は `fapex-i2c`（`xfer` モードでゲートウェイ read 対応済み）。
+
+### tuner ゲートウェイの実機確認（2026-09-18）— `fapex-i2c xfer` で 0xfe 越し
+`fapex-i2c` に `xfer SLAVE RXLEN [TXBYTE...]`（write-then-read／pure write／pure read）を追加し、
+TC90522 の 0xfe ゲートウェイ protocol（`tc90522_master_xfer`: tuner read = 復調器へ
+`[0xfe, taddr<<1|1]` write → 復調器から N バイト read。要 repeated-start＝`--restart`）を実機検証:
+- **衛星チューナ（D2818）= I2C 7-bit `0x60`、復調器 ISDB-S サブモジュール `0x22` のゲートウェイの奥で
+  応答**（`xfer 0x22 … 0xfe 0xC1` → `05 26`）。レジスタ署名（前段電源 pin5 ON＋reset 解除で読取）:
+  reg00=`05`, 01=`26`, 02=`40`, 03=`00`, 08=`df`, 0a=`10`, 10=`0f`。
+  **Sharp QM1D1C0042/0045 ではない**（QM1D1C004x は reg00=`0x48`/`0x68`。実機は `0x05`）。正確な型番は
+  silk `D2818` のまま未確定だが、**I2C 0x60・上記署名**まで確定。
+- **地上チューナ（XC5200／XC5000 系）は 0x20 ゲートウェイの奥で未応答**（0x40〜0x67 を gateway scan
+  しても出ない）。＝地上チューナの電源/初期化が別途要る（pin5＝tuner 3.3V＋reset 解除だけでは不足。
+  daemon の地上 tuner power 手順の観察が次課題。XC5000 は FW ロードも要る）。
+- ＝**ゲートウェイ機構と `fapex-i2c xfer` は実機で動作確認済み**。段階C の tuner 検証はこの口で行える。
 
 ### クロック源
 - 復調器のクロックは CLKPWR 非依存（以下）。この結論はチップ種別に依らず成立する（TC90532 も水晶
