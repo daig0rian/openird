@@ -132,6 +132,9 @@ int main(int argc, char **argv)
 		memcpy(tx, req + 34, txlen);
 
 		long st = do_xfer(dev, req + 4, dir, slave, tx, txlen, rx, rxlen);
+		fprintf(stderr, "req dir=%c slave=0x%02x tx=%u rx=%u -> st=%ld\n",
+			dir, slave, txlen, rxlen, st);
+		fflush(stderr);
 
 		rep[0] = 'I'; rep[1] = '2'; rep[2] = 'C'; rep[3] = 'R';
 		int32_t s32 = (int32_t)st;
@@ -141,7 +144,12 @@ int main(int argc, char **argv)
 		rep[8] = rl & 0xff; rep[9] = (rl >> 8) & 0xff;
 		if (rl)
 			memcpy(rep + 10, rx, rl);
-		sendto(s, rep, 10 + rl, 0, (struct sockaddr *)&src, sl);
+		ssize_t sr = sendto(s, rep, 10 + rl, 0,
+				    (struct sockaddr *)&src, sl);
+		fprintf(stderr, "  reply %d bytes srclen=%d -> sendto=%ld%s\n",
+			(int)(10 + rl), (int)sl, (long)sr,
+			sr < 0 ? " (errno set)" : "");
+		fflush(stderr);
 	}
 	return 0;
 }

@@ -370,20 +370,17 @@ static long settle_ms(void)
  * chroot), and copy the reply's rx bytes back into the daemon's buffer.  The
  * helper owns the I2C handle in its own process, so nothing hangs and the daemon
  * proceeds through demod + tuner init for us to observe. */
-#define SYS_SOCKET   1
-#define SYS_CONNECT  3
-#define SYS_SEND     9
-#define SYS_RECV     10
+/* ARM 2.6.31 has the DIRECT socket syscalls (not the socketcall multiplexer):
+ * __NR_socket=281 etc.  Confirmed on-device: socketcall(281,...) routed to
+ * sys_socket and rejected our args with EINVAL. */
+#define SYS_socket   281
+#define SYS_bind     282
+#define SYS_connect  283
+#define SYS_sendto   290
+#define SYS_recvfrom 292
 #define AF_UNIX      1
 #define SOCK_DGRAM   2
 #define DELEG_FAIL   (-1000000L)
-
-static long sockcall(long call, long a0, long a1, long a2, long a3)
-{
-	unsigned long a[6];
-	a[0] = a0; a[1] = a1; a[2] = a2; a[3] = a3; a[4] = 0; a[5] = 0;
-	return tr_syscall(SYS_socketcall, call, (long)a, 0, 0, 0, 0);
-}
 
 static int deleg_enabled(void)
 {
@@ -441,19 +438,36 @@ static long delegate_i2c(int fd, unsigned long cmd, void *arg)
 		addrlen = 2 + 1 + 10;
 	}
 
-	s = (int)sockcall(SYS_SOCKET, AF_UNIX, SOCK_DGRAM, 0, 0);
-	if (s < 0)
-		return DELEG_FAIL;
-	if (sockcall(SYS_CONNECT, s, (long)addr, addrlen, 0) < 0) {
-		tr_syscall(SYS_close, s, 0, 0, 0, 0, 0);
-		return DELEG_FAIL;
+	{
+		long r_send = -2;
+		struct line dg; dg.n = 0;
+		rc = -2;
+		s = (int)tr_syscall(SYS_socket, AF_UNIX, SOCK_DGRAM, 0, 0, 0, 0);
+		if (s >= 0) {
+			/* Bind our socket to a unique abstract reply address so the
+			 * helper always has a valid src to sendto (autobind proved
+			 * unreliable here).  Name "\0i2cr"+fd bytes is unique among
+			 * concurrently-open sockets. */
+			char raddr[16];
+			raddr[0] = AF_UNIX; raddr[1] = 0; raddr[2] = 0;
+			raddr[3] = 'i'; raddr[4] = '2'; raddr[5] = 'c'; raddr[6] = 'r';
+			raddr[7] = s & 0xff; raddr[8] = (s >> 8) & 0xff;
+			raddr[9] = (s >> 16) & 0xff; raddr[10] = (s >> 24) & 0xff;
+			tr_syscall(SYS_bind, s, (long)raddr, 11, 0, 0, 0);
+			/* explicit destination (no connect) */
+			r_send = tr_syscall(SYS_sendto, s, (long)req, 34 + txlen,
+					    0, (long)addr, addrlen);
+			if (r_send >= 0)
+				rc = tr_syscall(SYS_recvfrom, s, (long)rep,
+						sizeof rep, 0, 0, 0);
+			tr_syscall(SYS_close, s, 0, 0, 0, 0, 0);
+		}
+		stamp(&dg);
+		put(&dg, "[delegdiag] sk="); put_dec(&dg, s);
+		put(&dg, " sd="); put_dec(&dg, r_send);
+		put(&dg, " rv="); put_dec(&dg, rc);
+		emit(&dg);
 	}
-	if (sockcall(SYS_SEND, s, (long)req, 34 + txlen, 0) < 0) {
-		tr_syscall(SYS_close, s, 0, 0, 0, 0, 0);
-		return DELEG_FAIL;
-	}
-	rc = sockcall(SYS_RECV, s, (long)rep, sizeof rep, 0);
-	tr_syscall(SYS_close, s, 0, 0, 0, 0, 0);
 	if (rc < 10 || rep[0] != 'I' || rep[1] != '2' || rep[2] != 'C' ||
 	    rep[3] != 'R')
 		return DELEG_FAIL;
