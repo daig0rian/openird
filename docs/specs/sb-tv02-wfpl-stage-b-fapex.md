@@ -410,11 +410,14 @@ reset 解除（pin 8=復調器, 7=衛星, 11=地デジ）→ 復調器へ I2C �
 **ベンダバイナリの逆アセは見ていない**（clean-room の「仕様化」ステップ）。
 
 ### 復調器の同定とクロック源
-- **復調器 = MB86A22**（Fujitsu ISDB-T OFDM 復調器）。GPL の板 `mb86h61_pdkv1`
+- **復調器（当初 MB86A22 と推定。ただし実測で chip-ID 不一致＝未確定。この節末尾と後述の
+  「復調器チップの同定は未確定」を正とする）**。GPL の板 `mb86h61_pdkv1`
   （Model=PIX-WLANTUNER。我々の `PCB_POE_BA300W_SB1` の親戚）の FE 検出
   `BOARD_FMC_H61PDKV1_ControlFeDetect` は **`MB86A22_Detect` を最初に試す**。
 - I2C アドレスは `MB86A22_API_defs.h` の `MB86A2x_DEV_ADR_20 = 0x20`（ADR1=0, ADR0=0）
   ＝**観測の slave `0x20` と一致**。チューナは `mb86a22/src/{FC2581,Mxl136RF}` のいずれか。
+  ※ **実機の slave 0x20 は reg `0x00`=`0x00`（MB86A22 の期待 `0x23` と不一致）**＝MB86A22 と断定は
+  できない（後述）。クロック源に関する以下の結論（CLKPWR 非依存）はチップ種別に依らず成立する。
 - MB86A22 の **PLL 参照クロックはチップ自身の水晶/参照クロック**（`MB86A2x_REFSEL` =
   4/16/26/32MHz を選ぶ内蔵 PLL。ペアの FC2581 が `FREQ_XTAL=16MHz` なので 16MHz が濃厚）。
   **SoC の CLKPWR ではゲートされない**。
@@ -546,12 +549,38 @@ fapex_fdli2c` を insmod（**`fdlclkpwr` は載せない**）→ `fapex-gpio` �
   ACK されずハングする。`fapex-i2c` が成功したのは **Dione が安定列挙した後**（settle 後は 0x20 が
   read/write とも ACK、reg04=`02` 等）。＝ハードな失敗ではなく **タイミングゲート**。
 
+### ★ demod write ハングの切り分け（2026-09-18、確定）— settle(ii) を試した結論
+(ii)「demod write 前に settle 待ちを注入」を tracer に実装（`/tmp/fapex-i2c-settle` ms、
+最初の slave 0x20 write の直前に sleep）。さらに I2C0 ハンドルを open+I2C_OPEN+`dup2` で貼り替える
+実験もした。**いずれも daemon の demod write ハングを解消せず**。切り分けの結果:
+- settle=2000/4000/10000ms でも daemon の write はハング（daemon の死亡時刻が settle 分だけ後ろへ
+  ずれる＝write 到達→ハング→死。固定 watchdog ではない）。→ **timing ではない**。
+- daemon が demod write でハング中（プロセス生存）に、**別プロセスの fresh `fapex-i2c` で同一 write
+  （`0x20` reg `0x01`=`0x00`）も read（reg04=`02`）も成功**（rc=0）。→ **バス contention でも demod
+  故障でもない**。block0 は生きていて、fresh ハンドルなら並行で読み書きできる。
+- ∴ **ハングは daemon 自身の `fapi174` ハンドル/コンテキスト固有**（Dione 再列挙後にそのハンドルの
+  write だけがカーネル内で無限ブロック。fresh ハンドルは正常）。tracer から dup2 で貼り替えても
+  daemon の write は解消しなかった＝原因は proprietary な fapi_core の per-handle 状態と推定。
+
+### ★ Milestone 2 にとっての結論（重要）
+**復調器（I2C0/block0・slave `0x20`）は clean な `fapex-i2c` で read/write とも完全に制御可能**
+（daemon がハング中でも並行アクセス可）。＝**段階Cのクリーン実装は、ベンダ daemon 無しで復調器を
+直接駆動できる**。必要なのは「どのレジスタ列を書くか」の知識で、それは GPL に手がかりがある
+（`fapex_subsystems/fe/mb86a22/` の `MB86A22_API.c` 等）。∴ daemon から init 列を丸取りする必要性は
+低い（daemon 観察は板固有パラメータ＝xtal/IF/tuner 種別の確認用）。
+
+**復調器チップの同定は未確定**: 板 `mb86h61_pdkv1` の FE 検出は MB86A22 を最初に試すが、実機の
+slave 0x20 の **reg `0x00` read は `0x00`**（dev-kit MB86A22 の chip-ID 期待値 `0x23` と不一致、
+common/restart とも）。0x20〜0x23 の 4 アドレスが ACK。register dump（Dione 起動後）:
+reg04=`02`, reg0a=`04`, reg0b=`44`, reg0d=`a0`, reg0e=`77`, reg0f=`10`（実在の map）。
+＝MB86A22 と断定はできない（変種／別 chip／ID の取り方が dev-kit と異なる可能性）。段階Cの実装前に
+実部品の同定（型番・データシート）を要する。
+
 ### 未解決・次
-- **demod init 全列の捕捉**: daemon の demod write を **Dione が安定した窓**で走らせる必要がある。
-  候補: (i) Dione を安定列挙させてから daemon の再列挙を避ける（WirelessDtvPower の power-cycle を
-  抑える手段が要る）、(ii) daemon の demod write 前に settle 待ちを注入、(iii) tune 要求で
-  `demod_WriteSomeRegs` を走らせる（control port プロトコルの特定が要る）。
-- FAPex I2C ドライバは **非 ACK で無限ブロック**（timeout=500 が効かない場面がある）＝観察時は
+- **demod init 列の入手**: (a) GPL の `MB86A22_API.c` 等を仕様の出発点にし、`fapex-i2c` で実機検証
+  （clean-room 順序に沿う）。ただしチップ同定が先。(b) daemon から取るなら、demod write ハングを
+  避ける経路（tune 要求経由＝control port プロトコル特定、または daemon のハンドル問題の回避）が要る。
+- FAPex I2C ドライバは **非 ACK/特定条件で無限ブロック**（timeout=500 が効かない場面）＝観察時は
   D-state ハングに注意。`fapex-i2c` は OpenParam timeout＋`busybox timeout` ラッパで回避。
 - `0x72`/`0x73`（I2C2, reg0=`0x01`）の同定は別途。
 

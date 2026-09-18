@@ -29,6 +29,10 @@
   貼り替えてから retry する（＝再列挙後のデバイスに透過的に再束縛。§5.5）。
 - `/tmp/fapex-h57-quiet`: h57fmb0 の ioctl のログ出力を抑制する（シム/passthrough は維持）。
   Dione FW 転送 ~1500 回のログ I/O を省いて観察ノイズと負荷を下げる（§5.5）。
+- `/tmp/fapex-i2c-settle`（内容＝ms、空/0 は 3000）: 最初の復調器（slave `0x20`）への FAPex I2C
+  write の直前に一度 sleep する（Dione の post-FW 再列挙を待つ汎用 knob）。**注（§5.5）**: これ単体
+  では daemon の demod write ハングは解消しない（そのハングは daemon 自身の `fapi174` ハンドル固有で、
+  fresh `fapex-i2c` ハンドルなら同じ write が並行で通る）。
 
 1 行 = 1 回の `write()`。スレッドをまたいでも行が混ざらない。ログは
 `/tmp/fapex-trace.log`（プロセスの chroot 内）。

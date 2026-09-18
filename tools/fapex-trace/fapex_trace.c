@@ -24,6 +24,7 @@
 #define SYS_close		6
 #define SYS_open		5
 #define SYS_write		4
+#define SYS_read		3
 #define SYS_getpid		20
 #define SYS_ioctl		54
 #define SYS_openat		322
@@ -297,6 +298,37 @@ static int h57_quiet(void)
 	return cached;
 }
 
+/* Bring-up shim (not observation): the demod's I2C bus (SoC I2C0 / block0) is
+ * gated by the Dione, and during the Dione's post-firmware re-enumeration that
+ * bus is momentarily dead.  The vendor daemon writes the demod right after the
+ * firmware load, i.e. inside that window, so the write never ACKs and blocks the
+ * driver forever (D-state).  When /tmp/fapex-i2c-settle exists we sleep once,
+ * just before the *first* FAPex I2C write to the demod (slave 0x20), to let the
+ * Dione settle and the bus come alive.  The file's content is the delay in ms
+ * (empty/0 -> 3000).  Default off, so the tracer stays a pure observer. */
+static long settle_ms(void)
+{
+	static long cached = -2;
+
+	if (cached == -2) {
+		char buf[16];
+		long n, i, v;
+		int fd = (int)tr_syscall(SYS_open, (long)"/tmp/fapex-i2c-settle",
+					 0 /*O_RDONLY*/, 0, 0, 0, 0);
+		if (fd < 0) {
+			cached = 0;
+			return 0;
+		}
+		n = tr_syscall(SYS_read, fd, (long)buf, sizeof(buf) - 1, 0, 0, 0);
+		tr_syscall(SYS_close, fd, 0, 0, 0, 0, 0);
+		v = 0;
+		for (i = 0; i < n && buf[i] >= '0' && buf[i] <= '9'; i++)
+			v = v * 10 + (buf[i] - '0');
+		cached = v ? v : 3000;
+	}
+	return cached;
+}
+
 /* --- interposed libc entry points --------------------------------------- */
 
 int open(const char *path, int flags, ...)
@@ -464,6 +496,35 @@ int ioctl(int fd, unsigned long cmd, ...)
 		put(&l, " i2c_slave=0x");
 		put_hex(&l, slave, 2);
 		put_bytes(&l, "tx", *txp, clamp(txlen));
+	}
+
+	/* Bring-up shim: settle once before the first demod (slave 0x20) write, to
+	 * give the Dione time to finish re-enumerating before the demod is touched.
+	 * NB (§5.5): this alone does NOT unblock the vendor daemon's demod write --
+	 * that write hangs forever in the kernel on the daemon's own fapi174 handle
+	 * even after a long settle, while the identical write on a FRESH fapex-i2c
+	 * handle ACKs (even concurrently, while the daemon is hung).  The shim is
+	 * kept as a general "wait before first demod write" knob. */
+	{
+		static int settled = 0;
+		long sm;
+
+		if (!settled && nr == FAPEX_I2C_RW && (dir & IOC_WRITE) && arg &&
+		    ((unsigned char *)arg)[0] == 0x20 && (sm = settle_ms()) > 0) {
+			long slept = 0;
+
+			/* sleep in fixed 100 ms chunks: msleep(100) folds its
+			 * /1000 and %1000 at compile time, so we avoid a runtime
+			 * integer divide (no libgcc in this freestanding .so). */
+			while (slept < sm) {
+				msleep(100);
+				slept += 100;
+			}
+			settled = 1;
+			put(&l, " [settle ");
+			put_dec(&l, sm);
+			put(&l, "ms]");
+		}
 	}
 
 	/* I2C writes can block forever on a slave that never ACKs (e.g. a demod
