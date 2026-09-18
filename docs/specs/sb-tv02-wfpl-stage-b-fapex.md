@@ -465,7 +465,30 @@ TC90522 の 0xfe ゲートウェイ protocol（`tc90522_master_xfer`: tuner read
 - ＝**ゲートウェイ機構と `fapex-i2c xfer` は実機で動作確認済み**（衛星で実証）。段階C の tuner 検証は
   この口で行えるが、**地上パスは demod write ハングの解消（＝daemon の地上 tuner init 観察）か回路図が要る**。
 
-### 段階C 完成への鍵＝demod write ハングの解消
+### demod write ハング＝「daemon プロセス固有」（2026-09-18、proxy 実験で確定）
+ハング解消のため `fapex-trace` に **proxy シム**（`/tmp/fapex-i2c-proxy`）を実装した: daemon の
+FAPex I2C RW を、daemon 自身の fd ではなく **tracer が open し直した fresh ハンドル**で代理実行し
+（daemon の I2C_OPEN param を捕捉して再適用）、結果を返す。診断ログ付き。結果:
+- proxy は正しく発火（`[proxydiag] en=1 fd=18 opset=1`、`[proxy] nfd=21 i2copen=0`＝fresh open も
+  I2C_OPEN も成功）。**しかしその fresh fd への RW も同じくハング**した。
+- ＝**ハングは fd/ハンドル固有ではなく「daemon プロセス固有」**。同一 RW が**別プロセス**（standalone
+  `fapex-i2c`）なら通るのに、**daemon プロセス内では fresh ハンドルでもハング**する。in-process の
+  proxy では回避不能＝**cross-process 委譲（別プロセスで I2C を実行）でなければ解けない**。
+- 状況証拠: ハングは FW load 直後（Dione が post-FW 再列挙中）に起き、settle(最大 10s)でも解けず、
+  daemon は h57fmb0(USB)を開いたまま。＝**USB(Dione)↔I2C0 のプロセス依存干渉**の疑い（daemon は USB
+  コンテキストと絡んでいて I2C0 RW が待ち続ける／別プロセスは無関係で通る）。深い機序で、解くには
+  cross-process I2C サーバ（FIFO 越しに別プロセスで実行）か、カーネル/USB 側の解析が要る。
+
+### 段階C は daemon 観察に依存せず進められる（方針）
+demod write ハングは**段階C の必須ブロッカーではない**と整理する:
+- 復調器 TC90532(≒TC90522)もチューナ XC5000 も **mainline GPL ドライバ**があり（PT3/PX 実績）、
+  **段階C はこれらを移植して clean 実装できる**。復調器は standalone プロセス（`fapex-i2c` 相当）から
+  直接叩ける＝実装・検証は daemon 無しで可能。
+- ベンダ daemon の観察が要るのは、mainline `tc90522.c` の**非公開 init の穴**（demod の細かい init 値）と
+  **板固有パラメータ**（xtal/IF/地上 tuner の電源 GPIO）を埋める補助のみ。これらは実機での empirical
+  探索でも詰められる。∴ demod write ハングの解消は「あれば近道」だが必須ではない。
+
+### （参考）demod write ハング解消が近道になる理由
 今回の地上チューナ調査で、段階C 完成の鍵が明確になった:
 - **mainline `tc90522.c` の init は「非公開ゆえ不完全」**（ドライバ自身が明言）。demod の完全な init
   （`demod_WriteSomeRegs` 相当）と**地上 tuner の電源/init 手順**は、ベンダ daemon だけが持つ。

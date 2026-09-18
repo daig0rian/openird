@@ -31,8 +31,12 @@
   Dione FW 転送 ~1500 回のログ I/O を省いて観察ノイズと負荷を下げる（§5.5）。
 - `/tmp/fapex-i2c-settle`（内容＝ms、空/0 は 3000）: 最初の復調器（slave `0x20`）への FAPex I2C
   write の直前に一度 sleep する（Dione の post-FW 再列挙を待つ汎用 knob）。**注（§5.5）**: これ単体
-  では daemon の demod write ハングは解消しない（そのハングは daemon 自身の `fapi174` ハンドル固有で、
-  fresh `fapex-i2c` ハンドルなら同じ write が並行で通る）。
+  では daemon の demod write ハングは解消しない。
+- `/tmp/fapex-i2c-proxy`: daemon の FAPex I2C RW を、daemon 自身の fd でなく **tracer が open し直した
+  fresh ハンドル**で代理実行する（daemon の I2C_OPEN param を捕捉して再適用。診断行 `[proxydiag]`/
+  `[proxy]` を出す）。**結論（§5.5）**: これでも demod write はハングする＝**ハングは fd 固有でなく
+  「daemon プロセス固有」**（別プロセスの fresh ハンドルなら通るのに、daemon プロセス内では fresh でも
+  ハング）。in-process では解けず cross-process 委譲が要る、と判明させた診断用シム。
 
 1 行 = 1 回の `write()`。スレッドをまたいでも行が混ざらない。ログは
 `/tmp/fapex-trace.log`（プロセスの chroot 内）。

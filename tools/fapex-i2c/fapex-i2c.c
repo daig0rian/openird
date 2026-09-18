@@ -66,12 +66,14 @@ typedef struct {
 static int g_speed = 1;      /* 100k */
 static int g_proto = 0;      /* common */
 static uint32_t g_timeout = 500;
+static long g_openslave = -1; /* OpenParam.slaveAddress override; -1 = use RW slave */
 
 static int i2c_open_bus(const char *dev, uint32_t block, uint32_t slave)
 {
 	int fd = open(dev, O_RDWR);
 	if (fd < 0) { fprintf(stderr, "open(%s): %s\n", dev, strerror(errno)); return -1; }
-	i2c_open_t op = { block, g_speed, g_proto, slave, 0 /*hw*/, g_timeout };
+	uint32_t oslave = (g_openslave >= 0) ? (uint32_t)g_openslave : slave;
+	i2c_open_t op = { block, g_speed, g_proto, oslave, 0 /*hw*/, g_timeout };
 	if (ioctl(fd, I2C_OPEN, &op) != 0) {
 		fprintf(stderr, "I2C_OPEN block=%u slave=0x%02x: %s\n",
 			block, slave, strerror(errno));
@@ -227,6 +229,8 @@ int main(int argc, char **argv)
 			g_speed = (atoi(argv[++i]) >= 400) ? 2 : 1;
 		} else if (!strcmp(argv[i], "--timeout") && i + 1 < argc) {
 			g_timeout = (uint32_t)strtoul(argv[++i], NULL, 0);
+		} else if (!strcmp(argv[i], "--openslave") && i + 1 < argc) {
+			g_openslave = (long)strtoul(argv[++i], NULL, 0);
 		} else if (!strcmp(argv[i], "--restart")) {
 			g_proto = 1;
 		} else break;

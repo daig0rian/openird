@@ -47,6 +47,8 @@
 #define IOC_READ	2U
 #define FAPEX_TYPE	0xFF
 #define FAPEX_I2C_RW	0x62	/* _IOR = read, _IOW = write; 20-byte argument */
+#define FAPEX_I2C_OPEN_NR 0x60	/* NB_I2C + 0: OpenParam (24 bytes) */
+#define FAPEX_I2C_OPEN_CMD 0x4018FF60UL	/* _IOW(0xFF, 0x60, 24) */
 
 #define LOG_PATH	"/tmp/fapex-trace.log"
 #define MAX_FD		256
@@ -58,6 +60,10 @@ long tr_syscall(long nr, long a, long b, long c, long d, long e, long f)
 extern int *__errno_location(void);
 
 static char fd_path[MAX_FD][PATH_LEN];
+
+/* Remembered FAPex I2C OpenParam (24 B) per fd, for the proxy shim (§5.5). */
+static unsigned char i2c_op[MAX_FD][24];
+static int i2c_op_set[MAX_FD];
 
 struct line {
 	char s[4096];
@@ -298,6 +304,31 @@ static int h57_quiet(void)
 	return cached;
 }
 
+/* Bring-up shim (not observation): when /tmp/fapex-i2c-proxy exists, run the
+ * daemon's FAPex I2C read/write on a FRESH handle instead of the daemon's own
+ * fd.  The vendor daemon's demod write blocks forever (D-state) on its own
+ * fapi174 handle after the Dione re-enumerates, yet the identical transfer on a
+ * freshly-opened handle ACKs (verified, even concurrently).  We re-open the same
+ * node, re-apply the OpenParam the daemon used (captured at its I2C_OPEN), do the
+ * transfer there, and return that result -- so the daemon gets past demod init
+ * and on to the tuner init we want to observe.  Default off. */
+static int proxy_enabled(void)
+{
+	static int cached = -1;
+
+	if (cached < 0) {
+		int fd = (int)tr_syscall(SYS_open, (long)"/tmp/fapex-i2c-proxy",
+					 0 /*O_RDONLY*/, 0, 0, 0, 0);
+		if (fd >= 0) {
+			tr_syscall(SYS_close, fd, 0, 0, 0, 0, 0);
+			cached = 1;
+		} else {
+			cached = 0;
+		}
+	}
+	return cached;
+}
+
 /* Bring-up shim (not observation): the demod's I2C bus (SoC I2C0 / block0) is
  * gated by the Dione, and during the Dione's post-firmware re-enumeration that
  * bus is momentarily dead.  The vendor daemon writes the demod right after the
@@ -482,6 +513,17 @@ int ioctl(int fd, unsigned long cmd, ...)
 	put(&l, " size=");
 	put_dec(&l, size);
 
+	/* Remember the FAPex I2C OpenParam per fd, so the proxy shim can re-apply
+	 * it on a fresh handle (§5.5). */
+	if (nr == FAPEX_I2C_OPEN_NR && (dir & IOC_WRITE) && arg && size >= 24 &&
+	    fd >= 0 && fd < MAX_FD) {
+		const unsigned char *s = arg;
+		int k;
+		for (k = 0; k < 24; k++)
+			i2c_op[fd][k] = s[k];
+		i2c_op_set[fd] = 1;
+	}
+
 	/* input side, before the call */
 	if ((dir & IOC_WRITE) && arg)
 		put_bytes(&l, "in", arg, size);
@@ -541,7 +583,50 @@ int ioctl(int fd, unsigned long cmd, ...)
 		put_hex(&l, nr, 2);
 	}
 
+	/* proxy diagnostic (separate line so it survives a subsequent hang) */
+	if (nr == FAPEX_I2C_RW) {
+		struct line d; d.n = 0;
+		stamp(&d);
+		put(&d, "[proxydiag] en=");
+		put_dec(&d, proxy_enabled());
+		put(&d, " fd=");
+		put_dec(&d, fd);
+		put(&d, " opset=");
+		put_dec(&d, (fd >= 0 && fd < MAX_FD) ? i2c_op_set[fd] : -1);
+		put(&d, " path=");
+		put(&d, (fd >= 0 && fd < MAX_FD && fd_path[fd][0]) ? fd_path[fd] : "?");
+		emit(&d);
+	}
+
+	/* Proxy shim: run an I2C RW on a fresh handle (open + re-apply OpenParam)
+	 * instead of the daemon's own (blocking) fd. */
+	if (nr == FAPEX_I2C_RW && proxy_enabled() && fd >= 0 && fd < MAX_FD &&
+	    i2c_op_set[fd] && fd_path[fd][0]) {
+		int nfd = (int)tr_syscall(SYS_open, (long)fd_path[fd],
+					  O_RDWR | O_LARGEFILE, 0, 0, 0, 0);
+		struct line d; d.n = 0; stamp(&d);
+		put(&d, "[proxy] nfd="); put_dec(&d, nfd);
+		if (nfd >= 0) {
+			long orc = tr_syscall(SYS_ioctl, nfd, FAPEX_I2C_OPEN_CMD,
+					      (long)i2c_op[fd], 0, 0, 0);
+			put(&d, " i2copen="); put_dec(&d, orc);
+			emit(&d);
+			if (orc >= 0) {
+				r = tr_syscall(SYS_ioctl, nfd, cmd, (long)arg,
+					       0, 0, 0);
+				tr_syscall(SYS_close, nfd, 0, 0, 0, 0, 0);
+				put(&l, " [proxy]");
+				goto after_call;
+			}
+			tr_syscall(SYS_close, nfd, 0, 0, 0, 0, 0);
+		} else {
+			emit(&d);
+		}
+		/* proxy setup failed: fall through to the normal call */
+	}
+
 	r = tr_syscall(SYS_ioctl, fd, cmd, (long)arg, 0, 0, 0);
+after_call:
 
 	/* output side, after the call */
 	if (r >= 0 && (dir & IOC_READ) && arg && nr != FAPEX_I2C_RW)
