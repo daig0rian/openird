@@ -34,6 +34,7 @@
 #define SYS_nanosleep		162
 #define SYS_dup2		63
 #define SYS_socketcall		281
+#define SYS_msync		144
 
 #define O_WRONLY	01
 #define O_RDWR		02
@@ -128,6 +129,35 @@ static void put_dec(struct line *l, long v)
 	put(l, t + i);
 }
 
+/* Is [p, p+n) mapped?  Not every FAPex ioctl passes its argument by pointer:
+ * some encode _IOC_WRITE and a size but hand the driver a small integer by
+ * value.  Dereferencing that killed the vendor daemon (SIGSEGV right after
+ * fapi199 nr=0x21, i.e. on the input dump of the ioctl that followed), so no
+ * dereference may be attempted without asking the kernel first.
+ *
+ * msync(MS_ASYNC) is the probe: on a mapped range it is a no-op returning 0,
+ * on a range with an unmapped page it returns -ENOMEM, and it copies nothing
+ * and changes nothing either way.  (write() to /dev/null cannot be used --
+ * write_null() never touches the user buffer, so it never reports EFAULT.)
+ * If the kernel has no msync, fall back to rejecting only the low page. */
+#define MS_ASYNC 1
+static int readable(const void *p, unsigned long n)
+{
+	unsigned long a = (unsigned long)p;
+	unsigned long start, end;
+	long r;
+
+	if (!p || !n)
+		return 0;
+	start = a & ~0xfffUL;
+	end = (a + n + 0xfffUL) & ~0xfffUL;
+	r = tr_syscall(SYS_msync, (long)start, (long)(end - start), MS_ASYNC,
+		       0, 0, 0);
+	if (r == -38)		/* -ENOSYS */
+		return a >= 0x1000;
+	return r == 0;
+}
+
 static void put_bytes(struct line *l, const char *label, const unsigned char *p,
 		      unsigned long len)
 {
@@ -138,6 +168,13 @@ static void put_bytes(struct line *l, const char *label, const unsigned char *p,
 	put(l, "=");
 	if (!p) {
 		put(l, "NULL");
+		return;
+	}
+	if (!readable(p, n)) {
+		/* by-value argument, or a pointer into an unmapped page */
+		put(l, "<byvalue:0x");
+		put_hex(l, (unsigned long)p, 8);
+		put(l, ">");
 		return;
 	}
 	put(l, "[");
@@ -639,7 +676,7 @@ int ioctl(int fd, unsigned long cmd, ...)
 	/* Remember the FAPex I2C OpenParam per fd, so the proxy shim can re-apply
 	 * it on a fresh handle (§5.5). */
 	if (nr == FAPEX_I2C_OPEN_NR && (dir & IOC_WRITE) && arg && size >= 24 &&
-	    fd >= 0 && fd < MAX_FD) {
+	    readable(arg, 24) && fd >= 0 && fd < MAX_FD) {
 		const unsigned char *s = arg;
 		int k;
 		for (k = 0; k < 24; k++)
@@ -650,7 +687,7 @@ int ioctl(int fd, unsigned long cmd, ...)
 	/* input side, before the call */
 	if ((dir & IOC_WRITE) && arg)
 		put_bytes(&l, "in", arg, size);
-	if (nr == FAPEX_I2C_RW && arg) {
+	if (nr == FAPEX_I2C_RW && arg && readable(arg, 20)) {
 		/* FAPEX_I2C_RWParamStrT: u8 slave; pad; u8* tx; u32 txlen;
 		 * u8* rx; u32 rxlen  (ARM EABI, 20 bytes) */
 		unsigned char *a = arg;
@@ -777,7 +814,8 @@ after_call:
 	/* rx is only meaningful for a READ.  For a WRITE the RWParam's rxDataPtr
 	 * field is leftover garbage (seen as 0x1), so dereferencing it to log rx
 	 * would SIGSEGV -- guard on the direction. */
-	if (r >= 0 && nr == FAPEX_I2C_RW && (dir & IOC_READ) && arg) {
+	if (r >= 0 && nr == FAPEX_I2C_RW && (dir & IOC_READ) && arg &&
+	    readable(arg, 20)) {
 		unsigned char *a = arg;
 		unsigned char **rxp = (unsigned char **)(a + 12);
 		unsigned int rxlen = *(unsigned int *)(a + 16);
