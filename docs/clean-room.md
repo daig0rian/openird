@@ -36,3 +36,33 @@ OpenIRD の配布物は GPL ソースからの再ビルドと自前実装だけ�
   では拾えないため、レビュー時に PR の目的で判断する（CONTRIBUTING.md §0）。
   ハードウェア動作ファームの cutter は別扱い＝範囲内（`docs/architecture.md`）。
 - 公開しない作業メモ（`CLAUDE.md` 等）の commit。
+
+## 機械強制（どこが何を止めるか）
+
+規律を文章だけで支えない。以下は人の記憶やエージェントの文脈保持に依存しない層。
+
+| 止める対象 | 実体 | 効くタイミング |
+|---|---|---|
+| 逆アセンブラ/デコンパイラの**実行** | `.claude/hooks/no-disasm.sh`（PreToolUse hook） | コマンドが発行された瞬間 |
+| 逆アセ成果物（`*.asm` `*.lst` `*.i64` 等）の commit | `.githooks/pre-commit` | commit 時 |
+| 逆アセリストの書き起こし・デコンパイラ出力の混入 | 同上（内容ヒューリスティック） | commit 時 |
+| `docs/specs/` の provenance コメント欠落 | 同上 | commit 時 |
+| ベンダ blob・ダンプ・鍵・作業メモの commit | 同上 ＋ `.gitignore` | commit 時 |
+| `Origin:` / `Spec-Ref:` trailer の欠落 | `.githooks/commit-msg` | commit 時 |
+| 規律が context から失われること | `.claude/rules/clean-room.md`（常時ロード・圧縮後に再注入）＋ SessionStart hook | セッション中／context 圧縮直後 |
+
+有効化: git フックは clone ごとに `tools/setup-hooks.sh`（`make hooks`）が必要。
+`.claude/` 側は clone だけで効くが、**リポジトリのディレクトリでセッションを開いた
+場合に限る**（プロジェクトスコープの設定のため。他リポジトリには影響しない）。
+
+観察として許されるもの（PreToolUse hook が通す）: `strings` / usage / ログ /
+`/proc` / `strace` / `ltrace` / `readelf` / `nm` / `objdump -h,-t,-s` /
+バス信号 / USB 列挙。gdb はデータを見る用途では可、命令列を見る用途では不可。
+
+誤検知の逃げ道は 2 つ。コマンド内のマークダウン インラインコード（バッククォートで
+囲んだ部分）は判定前に除去されるので、規約やツール名への言及は通る。それでも
+引っかかる場合のみ、コマンドに `#cleanroom-allow` を明示する。
+
+限界: hook はコマンド文字列を見るので、**スクリプトファイルの中身は走査しない**。
+想定している脅威は「規律を文脈から失った状態の作業者・エージェント」であって、
+回避を試みる相手ではない。

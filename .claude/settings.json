@@ -14,6 +14,19 @@
           }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "bash",
+            "command": "sh \"${CLAUDE_PROJECT_DIR}/.claude/hooks/clean-room-brief.sh\"",
+            "timeout": 15
+          }
+        ]
+      }
     ]
   }
 }

@@ -1,7 +1,9 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-2.0-only
-# OpenIRD pre-commit hook: ベンダ blob・鍵・公開しない作業メモ・巨大ファイルの混入を拒否。
-# ガードレール（CLAUDE.md §1/§2, CONTRIBUTING.md §0）の機械強制。
+# OpenIRD pre-commit hook: ベンダ blob・鍵・逆アセ成果物・公開しない作業メモ・
+# 巨大ファイルの混入を拒否。ガードレール（CONTRIBUTING.md §0, docs/clean-room.md）の
+# 機械強制。逆アセンブルの「実行」を止めるのは .claude/hooks/no-disasm.sh の側で、
+# こちらは成果物がリポジトリに入るのを止める網。
 added="$(git diff --cached --name-only --diff-filter=AM)"
 fail=0
 [ -z "$added" ] && exit 0
@@ -16,6 +18,21 @@ for f in $added; do
     *.bin|*.img|*.rom|*.nand|*.dump|*.mtd|*.ko|*.so|*.so.*) \
                           echo "✗ バイナリ/blob は commit 禁止: $f"; fail=1; continue ;;
     *.key|*.pem|*.aes)    echo "✗ 鍵素材は commit 禁止: $f"; fail=1; continue ;;
+    # 逆アセンブラ/デコンパイラの成果物・作業ファイル（.S は GPL 由来の正当な
+    # アセンブリなので対象外）。
+    *.asm|*.lst|*.dis|*.disasm|*.idb|*.i64|*.rzdb|*.bndb|*.gpr) \
+                          echo "✗ 逆アセ/デコンパイル成果物は commit 禁止: $f"; fail=1; continue ;;
+  esac
+
+  # docs/specs/ の仕様は provenance コメントを必ず持つ。clean-room の firewall
+  # （観察と実装の間）が機能していることの外形証跡。
+  case "$f" in
+    docs/specs/*.md)
+      if ! head -12 "$f" | grep -q 'Open 層'; then
+        echo "✗ docs/specs/ の仕様に provenance コメントがありません: $f"
+        echo "  先頭に <!-- Open 層: <観察の出自>。逆アセ由来の内部ロジックは置かない。--> を置く。"
+        fail=1; continue
+      fi ;;
   esac
 
   # 先頭バイトで判定（テキスト以外 = ELF / squashfs / 既知コンテナ）
@@ -33,6 +50,24 @@ for f in $added; do
   # 本文がパターンを「言及」するだけのソースを誤検知しないよう枠ごと照合。
   if grep -qI -- '-----BEGIN[A-Z ]*PRIVATE KEY-----' "$f" 2>/dev/null; then
     echo "✗ 秘密鍵の混入疑い: $f"; fail=1; continue
+  fi
+
+  # 逆アセンブルリストの書き起こしを拒否（clean-room: 逆アセ由来の内部ロジック・
+  # 具体アドレスは仕様にもコードにも置かない）。「アドレス: バイト列 ニーモニック」
+  # が 3 行以上あれば拒否。ニーモニックを ARM/MIPS の実在語彙に限定することで、
+  # 仕様に載る hexdump（xxd 形式。バイト列の後ろが ASCII 列）を誤検知しない。
+  mn='ldr|ldrb|ldrh|str|strb|strh|mov|movw|movt|mvn|add|adds|sub|subs|rsb|and|orr'
+  mn="$mn|eor|tst|teq|cmp|cmn|mul|mla|bic|bl|blx|bx|beq|bne|swi|svc|push|pop|ldm"
+  mn="$mn|stm|lsl|lsr|asr|nop|lw|sw|lb|lbu|sb|lui|addiu|addu|subu|jal|jalr|jr"
+  mn="$mn|beqz|bnez|bgez|slt|sltu|sltiu|mfc0|mtc0|syscall"
+  hits="$(grep -cE "^[[:space:]]*[0-9a-f]{4,16}:[[:space:]]+[0-9a-f]{2}[0-9a-f ]{0,22}[[:space:]]+($mn)([[:space:]]|\$)" "$f" 2>/dev/null || true)"
+  if [ "${hits:-0}" -ge 3 ]; then
+    echo "✗ 逆アセンブルリストの混入疑い: $f（$hits 行。docs/clean-room.md）"; fail=1; continue
+  fi
+  # デコンパイラ出力のバナー。空白を [[:space:]]+、ハイフンを [-] で書くことで、
+  # このファイル自身の文字列が検査に引っかからないようにしている（自己一致回避）。
+  if grep -qIE 'Generated[[:space:]]+by[[:space:]]+IDA|Ghidra[[:space:]]+decompil|[Dd]ecompiled[[:space:]]+(by|with)|retdec[-]decompiler' "$f" 2>/dev/null; then
+    echo "✗ デコンパイラ出力の混入疑い: $f"; fail=1; continue
   fi
 
   # サイズ警告（1MB 超）
