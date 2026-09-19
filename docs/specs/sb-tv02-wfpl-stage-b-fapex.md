@@ -713,13 +713,24 @@ GPL ソースと vendor バイナリ `dione_server`（`grep -a` の printable st
   パスは H.264/AAC にトランスコードして配信**するので生 TS は出さない。**THROUGH に切れば生 TS が
   SoC TSD に届く**。`SetScrambledPacketNotifier`（GPL `fapex_config_tsd.c`）から TSD が扱う TS は
   **スクランブル済み**＝目標の生 TS と確定。
-- **Factory Test Mode**（観察の駆動役に最適）: `Factory_EnterFactryTestMode`（"Hello Factory Port
-  (please input passcommand)", usbtty 経由）配下に薄い直叩き原語 —
+- **工場テストシェル**（観察の駆動役に最適）: **パスコマンドは要らない**。`dione_server` を
+  起動すると stdin（シリアルコンソール）にプロンプト `-> ` が出て 84 コマンドが使える
+  （2026-09-19 実機。`Hello Factory Port (please input passcommand)` は USB シリアル側の
+  チャネルに向けた案内で、stdin の可用性とは無関係。`testmode` はコマンド表 075 番の
+  引数 1 個のコマンドで、入場の鍵ではない）。詳細は
+  `docs/specs/sb-tv02-wfpl-vendor-boot.md` §5。配下に薄い直叩き原語 —
   `Factory_SetTunerFreq`（直接選局）, `Factory_CheckTunerLock`/`_CheckTunerBER`/**`_CheckTunerTS`**,
   `SetLNBPower`/`GetLNBPower`/`GetLNBShortState`（**BS/CS アンテナ電源**）, `TunerPowerOn/Off`,
   `DTV_POWER_CTRL_*`, `ForceStartSignalMonitorUnlock`（ロック無しでも信号監視）。制御は Option バイト方式
   （`[CMD-IN] Option = 0x%02x`）。
 - **BS/CS アンテナ電源 = `SetLNBPower`**（`GetLNBShortState`＝過電流検知つき）。衛星選局時に別途 ON にする。
+- **TSD の実測パラメータ（2026-09-20）**: ベンダは `tsSelect=0 (CH_A)` / **`iflags=1`（直列+PS）** /
+  `bufferSize=0x3ac000` / `pid=0x0000` / `flags=0x04` で開く。CH_A と CH_B の 2 系統。
+  `SET_BUFFER_READSIZE`(0x9A) は **値渡し**。詳細は後述の「ベンダ daemon の TSD 設定」。
+- **TS のゲートは復調器ではなく Dione の TsStreamer**（2026-09-19 実機で確定）。復調器は常時 TS を
+  出しており、`sfreq` だけでは `chktunerts` が `No TS_IN`、`settuner` 後は `sfreq` で再選局しても
+  TS が維持される。∴ TSD を自前で読む観察は **`settuner` を使わず `sfreq` でロックさせる**と
+  競合しない（`docs/specs/sb-tv02-wfpl-vendor-boot.md` §5）。
 
 ### 生 TS の 2 経路（H を優先・段階C のクリーン性を左右）
 SoC の TSD は入力を **(a) HW TS 入力 CH（`INPUT_CH_A/B/C`, serial/parallel）** と
@@ -754,6 +765,59 @@ Board」派生（リファレンスは demod→SoC TSD 直結が標準）。→ 
   読む（ラップは linear 末尾でクランプ）→ `SET_BUFFER_READSIZE(consumed)` で read ポインタを進める。
   read() 直読みも lib にある（`FAPEX_TSD_Read`→`read(fd)`）が、当面 mmap+READINFO を使う。
 
+### ★ベンダ daemon の TSD 設定（2026-09-20 実機・実測パラメータ）
+
+観測 rig（`docs/specs/sb-tv02-wfpl-vendor-boot.md` §6。自前カーネル＋ベンダ userland を
+純正のまま起動し、ベンダアプリだけ手で起動する）で `dione_server` を
+`LD_PRELOAD=fapex_trace.so` 付きで動かし、工場テストシェルに
+`forceinit` → `dpower 1 1` → `settuner 0 557142857 0 0` を流して**地上 ch27 にロックし
+`there is TS_IN` が成立した状態**で捕捉した列。上の ABI 記述（GPL ヘッダ由来）に対する
+**実際の引数値**にあたる。生ログの抜粋は `temp/observe/tsd-setup-settuner.txt`。
+
+```
+[setup]
+open  fapi000 (TSD0 common)   → nr=0x90 OPEN W[20]:
+        useStc=0  tsSelect=0 (CH_A)  syncByteDistance=0  iflags=1  oflags=0
+open  fapi004 (channel sub)   → nr=0xfd OPEN_SUBID {sub_id=0x04, channelNo=0}
+                              → nr=0x95 SET_PID_FILTER {pid=0x0000, flags=0x04,
+                                   bufferSize=0x3ac000, thH=0x0000b798, thL=0}
+mmap  fapi004 len=0x3ac000    → 0x400eb000
+
+open  fapi001 (TSD1 common)   → nr=0x90 OPEN W[20]:
+        useStc=0  tsSelect=1 (CH_B)  syncByteDistance=0  iflags=1  oflags=0
+open  fapi036 (channel sub)   → nr=0xfd OPEN_SUBID {sub_id=0x24, channelNo=0}
+                              → nr=0x95 SET_PID_FILTER {pid=0x0000, flags=0x04,
+                                   bufferSize=0x3ac000, thH=0x0002de60, thL=0}
+mmap  fapi036 len=0x3ac000    → 0x40497000
+
+[start]  nr=0x01 START を fapi004 と fapi036 の両方に
+[poll]   nr=0x9c GET_BUFFER_READINFO R[24]:
+           fillSize=0x0000bb44 readOffset=0 sectionOffset=0 sectionLength=0
+           sectionNo=0xffffffff bufferStatus=0x00000020
+         以降 fillSize≈0xba88/0xb9cc、readOffset が 0xbb44 → 0x0175cc → 0x022f98 と進む
+         ＋ nr=0x9a SET_BUFFER_READSIZE、nr=0x9e GET_BUFFER_LEVEL R[4]（0x468/0x3ac/0x524…）
+```
+
+**確定した点**:
+
+- **`iflags = 1` ＝ 直列 + PS モード。** `AM_SYNC(0x20)` も `INV_CLK(0x04)` も立てない。
+  → `tools/fapex-ts` の既定 `--mode parps`（`iflags=3`＝並列+PS）と**食い違う**。復調器の
+  TS 出力設定と対で決まる値なので、総当りより先にこの実測値を使うべき。
+- **入力は `CH_A`**（`tsSelect=0`）。`fapex-ts` の既定 `--input A` は合っていた。
+- **ベンダは TSD を 2 系統開く**: CH_A(`fapi000`+`fapi004`) と CH_B(`fapi001`+`fapi036`)。
+  `bufferSize` は両系統 `0x3ac000`、違うのは `thH` だけ（`0xb798` / `0x2de60`）。
+- `sub_id` は channel ノードの minor と一致（`fapi004`→`0x04`、`fapi036`→`0x24`=36）。
+  ABI 記述の「`sub_id=minor`」を実機で確認。
+- `flags=0x04` で `FLTFLAGS_RM_TS_HEADER(0x1000)` は立っていない＝188B 生パケットのまま
+  という ABI 記述どおり。`pid=0x0000`（PAT）。
+- `bufferStatus=0x20`、`sectionNo=0xffffffff`。
+
+**ABI 記述の訂正**: `SET_BUFFER_READSIZE`(0x9A) は `_IOW(...,u32)` とエンコードされて
+いるが、**実際は値渡し**である。トレースが出す `in=` のバイト列は、その整数をポインタと
+みなして読んだ先（たまたまマップされているコード領域）のゴミで、ARM 命令列に見える。
+信じてはいけない。同種の値渡し引数は `fapex-trace` の SIGSEGV の原因でもあった
+（`msync` による読み取り可能性プローブで対処。コミット `d7b626e`）。
+
 ### ツール `tools/fapex-ts`（実装・ビルド済み）
 上記 ABI だけで TSD demux 出力を読む clean な chardev 利用者。`probe`（単発）/`scan`（HW 入力
 CH_A/B/C × {serial,par,parps}(+amsync) 総当りで sync を探す＝**Path H 判定**）/`capture`（生 TS を
@@ -761,11 +825,20 @@ CH_A/B/C × {serial,par,parps}(+amsync) 総当りで sync を探す＝**Path H �
 probe は既定 **pid=0x0000（PAT＝常時存在・非スクランブル）** で TS 到来を確認。
 
 ### 未解決・次
-- **Path H の実機判定**: 復調器を tune+lock（`fapex-i2c`＋mainline `tc90522.c`/`xc5000.c`）→
-  `fapex-ts scan` で locked な CH を探す。locked → demod 直結＝Path H 確定（Dione 不要の最短経路）。
-  空振り → Path D（Dione を THROUGH で上げ `--linauto` で TSD packet-RAM を読む）。
-- **whole-TS（全 PID）取得機構**: 現状 1 PID=1 channel。channel 31 の `bm_wrap`（`PvrChannelSet`）か、
-  daemon の TSD 設定（`TSD_SET_INPUT`/PID 群）を fapex-trace で観察して確定する。
+- **Path H の実機判定**: 選局は rig のベンダ工場シェルで済む（`forceinit`/`dpower 1 1`/
+  `sfreq 1 <Hz>` で復調器が LOCK。`settuner` を使わなければ Dione の TsStreamer は開かれず
+  TSD が空く）。その状態で `fapex-ts` を **CH_A・`iflags=1`（直列+PS）** で叩く
+  ＝上の実測パラメータを使う。総当り `scan` は当面不要。
+  - **2026-09-20 の試行は失敗**: `fapex-ts scan` が最初の組み合わせでブロックした
+    （出力は ioctl 定数と "sweeping" の 2 行だけ）。デーモンが TSD を設定済みの状態でだけ
+    セットアップを通過し `empty data` を繰り返した（＝掃いた組み合わせに TS が無い）。
+    既定が `iflags=3` で実測と食い違っていたこと、および段階ごとのログとタイムアウトが
+    無くどの ioctl で止まったか分からないことが原因の候補。**ツール側の修正が先**。
+  - 空振りが確定したら Path D（Dione を THROUGH で上げ `--linauto` で TSD packet-RAM）。
+- **whole-TS（全 PID）取得機構**: 現状 1 PID=1 channel。ベンダも `pid=0x0000` で 1 PID しか
+  開かないので、**ベンダ観察からは答えが出ない**（＝ベンダは全 PID を必要としていない）。
+  channel 31 の `bm_wrap`（`PvrChannelSet`）か、PID を複数 channel に並べる方式を自前で
+  決める。段階 C の chardev 契約（whole-TS を出す）に直結する設計判断。
 - **Transcode THROUGH の設定列**: `SetTranscodeMode(THROUGH)` が h57fmb0 のどの ioctl 列になるかを
   観察（Path D で生 TS を得る場合に必要。Path H なら不要の可能性）。
 - **LNB 電源**: `SetLNBPower` の実体（GPIO か I2C か Dione コマンドか）を観察して衛星系で ON にする。
