@@ -303,6 +303,7 @@ static long long drain(int fd, uint8_t *map, size_t maplen, int outfd,
 	long long total = 0;
 	unsigned pkts = 0; int locked = 0;
 	long t0 = now_ms();
+	long tdiag = t0;
 	uint8_t carry = 0; /* previous last byte, for sync check across reads */
 	(void)carry;
 
@@ -317,6 +318,21 @@ static long long drain(int fd, uint8_t *map, size_t maplen, int outfd,
 		tsd_readinfo_t ri;
 		memset(&ri, 0, sizeof ri);
 		ioctl(fd, TSD_GET_READINFO, &ri);
+
+		/* Once a second, say what the driver reports even when nothing is
+		 * arriving.  A bare "0 bytes" cannot distinguish "no TS on this input"
+		 * from "TS arrives but no packet matches the PID filter"; bufferStatus
+		 * and the buffer level can.  The vendor was seen with
+		 * bufferStatus=0x20 while TS was flowing (§5.6). */
+		if (now_ms() - tdiag >= 1000) {
+			uint32_t lvl = 0;
+			tdiag = now_ms();
+			ioctl(fd, TSD_GET_LEVEL, &lvl);
+			fprintf(stderr, "[diag] fill=%u roff=0x%x status=0x%x level=%u "
+				"secOff=%u secLen=%u secNo=%d\n",
+				ri.fillSize, ri.readOffset, ri.bufferStatus, lvl,
+				ri.sectionOffset, ri.sectionLength, ri.sectionNo);
+		}
 		if (ri.fillSize == 0) {
 			struct timespec s = { 0, 20 * 1000000L }; /* 20ms */
 			nanosleep(&s, NULL);
