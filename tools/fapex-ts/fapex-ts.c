@@ -46,6 +46,8 @@
 #include <time.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <signal.h>
+
 
 #define FAPEX_DEV_TYPE 0xFF
 #define NB_TSD         0x90
@@ -113,14 +115,30 @@ typedef struct {          /* FAPEX_TSD_ReadInfoStrT (24B) */
 #define FLT_SWAPRD_SWAP  0x00000002
 
 /* --- options --- */
-static uint32_t g_tsSelect = IN_CH_A;
-static uint32_t g_iflags   = IF_SP_MODE3;   /* reference-board default (sample) */
-static uint32_t g_sync     = 0;             /* 0 = driver default */
-static int32_t  g_chan     = 0;
-static int32_t  g_subid    = -1;            /* default: parse from SUBDEV path */
-static uint32_t g_pid      = 0x0000;        /* PAT: always present & clear */
-static uint32_t g_flags    = 0;             /* keep TS header, no swap */
-static uint32_t g_bufkb    = 512;
+/* Defaults are the values the vendor daemon actually passes, captured with
+ * fapex-trace while the demodulator was locked on a real channel and TS was
+ * flowing (docs/specs/sb-tv02-wfpl-stage-b-fapex.md §5.6, "ベンダ daemon の TSD
+ * 設定").  They replace the reference-board guesses this tool started with --
+ * notably iflags, which was 3 (parallel+PS) here but is 1 (serial+PS) on this
+ * board, and flags, where the vendor sets a bit (0x04) that the GPL headers do
+ * not name. */
+static uint32_t g_tsSelect = IN_CH_A;       /* observed: tsSelect=0 */
+static uint32_t g_iflags   = IF_SP_MODE1;   /* observed: iflags=1 (serial+PS) */
+static uint32_t g_sync     = 0;             /* observed: syncByteDistance=0 */
+static int32_t  g_chan     = 0;             /* observed: channelNo=0 */
+static int32_t  g_subid    = -1;            /* default: parse from SUBDEV path
+                                             * (observed: sub_id == minor) */
+static uint32_t g_pid      = 0x0000;        /* observed: pid=0 (PAT) */
+static uint32_t g_flags    = 0x00000004;    /* observed: flags=0x04 (unnamed in
+                                             * the GPL headers; RM_TS_HEADER is
+                                             * NOT set, so packets stay 188B) */
+static uint32_t g_bufkb    = 3760;          /* observed: bufferSize=0x3ac000 */
+static uint32_t g_thh      = 0xb798;        /* observed: thH for the CH_A channel.
+                                             * Must be well below bufferSize; the
+                                             * old code used the whole buffer. */
+static int      g_setinput = 0;             /* the vendor issues OPEN only, never
+                                             * SET_INPUT.  Opt in to compare. */
+static int      g_stage_tmo = 10;           /* per-ioctl watchdog, seconds */
 static int      g_secs     = 0;             /* 0 = default per cmd */
 static long long g_bytes   = 0;             /* 0 = no limit */
 static const char *g_out   = NULL;
@@ -130,6 +148,85 @@ static long now_ms(void)
 	struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
 	return (long)(ts.tv_sec * 1000L + ts.tv_nsec / 1000000L);
 }
+
+/* --- stage log + per-call watchdog -----------------------------------------
+ * On 2026-09-20 a scan run produced nothing but its banner and never returned,
+ * and there was no way to tell which ioctl it was sitting in.  Two fixes:
+ * every step announces itself BEFORE it runs (and the line is flushed), and a
+ * SIGALRM without SA_RESTART breaks a blocked call so the tool reports instead
+ * of hanging.  stdout/stderr are line buffered from main(), so redirecting to a
+ * file keeps the progress visible. */
+static volatile sig_atomic_t g_alarmed;
+
+static void on_alarm(int sig) { (void)sig; g_alarmed = 1; }
+
+static void stage(const char *what)
+{
+	fprintf(stderr, "[stage] %s\n", what);
+	fflush(stderr);
+}
+
+static void wd_arm(void)
+{
+	static int installed;
+
+	if (!installed) {
+		struct sigaction sa;
+
+		memset(&sa, 0, sizeof sa);
+		sa.sa_handler = on_alarm;	/* deliberately no SA_RESTART */
+		sigaction(SIGALRM, &sa, NULL);
+		installed = 1;
+	}
+	g_alarmed = 0;
+	if (g_stage_tmo > 0)
+		alarm((unsigned)g_stage_tmo);
+}
+
+static void wd_off(void) { alarm(0); }
+
+static void wd_report(const char *what)
+{
+	if (g_alarmed) {
+		fprintf(stderr, "[stage] %s TIMED OUT after %ds -- the driver is "
+			"blocking here\n", what, g_stage_tmo);
+		fflush(stderr);
+	}
+}
+
+static int xopen(const char *path, int flags, const char *what)
+{
+	int fd;
+
+	stage(what);
+	wd_arm();
+	fd = open(path, flags);
+	wd_off();
+	wd_report(what);
+	if (fd < 0) {
+		fprintf(stderr, "open(%s): %s\n", path, strerror(errno));
+		fflush(stderr);
+	}
+	return fd;
+}
+
+/* FAPex ioctls report their own status in the return value, so the caller
+ * decides what non-zero means; this only adds the log and the watchdog. */
+static int xioctl(int fd, unsigned long req, void *arg, const char *what)
+{
+	int r;
+
+	stage(what);
+	wd_arm();
+	r = ioctl(fd, req, arg);
+	wd_off();
+	wd_report(what);
+	return r;
+}
+
+/* NB: the ioctls whose argument is passed BY VALUE despite the _IOW encoding
+ * (SET_BUFFER_READSIZE, §5.6) are called directly in the drain loop -- logging
+ * every iteration there would drown the stage log. */
 
 /* Parse trailing integer of "/dev/fapi/fapi004" -> 4 */
 static int minor_from_path(const char *p)
@@ -142,15 +239,18 @@ static int minor_from_path(const char *p)
 /* Open TSD block-common node, TSD_OPEN + SET_INPUT with current input config. */
 static int tsd_open_block(const char *dev)
 {
-	int fd = open(dev, O_RDWR | O_SYNC);
-	if (fd < 0) { fprintf(stderr, "open(%s): %s\n", dev, strerror(errno)); return -1; }
+	int fd = xopen(dev, O_RDWR | O_SYNC, "open TSD common node");
+	if (fd < 0) return -1;
 	tsd_open_t op = { 0 /*useStc*/, g_tsSelect, g_sync, g_iflags, 0 };
-	if (ioctl(fd, TSD_OPEN, &op) != 0) {
+	if (xioctl(fd, TSD_OPEN, &op, "TSD_OPEN") != 0) {
 		fprintf(stderr, "TSD_OPEN(sel=%u iflags=0x%x sync=%u): %s\n",
 			g_tsSelect, g_iflags, g_sync, strerror(errno));
 		close(fd); return -1;
 	}
-	if (ioctl(fd, TSD_SET_INPUT, &op) != 0) {
+	/* The vendor daemon issues OPEN only -- SET_INPUT never appears in its
+	 * trace -- so this is off by default (§5.6).  --setinput turns it back on
+	 * for comparison. */
+	if (g_setinput && xioctl(fd, TSD_SET_INPUT, &op, "TSD_SET_INPUT") != 0) {
 		fprintf(stderr, "TSD_SET_INPUT: %s\n", strerror(errno));
 		close(fd); return -1;
 	}
@@ -158,28 +258,33 @@ static int tsd_open_block(const char *dev)
 }
 
 /* Open a demux channel on the block: open sub node, OPEN_SUBID, SET_PID_FILTER,
- * mmap the ring.  Returns sub fd and fills *map/*maplen. */
+ * mmap the ring.  Returns sub fd and fills the map pointer and length. */
 static int tsd_open_channel(const char *subdev, uint8_t **map, size_t *maplen)
 {
 	int sub_minor = (g_subid >= 0) ? g_subid : minor_from_path(subdev);
-	int fd = open(subdev, O_RDWR | O_SYNC);
-	if (fd < 0) { fprintf(stderr, "open(%s): %s\n", subdev, strerror(errno)); return -1; }
+	int fd = xopen(subdev, O_RDWR | O_SYNC, "open TSD channel node");
+	if (fd < 0) return -1;
 
 	tsd_subid_t si = { sub_minor, g_chan };
-	if (ioctl(fd, TSD_OPEN_SUBID, &si) != 0) {
+	if (xioctl(fd, TSD_OPEN_SUBID, &si, "TSD_OPEN_SUBID") != 0) {
 		fprintf(stderr, "TSD_OPEN_SUBID(sub=%d ch=%d): %s\n",
 			sub_minor, g_chan, strerror(errno));
 		close(fd); return -1;
 	}
 
+	/* thH is a fill threshold, not the buffer size: the vendor uses 0xb798
+	 * against a 0x3ac000 buffer (§5.6).  Setting it to the whole buffer, as
+	 * this tool used to, asks the driver to hold everything back. */
 	uint32_t bufsz = g_bufkb * 1024;
-	tsd_pid_t pf = { g_pid, g_flags, bufsz, bufsz, 0 };
-	if (ioctl(fd, TSD_SET_PID_FLT, &pf) != 0) {
-		fprintf(stderr, "TSD_SET_PID_FILTER(pid=0x%x flags=0x%x buf=%u): %s\n",
-			g_pid, g_flags, bufsz, strerror(errno));
+	uint32_t thh = g_thh < bufsz ? g_thh : bufsz / 8;
+	tsd_pid_t pf = { g_pid, g_flags, bufsz, thh, 0 };
+	if (xioctl(fd, TSD_SET_PID_FLT, &pf, "TSD_SET_PID_FILTER") != 0) {
+		fprintf(stderr, "TSD_SET_PID_FILTER(pid=0x%x flags=0x%x buf=%u thH=%u): %s\n",
+			g_pid, g_flags, bufsz, thh, strerror(errno));
 		close(fd); return -1;
 	}
 
+	stage("mmap ring");
 	uint8_t *m = mmap(NULL, bufsz, PROT_READ, MAP_SHARED, fd, 0);
 	if (m == MAP_FAILED) {
 		fprintf(stderr, "mmap(%u): %s\n", bufsz, strerror(errno));
@@ -231,9 +336,11 @@ static long long drain(int fd, uint8_t *map, size_t maplen, int outfd,
 			if (w < 0) { fprintf(stderr, "write out: %s\n", strerror(errno)); break; }
 		}
 		total += n;
-		uint32_t consumed = n;
-		if (ioctl(fd, TSD_SET_READSIZE, &consumed) != 0) {
-			fprintf(stderr, "SET_READSIZE(%u): %s\n", consumed, strerror(errno));
+		/* BY VALUE, despite the _IOW encoding: that is how the vendor calls
+		 * it (§5.6).  Passing a pointer here left the read pointer where it
+		 * was, so the ring never drained. */
+		if (ioctl(fd, TSD_SET_READSIZE, (unsigned long)n) != 0) {
+			fprintf(stderr, "SET_READSIZE(%u): %s\n", n, strerror(errno));
 			break;
 		}
 		if (ri.bufferStatus & 0x0080 /*OVERFLOW-ish*/)
@@ -262,7 +369,7 @@ static int do_capture(const char *dev, const char *subdev)
 		if (outfd < 0) { fprintf(stderr, "open(%s): %s\n", g_out, strerror(errno));
 			munmap(map, maplen); close(sfd); close(bfd); return 1; }
 	}
-	if (ioctl(sfd, TSD_START, NULL) != 0)
+	if (xioctl(sfd, TSD_START, NULL, "TSD_START") != 0)
 		fprintf(stderr, "START: %s (continuing)\n", strerror(errno));
 
 	long long bytes = 0; unsigned pkts = 0; int locked = 0;
@@ -284,7 +391,7 @@ static int do_probe(const char *dev, const char *subdev)
 	uint8_t *map = NULL; size_t maplen = 0;
 	int sfd = tsd_open_channel(subdev, &map, &maplen);
 	if (sfd < 0) { close(bfd); return 1; }
-	if (ioctl(sfd, TSD_START, NULL) != 0)
+	if (xioctl(sfd, TSD_START, NULL, "TSD_START") != 0)
 		fprintf(stderr, "START: %s (continuing)\n", strerror(errno));
 
 	int secs = g_secs > 0 ? g_secs : 5;
@@ -319,7 +426,7 @@ static int do_scan(const char *dev, const char *subdev)
 				uint8_t *map = NULL; size_t maplen = 0;
 				int sfd = tsd_open_channel(subdev, &map, &maplen);
 				if (sfd < 0) { close(bfd); continue; }
-				ioctl(sfd, TSD_START, NULL);
+				xioctl(sfd, TSD_START, NULL, "TSD_START");
 				long long bytes = 0; unsigned pkts = 0; int locked = 0;
 				drain(sfd, map, maplen, -1, secs, 0, &bytes, &pkts, &locked);
 				ioctl(sfd, TSD_STOP, NULL);
@@ -346,7 +453,7 @@ static void usage(void)
 	  "opts:\n"
 	  "  --input A|B|C        HW TS input channel (tsSelect); default A\n"
 	  "  --linauto            packet-RAM linear-auto input (Path D); tsSelect=0x29\n"
-	  "  --mode serial|par|parps   SP mode 1/2/3; default parps (reference-board)\n"
+	  "  --mode serial|par|parps   SP mode 1/2/3; default serial (observed value)\n"
 	  "  --amsync             set AM_SYNC (auto sync)\n"
 	  "  --invclk             invert TS input clock\n"
 	  "  --sync N             syncByteDistance (0=default,188,204)\n"
@@ -355,17 +462,37 @@ static void usage(void)
 	  "  --pid 0xN            PID filter (default 0x0000 = PAT, always clear)\n"
 	  "  --rmhdr              remove TS header (default keep raw 188B packets)\n"
 	  "  --swap               enable read byte-swap\n"
-	  "  --bufkb N            ring buffer KB (default 512)\n"
+	  "  --bufkb N            ring buffer KB (default 3760 = 0x3ac000, observed)\n"
+	  "  --thh N              fill threshold thH (default 0xb798, observed)\n"
+	  "  --fltflags 0xN       raw PID-filter flags (default 0x04, observed)\n"
+	  "  --setinput           also issue SET_INPUT (the vendor issues OPEN only)\n"
+	  "  --stage-timeout N    per-ioctl watchdog seconds, 0=off (default 10)\n"
 	  "  --secs N             duration (probe 5, scan 2 per combo, capture until limit)\n"
 	  "  --bytes N            capture byte limit (0 = unlimited)\n"
 	  "  -o FILE              capture output file (default stdout)\n"
-	  "notes: 'scan' sweeps CH_A/B/C x {serial,par,parps}(+amsync) to find which HW\n"
-	  "  input carries the demod TS => decides Path H. Demod must be tuned+locked first.\n");
+	  "notes:\n"
+	  "  Defaults match what the vendor daemon was observed to pass while a real\n"
+	  "  channel was locked and TS was flowing (spec §5.6), so 'probe' with no\n"
+	  "  options is the first thing to try.  'scan' sweeps CH_A/B/C x\n"
+	  "  {serial,par,parps}(+amsync) and is only the fallback.\n"
+	  "  The demod must be tuned and locked first.  On the observation rig use the\n"
+	  "  vendor factory shell: forceinit / dpower 1 1 / sfreq 1 <Hz>.  Use sfreq,\n"
+	  "  NOT settuner: settuner also opens the Dione TS streamer, which then fights\n"
+	  "  this tool for the TSD.\n"
+	  "  Every step is announced on stderr as [stage] before it runs, so if a call\n"
+	  "  blocks the last line names it.\n");
 }
 
 int main(int argc, char **argv)
 {
 	int i = 1;
+
+	/* Line buffered, so progress is visible when stdout is a file.  The 2026-09-20
+	 * run looked like a hang partly because the per-combination lines were still
+	 * sitting in the stdio buffer. */
+	setvbuf(stdout, NULL, _IOLBF, 0);
+	setvbuf(stderr, NULL, _IOLBF, 0);
+
 	for (; i < argc; i++) {
 		if (!strcmp(argv[i], "--input") && i + 1 < argc) {
 			char c = argv[++i][0];
@@ -396,6 +523,14 @@ int main(int argc, char **argv)
 			g_flags |= FLT_SWAPRD_SWAP;
 		} else if (!strcmp(argv[i], "--bufkb") && i + 1 < argc) {
 			g_bufkb = (uint32_t)strtoul(argv[++i], NULL, 0);
+		} else if (!strcmp(argv[i], "--thh") && i + 1 < argc) {
+			g_thh = (uint32_t)strtoul(argv[++i], NULL, 0);
+		} else if (!strcmp(argv[i], "--fltflags") && i + 1 < argc) {
+			g_flags = (uint32_t)strtoul(argv[++i], NULL, 0);
+		} else if (!strcmp(argv[i], "--setinput")) {
+			g_setinput = 1;
+		} else if (!strcmp(argv[i], "--stage-timeout") && i + 1 < argc) {
+			g_stage_tmo = atoi(argv[++i]);
 		} else if (!strcmp(argv[i], "--secs") && i + 1 < argc) {
 			g_secs = atoi(argv[++i]);
 		} else if (!strcmp(argv[i], "--bytes") && i + 1 < argc) {
