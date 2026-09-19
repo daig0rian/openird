@@ -84,10 +84,25 @@ OpenIRD の区画表では `/dev/mtd8` = **firstaid**（唯一の救助 rootfs�
 **ベンダ rootfs をそのまま起動させてはいけない**。rig では rcS から
 `slot_selector` を外す（§6）。
 
-## 5. 工場モード（`nop_dbgsh`）
+## 5. 工場テストシェル（`nop_dbgsh`）
 
-`dione_server` は debug shell スレッド（`nop_dbgsh_init` / `nop_dbgsh.c`）を持ち、
-パスコマンド `testmode testmode` で工場テストモードに入る。
+`dione_server` は debug shell スレッド（`nop_dbgsh_init` / `nop_dbgsh.c`）を持つ。
+**パスコマンドは要らない。** デーモンを起動すると stdin にプロンプト `-> ` が出て、
+その時点で 84 個のコマンドすべてが使える（実機確認・§5.1）。
+
+`Hello Factory Port (please input passcommand)` は**USB シリアル側のチャネル**に
+向けた案内で、stdin の可用性とは無関係。`testmode` はコマンド表の 075 番に登録された
+**引数 1 個（数値）のコマンド**であって、シェルに入るための鍵ではない（実機確認）:
+
+| 入力 | 応答 |
+|---|---|
+| `testmode` | `argument count mismatch!` |
+| `testmode testmode` | `arg err`（値が不正） |
+| `testmode 1` | `Factory_EnterFactryTestMode` を出し、**直後に daemon が exit(0)** |
+
+`testmode 1` は stdin でも USB シリアル側でも同じ挙動で、daemon が終了するため
+ウォッチドッグが約 20 秒後に実機をリセットする（§5.2）。工場テストシェルを使う作業では
+**打つ必要がない**。
 
 **入力チャネルは 2 系統**:
 
@@ -126,21 +141,98 @@ OpenIRD の区画表では `/dev/mtd8` = **firstaid**（唯一の救助 rootfs�
 **CAS 鍵系（`setdionekey`/`chkdionekey`/`deldionekey`/`chkotpstat`）は扱わない。**
 限定受信は永久にスコープ外（CONTRIBUTING.md §0）。存在の記録だけに留める。
 
-### `Factory_SetTunerFreq` の内部順序（ログ文字列より）
+### 実機での選局手順（確定・2026-09-19）
 
-同関数のログ文字列が、選局 1 回の手順をそのまま並べている:
+工場テストシェルのプロンプト `-> ` で、次の 3 行で実放送波にロックし TS まで通る。
 
 ```
-dione_forceInitializeDBG → DtvPower_DevicePowerDBG
-  → ControlPort_GetTsStreamHandle_DBG → TsStreamer_open
-  → SetTempKey → StartStream / TsStreamer_start
-  → DtvTuning_SetTSIDDBG
-  （終了時 StopStream / TsStreamer_stop / ReleaseTempKey）
+forceinit                      → dione_forceInitializeDBG。Dione の電源を入れ直し、
+                                 USB に再列挙させる（usb 2-1.4: new high speed USB
+                                 device ... / open takes 500 msec）。これを打たないと
+                                 open("/dev/h57fmb0") が ENODEV(19) で失敗し続ける
+dpower 1 1                     → DTV_POWER_CTRL_DEVICE: Power ON
+settuner 0 <freq Hz> 0 0       → Factory_SetTunerFreq。引数は「0 | <freq> | 0 | 0」と
+                                 エコーされる。第 1/3/4 引数の意味は未確定
 ```
 
-エラー文字列に `[ERROR] No Streamer`、`[ERROR] l-%d, TsStreamer_start() = %d`、
-`Sync byte of TS stream is bad.` があり、**TS の取り出しまで工場モードで閉じている**。
-`SetTempKey`/`ReleaseTempKey` は名前のみ記録する（鍵の内容には踏み込まない）。
+読み出し:
+
+| コマンド | 出力 |
+|---|---|
+| `gfreq` | `current: source=T / frequency=<Hz> / segment=12 seg`、`last:` に前回値 |
+| `chktunerstat` | `Factory_CheckTunerLock` / `ret=0, sync=1, cn=29, ber=0, agc=90` |
+| `gettunerber` | `Factory_CheckTunerBER` / 同じ値 + `i=` |
+| `gsignal` | `Sync=LOCK` `AGCLevel` `CN`(raw) `E_CN`(dB) `AntennaLevel` `BER_A/B/C` `BER_CAL_*` `Exist_A/B/C`（ISDB-T 階層） |
+| `chktunerts` | `Factory_CheckTunerTS` / `there is TS_IN. <n>[msec]` または `No TS_IN. ret = -1` |
+
+実測例（地上 ch27 = 557142857 Hz）: `Sync=LOCK / AGCLevel=90 / E_CN=29.0〜29.4 dB /
+AntennaLevel=77 / BER_A,B,C=0 / Exist_A=T, Exist_B=T, Exist_C=F`、`there is TS_IN. 0[msec]`。
+
+**`sfreq <系統> <Hz>` は復調器だけを選局する**（出力なし・即復帰）。これだけでも
+`Sync=LOCK` になるが `chktunerts` は `No TS_IN` のまま＝TS 経路は立たない。
+
+### `Factory_SetTunerFreq` の呼び出し列（実機で捕捉）
+
+`settuner 0 557142857 0 0` の実機出力。各段が `done :` で報告される。
+
+```
+Factory_SetTunerFreq
+0 | 557142857 | 0 | 0
+   done : dione_forceInitializeDBG
+   done : DtvPower_DevicePowerDBG          （DTV_POWER_CTRL_DEVICE: Power ON）
+   done : ControlPort_GetTsStreamHandle_DBG
+   done : TsStreamer_open
+   [ERROR] CmdReturn = 0x00020018 [ImpSendSyncCommand@WirelessSecureFirmwareCmd.c:579]
+   [ERROR] SecureCmd.ulCmdReturn = 131096 [ReleaseTempKey@SecureKeys.c:632]
+        ---> ReleaseTempKey() is err, But don't exit Factory_SetTunerFreq()
+   done : ReleaseTempKey / SetTempKey
+   done : StopStream / TsStreamer_stop
+   done : DtvTuning_SetTSIDDBG
+   done : DtvTuning_SetFreqDBG
+   done : StartTranscodeChange / GetTranscodeMode / SetTranscodeMode / CommitTranscode
+   done : TsStreamer_start / StartStream
+   finish : Factory_SetTunerFreq()
+```
+
+**秘匿鍵は生 TS 経路に不要。** `ReleaseTempKey` が secure firmware から
+`0x00020018` を返して失敗しても、コード自身が `don't exit` と宣言して処理を続け、
+選局と TS 到達は成立する。鍵の内容・用途には踏み込まない（CONTRIBUTING.md §0）が、
+「依存していない」という事実は段階 C の設計に効く。
+
+### TS のゲートは復調器ではなく Dione の TsStreamer（2026-09-19 確定）
+
+3 つの観察から確定した。
+
+1. `settuner` の前は `sfreq` で何度ロックさせても `chktunerts` は `No TS_IN`
+2. `settuner` の後に `sfreq` で再選局しても `there is TS_IN` は維持される
+3. 復調器レジスタ 256 バイトを「TS 無し」「TS 有り」の両状態でダンプして差分を取ると
+   14 個が違うが、**同一状態で 2 回読むと 14 個すべてが変動する**＝測定値であって
+   設定ではない（`0xf6` を候補としたが、連続 2 回の読みで `0x00`→`0x0a` と変動して否定）
+
+∴ **復調器は常時 TS を出しており、閉じているのは Dione(MB86H58) の TsStreamer**。
+`Factory_CheckTunerTS` が見ているのも Dione の TS 入力側。
+
+段階 C への含意: クリーン実装が必要なのは (a) 復調器・チューナの選局（mainline
+`tc90522.c` / `xc5000.c` の公開意味論で書ける）と (b) **TS の取り出し口**。(b) を Dione
+経由にすると proprietary な `h57fmb` に依存するため、`sb-tv02-wfpl-stage-b-fapex.md`
+§5.6 の「生 TS の 2 経路」のうち **Dione を通らない側（FAPex TSD / Path H）を採る**
+判断がここで裏づけられた。
+
+### 復調器レジスタの読み出し手段
+
+| コマンド | 対象 | 形式 |
+|---|---|---|
+| `tctregr <addr>` / `tctregw` | 復調器・地上側 | 引数 1 個、**16 進で解釈**（`16` も `0x10` と同じ）。出力 ` addr[0xNN] = 0xVV ` |
+| `tcsregr` / `tcsregw` | 復調器・衛星側 | 同上（未検証） |
+| `xcregr` / `xcregw` | チューナ（Xceive XC5200）側 | 同上（未検証） |
+| `cxdregr` / `cxdregw` | 別チップ向け | 同上（未検証） |
+
+ロック状態の 256 バイト全域ダンプを取得でき、個別読み出しで抜き取り検証した
+（0x1e=0x2a、0x39=0xaa、0x73=0x45、0xb0=0xa9 が一致）。**逆アセンブルを使わずに
+「ベンダの init が作った最終状態」が取れる**＝段階 C の仕様源になる。
+
+なお 0x85〜0x9a 付近と 0x7e・0xdb・0xf6 は読むたびに変動する（測定値・カウンタ）。
+設定レジスタと測定レジスタの切り分けには**同一状態での複数回読み**が必須。
 
 関連する Factory_* 一覧: `Factory_EnterFactryTestMode` `Factory_CheckSystemVersion`
 `Factory_CheckDione{TraConFW,FW,LoderFW}Version` `Factory_SetLed` `Factory_Ping`
@@ -183,6 +275,41 @@ rootfs と slot0 を OpenIRD の区画に置き、起動スクリプト 2 本だ
 
 元イメージの諸元: rootfs = 4.0/gzip/128KB、`bytes_used` 953,223（1MB 区画）。
 slot0 = 同じ、`bytes_used` 4,203,033（6MB 区画）。
+
+### rig の運用（実機で踏んだ制約・2026-09-19）
+
+- **ウォッチドッグ。** `dione_server` が動くとハードウェアウォッチドッグが走り、
+  デーモンが終了すると**約 20 秒後に実機がリセット**する。製品版 `/slot/app` に
+  `stop_watchdog` は無い（開発版パッケージのみ）。`/dev/wdtcounter` は存在するので、
+  rig 側で餌をやる仕掛けを足すのが次の課題。
+- **ネットワーク。** デーモンは `br0` を作って eth0 を配下に入れる。rig が eth0 に
+  静的 IP を振ったままだと二重になって LAN が落ちる。**デーモン起動前に
+  `ifconfig eth0 0.0.0.0`** を実行する（ベンダ自身の `/slot/app/d` がそうしている）。
+- **コンソールを手元に残す。** デーモンをそのまま起動すると stdin＝コンソールが
+  工場テストシェルに占有され、シェルコマンドが打てなくなる。stdin を FIFO にすると
+  両方使える:
+
+  ```sh
+  mkfifo /tmp/dbgin                  # 複数引数の mkfifo は効かない。1 個ずつ作る
+  sleep 999999 > /tmp/dbgin &
+  insmod /slot/drv/h57fmb.ko
+  dione_server < /tmp/dbgin > /dev/console 2>&1 &
+  echo "forceinit" > /tmp/dbgin      # 以後シェルから工場シェルへ注入できる
+  ```
+
+- **ファイルの持ち込み。** ベンダ rootfs に sshd は無く、busybox に `nc` も `base64` も
+  入っていない。使えるのは `wget` / `tftp` / `uudecode` / `md5sum`。デーモン起動前
+  （LAN が生きている間）に `wget http://<host>:<port>/<file>` で取るのが最も早い。
+- **観測ツールとの競合。** デーモンが TsStreamer を開いた状態で自前ツールが TSD を
+  掴むと双方が壊れる（デーモン側に `ts_streamer.c:467 errno_=22`）。TSD を使う観察は
+  `settuner` を使わず `sfreq` だけでロックさせる（＝TsStreamer 未使用）か、`playstop`
+  （引数 0）で閉じてから行う。
+- **偽 Factory Port。** `/dev/ttyUSB0`(188,0) は静的ノードとして存在し、レガシー BSD pty
+  の slave（`/dev/ttyp0`, 3,0）を `mount -o bind` すると `nop_common_USBSerialOpen` が
+  成功する（`can't open /dev/ttyUSB0` が消え、`receive from usbtty.` が出る）。master は
+  `/dev/ptyp0`(2,0) でパスがあるのでネットワーク非依存に注入できる。ただしレガシー pty は
+  slave を誰も開いていないと master の read が EIO になるため、slave を握る番人が必要。
+  自前カーネルは `CONFIG_LEGACY_PTYS=y` / `CONFIG_LEGACY_PTY_COUNT=16`。
 
 ### 復旧経路（2 本）
 
