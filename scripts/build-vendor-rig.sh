@@ -1,0 +1,199 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
+# 段階 B の観測 rig のイメージを、所有者のダンプから再現ビルドする。
+#
+#   scripts/build-vendor-rig.sh [--rootfs IMG] [--slot0 IMG] [--out DIR]
+#                               [--work DIR] [--verify]
+#
+# 作るもの（docs/specs/sb-tv02-wfpl-vendor-boot.md §6）:
+#   rig-rootfs.sqfs  mtd6 へ。ベンダ rootfs の /etc/init.d/rcS だけ差し替え
+#                    （slot_selector を通さない＝firstaid を守る）
+#   rig-slot0.sqfs   mtd7 へ。slot_entry.sh の末尾からベンダアプリ起動を除去し、
+#                    rig-daemon.sh と fapex_trace.so を同梱
+#
+# 方針:
+#   - ベンダバイナリは 1 バイトも改変しない。触るのはシェルスクリプト 2 本だけ。
+#   - root 権限を要求しない。ベンダ rootfs の squashfs は静的デバイスノードを 451 個
+#     持つので、非 root の unsquashfs で落ちた分を mksquashfs の pseudo-file で戻す。
+#   - 非 root 展開で umask に削られたモードも、マニフェストから chmod で戻す。
+#   - 2.6.31 の squashfs4 が読める設定に固定（gzip / 128KB / xattr 無し）。
+#
+# ダンプは git に入らない（所有者の解析対象）。--rootfs/--slot0 で場所を渡す。
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+RIG="$ROOT/tools/vendor-rig"
+ROOTFS_IMG="$ROOT/temp/parts/mtd6_rootfs.img"
+SLOT0_IMG="$ROOT/temp/parts/mtd7_slot0.img"
+OUT="$ROOT/temp/rig"
+WORK="${HOME}/openird-rig"
+VERIFY=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --rootfs) ROOTFS_IMG="$2"; shift 2 ;;
+    --slot0)  SLOT0_IMG="$2";  shift 2 ;;
+    --out)    OUT="$2";        shift 2 ;;
+    --work)   WORK="$2";       shift 2 ;;
+    --verify) VERIFY=1;        shift ;;
+    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+    *) echo "✗ 不明な引数: $1"; exit 1 ;;
+  esac
+done
+
+for t in unsquashfs mksquashfs; do
+  command -v "$t" >/dev/null || { echo "✗ $t が無い（apt install squashfs-tools）"; exit 1; }
+done
+for f in "$ROOTFS_IMG" "$SLOT0_IMG"; do
+  [ -f "$f" ] || { echo "✗ ダンプが無い: $f（--rootfs/--slot0 で指定する）"; exit 1; }
+done
+# DrvFs（/mnt/c）では chmod と特殊ファイルが期待どおりに効かない。ext4 で作業する。
+case "$WORK" in /mnt/*) echo "⚠ 作業領域が DrvFs。--work で ext4 上を指定することを推奨" ;; esac
+mkdir -p "$WORK" "$OUT"
+
+# lls の 1 行から「perm<TAB>path」を取り出す（パスに空白があっても壊れない）
+_lls_fields() {
+  sed -nE 's/^([bcdlps-][rwxsStT-]{9}) +[^ ]+ +.*[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} (.*)$/\1\t\2/p' "$1"
+}
+
+_AWK_MODE='
+function mode(p,  u,g,o,sp) {
+  u=0; g=0; o=0; sp=0
+  if (substr(p,2,1)=="r") u+=4; if (substr(p,3,1)=="w") u+=2
+  if (substr(p,4,1)=="x"||substr(p,4,1)=="s") u+=1
+  if (substr(p,4,1)=="s"||substr(p,4,1)=="S") sp+=4
+  if (substr(p,5,1)=="r") g+=4; if (substr(p,6,1)=="w") g+=2
+  if (substr(p,7,1)=="x"||substr(p,7,1)=="s") g+=1
+  if (substr(p,7,1)=="s"||substr(p,7,1)=="S") sp+=2
+  if (substr(p,8,1)=="r") o+=4; if (substr(p,9,1)=="w") o+=2
+  if (substr(p,10,1)=="x"||substr(p,10,1)=="t") o+=1
+  if (substr(p,10,1)=="t"||substr(p,10,1)=="T") sp+=1
+  return sp "" u "" g "" o
+}
+'
+
+# デバイスノード・FIFO・socket を mksquashfs の pseudo-file として書き出す
+mkpseudo() {
+  awk "$_AWK_MODE"'
+    /^[bcps]/ {
+      type=substr($1,1,1); maj=""; min=""
+      for (i=3; i<=NF; i++) {
+        if ($i ~ /,$/)     { maj=$i; sub(/,$/,"",maj); min=$(i+1); break }
+        else if ($i ~ /,/) { split($i, a, ","); maj=a[1]; min=a[2]; break }
+      }
+      path=$NF; sub(/^squashfs-root/, "", path)
+      if (type=="c" || type=="b") {
+        if (maj != "" && min != "") printf "%s %s %s 0 0 %d %d\n", path, type, mode($1), maj, min
+      } else {
+        printf "%s %s %s 0 0\n", path, type, mode($1)
+      }
+    }
+  ' "$1"
+}
+
+# 非 root 展開で落ちたモードをマニフェストから戻す
+fixmodes() {
+  _lls_fields "$1" | awk -F'\t' "$_AWK_MODE"'
+    $1 ~ /^[-d]/ { p=$2; sub(/^squashfs-root/, "", p); printf "%s\t%s\n", mode($1), p }
+  ' | while IFS=$'\t' read -r m p; do
+      [ -e "$2$p" ] && chmod "$m" "$2$p"
+    done
+  return 0
+}
+
+# 比較用に lls を正規化（時刻を落とし、パス基準で並べる）
+norm() {
+  sed -E 's/[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}//' "$1" \
+    | sed -E 's/^squashfs-root//; s#squashfs-root/#/#' \
+    | sed -E 's/[[:space:]]+/ /g' | sort
+}
+
+# 2.6.31 の squashfs4 が読める設定に固定する
+pack() {
+  local src="$1" out="$2" pseudo="$3"
+  local args=(-b 131072 -comp gzip -no-xattrs -noappend -all-root -no-progress)
+  [ -s "$pseudo" ] && args+=(-pf "$pseudo")
+  mksquashfs "$src" "$out" "${args[@]}" > "$out.mksq.log" 2>&1
+}
+
+# 元イメージを展開してマニフェストとモードを揃える
+prepare() {
+  local name="$1" img="$2"
+  unsquashfs -lls "$img" > "$WORK/$name.lls" 2>/dev/null
+  rm -rf "$WORK/$name.src"
+  unsquashfs -no-progress -d "$WORK/$name.src" "$img" > "$WORK/$name.unsq.log" 2>&1 || true
+  mkpseudo "$WORK/$name.lls" > "$WORK/$name.pseudo"
+  fixmodes "$WORK/$name.lls" "$WORK/$name.src"
+  echo "  $name: $(wc -l < "$WORK/$name.lls") エントリ / pseudo $(wc -l < "$WORK/$name.pseudo") 行"
+}
+
+echo "=== 展開とマニフェスト ==="
+prepare rootfs "$ROOTFS_IMG"
+prepare slot0  "$SLOT0_IMG"
+
+if [ "$VERIFY" -eq 1 ]; then
+  echo "=== 往復テスト（無改変で再梱包して元と一致するか）==="
+  for n in rootfs slot0; do
+    pack "$WORK/$n.src" "$WORK/$n.rt.sqfs" "$WORK/$n.pseudo"
+    unsquashfs -lls "$WORK/$n.rt.sqfs" > "$WORK/$n.rt.lls" 2>/dev/null
+    norm "$WORK/$n.lls" > "$WORK/$n.a"; norm "$WORK/$n.rt.lls" > "$WORK/$n.b"
+    d=$(diff "$WORK/$n.a" "$WORK/$n.b" | grep -c '^[<>]' || true)
+    if [ "$d" -eq 0 ]; then echo "  ✓ $n 完全一致"; else echo "  ✗ $n 差分 $d 行"; diff "$WORK/$n.a" "$WORK/$n.b" | head -10; exit 1; fi
+  done
+fi
+
+echo "=== rootfs (mtd6): rcS を差し替え ==="
+rm -rf "$WORK/rootfs.rig"; cp -a "$WORK/rootfs.src" "$WORK/rootfs.rig"
+m=$(stat -c%a "$WORK/rootfs.rig/etc/init.d/rcS")
+cp "$RIG/rcS" "$WORK/rootfs.rig/etc/init.d/rcS"
+chmod "$m" "$WORK/rootfs.rig/etc/init.d/rcS"   # 元と同じモードを保つ
+pack "$WORK/rootfs.rig" "$OUT/rig-rootfs.sqfs" "$WORK/rootfs.pseudo"
+
+echo "=== slot0 (mtd7): アプリ起動を除去し、rig のツールを同梱 ==="
+rm -rf "$WORK/slot0.rig"; cp -a "$WORK/slot0.src" "$WORK/slot0.rig"
+orig="$WORK/slot0.src/slot_entry.sh"; new="$WORK/slot0.rig/slot_entry.sh"
+m=$(stat -c%a "$orig")
+awk '/^insmod \/slot\/drv\/h57fmb\.ko$/ {found=1; exit} {print}
+     END {if (!found) exit 1}' "$orig" > "$new" \
+  || { echo "✗ slot_entry.sh に切断点（行頭 insmod h57fmb.ko）が無い"; exit 1; }
+cat "$RIG/slot-entry-tail.sh" >> "$new"
+chmod "$m" "$new"
+cp "$RIG/rig-daemon.sh" "$WORK/slot0.rig/rig-daemon.sh"; chmod 755 "$WORK/slot0.rig/rig-daemon.sh"
+if [ -f "$ROOT/tools/fapex-trace/fapex_trace.so" ]; then
+  cp "$ROOT/tools/fapex-trace/fapex_trace.so" "$WORK/slot0.rig/fapex_trace.so"
+  chmod 755 "$WORK/slot0.rig/fapex_trace.so"
+else
+  echo "  ⚠ fapex_trace.so が無い（scripts/build-fapex-trace.sh）。同梱せずに続行"
+fi
+pack "$WORK/slot0.rig" "$OUT/rig-slot0.sqfs" "$WORK/slot0.pseudo"
+
+echo "=== 元イメージとの差分（意図した変更だけであること）==="
+for n in rootfs slot0; do
+  unsquashfs -lls "$OUT/rig-$n.sqfs" > "$WORK/rig-$n.lls" 2>/dev/null
+  norm "$WORK/$n.lls" > "$WORK/$n.a"; norm "$WORK/rig-$n.lls" > "$WORK/$n.c"
+  echo "--- $n ---"
+  d=$( { diff "$WORK/$n.a" "$WORK/$n.c" || true; } | { grep '^[<>]' || true; } )
+  if [ -n "$d" ]; then printf '%s\n' "$d"; else echo "  (差分なし)"; fi
+done
+
+echo "=== 区画に収まるか ==="
+check() { local f="$1" lim="$2" nm="$3"; local s; s=$(stat -c%s "$f")
+  if [ "$s" -gt "$lim" ]; then echo "  ✗ $nm: $s > $lim"; exit 1; fi
+  echo "  ✓ $nm: $s bytes（上限 $lim・余裕 $((lim-s))）"; }
+check "$OUT/rig-rootfs.sqfs" 5242880 "rig-rootfs.sqfs -> mtd6"
+check "$OUT/rig-slot0.sqfs"  7340032 "rig-slot0.sqfs  -> mtd7"
+
+echo "=== 成果物 ==="
+( cd "$OUT" && sha256sum rig-rootfs.sqfs rig-slot0.sqfs )
+cat <<'EOF'
+
+書き込み手順（docs/specs/sb-tv02-wfpl-vendor-boot.md §6）:
+  1. libooter で cmdline の root= だけを /dev/mtdblock8 にして saveparam → 電源再投入
+     （firstaid が起動する。root= 以外は 1 文字も変えない＝mac_adrs= を守る）
+  2. firstaid で:  mtd write rig-rootfs.sqfs rootfs
+                   mtd verify rig-rootfs.sqfs rootfs
+                   mtd write rig-slot0.sqfs  rootfs_data
+                   mtd verify rig-slot0.sqfs rootfs_data
+  3. cmdline の root= を /dev/mtdblock6 に戻して saveparam → 電源再投入
+  mtd5（自前カーネル）と mtd8（firstaid）は書かない。
+EOF

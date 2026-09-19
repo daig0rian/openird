@@ -1,0 +1,29 @@
+#!/bin/sh
+# OpenIRD observation rig (modified from the vendor /etc/init.d/rcS).
+# Changes, and why:
+#  1) slot_selector is NOT run.  It performs "Slot Duplication", erasing and
+#     writing /dev/mtd8 and /dev/mtd9.  On the OpenIRD partition map /dev/mtd8
+#     is the first-aid rootfs, the only recovery path.  Mount slot0 directly.
+#  2) console loglevel left at the kernel default so that driver messages are
+#     visible while observing (the vendor sets it to 1).
+# Everything else is byte-identical to the vendor script.
+dmesg -n 7
+
+cd /root
+
+kernelparam=`cat /proc/cmdline`
+case "$kernelparam" in
+*root=/dev/mtdblock*)
+	echo "OpenIRD rig: mounting slot0 (mtdblock7) without slot_selector"
+	mount -t squashfs /dev/mtdblock7 /slot
+	;;
+esac
+
+export LD_LIBRARY_PATH=/slot/lib
+export PATH=/slot/app:$PATH
+/slot/slot_entry.sh
+
+while :
+do
+	setsid cttyhack /bin/sh
+done
