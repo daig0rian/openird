@@ -151,9 +151,21 @@ forceinit                      → dione_forceInitializeDBG。Dione の電源を
                                  device ... / open takes 500 msec）。これを打たないと
                                  open("/dev/h57fmb0") が ENODEV(19) で失敗し続ける
 dpower 1 1                     → DTV_POWER_CTRL_DEVICE: Power ON
-settuner 0 <freq Hz> 0 0       → Factory_SetTunerFreq。引数は「0 | <freq> | 0 | 0」と
-                                 エコーされる。第 1/3/4 引数の意味は未確定
+settuner <系統> <freq Hz> 0 0  → Factory_SetTunerFreq。引数は「0 | <freq> | 0 | 0」と
+                                 エコーされる
 ```
+
+**`settuner` の引数**（2026-09-20 実機で確定）:
+
+| 位置 | 意味 | 確定した値 |
+|---|---|---|
+| 1 | **系統セレクタ** | **`0` = 地上（`gfreq` の `source` が `T`）/ `1` = BS（`source` が `B`）** |
+| 2 | **周波数（Hz 単位の IF 周波数）** | 地上はそのままの周波数、BS は LNB 後の IF（BS-1 = `1049480000`） |
+| 3 | 未確定 | `0` で通る |
+| 4 | 未確定 | `0` で通る |
+
+第 1 引数の指標は `sfreq` とは**違う**（`sfreq 1 <Hz>` が地上、`settuner 0 <Hz> 0 0` が地上）。
+`source` に CS（110°）の値があるかは未検証。
 
 読み出し:
 
@@ -165,11 +177,33 @@ settuner 0 <freq Hz> 0 0       → Factory_SetTunerFreq。引数は「0 | <freq>
 | `gsignal` | `Sync=LOCK` `AGCLevel` `CN`(raw) `E_CN`(dB) `AntennaLevel` `BER_A/B/C` `BER_CAL_*` `Exist_A/B/C`（ISDB-T 階層） |
 | `chktunerts` | `Factory_CheckTunerTS` / `there is TS_IN. <n>[msec]` または `No TS_IN. ret = -1` |
 
-実測例（地上 ch27 = 557142857 Hz）: `Sync=LOCK / AGCLevel=90 / E_CN=29.0〜29.4 dB /
-AntennaLevel=77 / BER_A,B,C=0 / Exist_A=T, Exist_B=T, Exist_C=F`、`there is TS_IN. 0[msec]`。
+実測例:
 
-**`sfreq <系統> <Hz>` は復調器だけを選局する**（出力なし・即復帰）。これだけでも
-`Sync=LOCK` になるが `chktunerts` は `No TS_IN` のまま＝TS 経路は立たない。
+| | 地上 ch27 | BS-1 |
+|---|---|---|
+| コマンド | `settuner 0 557142857 0 0` | `settuner 1 1049480000 0 0` |
+| `gfreq` source | `T` | `B` |
+| `Sync` | `LOCK` | `LOCK` |
+| `AGCLevel` | 90 | 65 |
+| `E_CN` | 29.0〜29.4 dB | 22.2 dB |
+| `AntennaLevel` | 77 | 100（上限） |
+| `BER_A/B/C` | 0 / 0 / 0 | 0 / 0 / 0 |
+| `Exist_A/B/C` | **T / T / F** | **T / F / F** |
+| `chktunerts` | `there is TS_IN. 0[msec]` | `there is TS_IN. 0[msec]` |
+
+`Exist_*` の差は方式の違いを反映する。ISDB-T は階層 A/B/C を持つが、ISDB-S には
+その階層が無いので A だけが立つ。
+
+**LNB 電源について（誤解しやすい点）**: 上の BS 受信は `slnbpwr` を一度も叩かずに
+ロックしている。これは**検証環境が共同受信で、給電が機器の外から行われているから**で
+あって、LNB 電源が不要という意味ではない。個別アンテナでは機器が給電する必要があり、
+**`slnbpwr` / `glnbpwr` / `glnbshort`（過電流検知）は段階 C が実装すべき機能**である。
+なお未初期化の状態で `glnbpwr` / `glnbshort` を叩くと `-536870909`（Not Initialized 系）
+を返す。
+
+**`sfreq <系統> <Hz>` は復調器だけを選局する**（出力なし・即復帰。第 1 引数の指標は
+`settuner` と違い、地上が `1`）。これだけでも `Sync=LOCK` になるが `chktunerts` は
+`No TS_IN` のまま＝TS 経路は立たない。
 
 ### `Factory_SetTunerFreq` の呼び出し列（実機で捕捉）
 

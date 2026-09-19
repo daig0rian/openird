@@ -738,8 +738,11 @@ SoC の TSD は入力を **(a) HW TS 入力 CH（`INPUT_CH_A/B/C`, serial/parall
 
 - **Path H（demod → SoC TSD 直結, Dione 迂回）**: 生 TS が SoC TSD の HW CH から取れるなら **Dione の
   プロプラ FW/トランスコード非依存**で最もクリーン。段階C の理想。
-- **Path D（demod → Dione(THROUGH) → USB → TSD packet-RAM）**: vendor daemon が実際に使う経路。生 TS
-  取得に **Dione FW が必須**。
+- **Path D（demod → Dione(THROUGH) → USB → TSD packet-RAM）**: 生 TS 取得に **Dione FW が必須**。
+  ~~vendor daemon が実際に使う経路~~ ← **2026-09-20 実機で否定**。ベンダは `LINEAR_AUTO(0x29)` を
+  一度も使わず、`tsSelect=0/1`＝ハードウェア TS 入力から読む（後述「自前で TSD を読む試みの結果」）。
+  ただし TS が現れるのは Dione のトランスコーダ設定が済んだ後で、デーモンを止めると供給が消える
+  ＝Dione が経路のどこかに関与している。「CH_A/CH_B の先にある送り手が復調器か Dione か」は未確定。
 
 **実機シルク写真（2026-09-18）による配置**: **復調器 TC90532 は SoC MB86H610 の真下に隣接**、
 **Dione MB86H58A は左端で遠い**。復調器の上辺（デジタル面）が SoC を向く。本機は「MB86H61 Reference
@@ -817,6 +820,45 @@ mmap  fapi036 len=0x3ac000    → 0x40497000
 みなして読んだ先（たまたまマップされているコード領域）のゴミで、ARM 命令列に見える。
 信じてはいけない。同種の値渡し引数は `fapex-trace` の SIGSEGV の原因でもあった
 （`msync` による読み取り可能性プローブで対処。コミット `d7b626e`）。
+
+### ★自前で TSD を読む試みの結果（2026-09-20 実機）— 経路の再解釈
+
+上の実測値（CH_A/CH_B・`iflags=1`・`bufferSize=0x3ac000`・`thH`）を `fapex-ts` の既定に
+入れ、`bufferStatus`/`GET_BUFFER_LEVEL` を毎秒出すようにして測った結果。
+
+**まず Path D の記述が誤りだった。** §「生 TS の 2 経路」は Path D を「vendor daemon が
+実際に使う経路」と書いていたが、**ベンダは `LINEAR_AUTO(0x29)`＝packet-RAM を一度も
+使わない**。使うのは `tsSelect=0/1`＝**ハードウェア TS 入力**である。∴ ベンダ自身が
+USB packet-RAM 経路ではなく SoC の TS 入力ピンから読んでいる。
+
+**TSD ブロックは互いに独立している**（＝競合は回避できる）:
+
+- デーモンが TSD0/TSD1 を使っている状態で自前ツールが**同じブロック**を掴むと双方が
+  壊れる（デーモン側が `ts_streamer.c:467 errno_=22` を吐き続けコンソールを埋める）。
+- **別ブロック**（TSD2＝`fapi002`＋channel `fapi068`）なら、デーモンは無傷で動き続け
+  （9 スレッド継続・`there is TS_IN` 継続）、こちらも普通に開ける。
+
+**しかし別ブロックでは受信できない**。TSD2 を `tsSelect=1 (CH_B)` で開き、BS にロックして
+TS が流れている状態で 5 秒読んでも:
+
+```
+[diag] fill=0 roff=0x0 status=0x0 level=0 secOff=0 secLen=0 secNo=-1
+```
+
+`bufferStatus=0x0` / `level=0`。ベンダの channel は TS が流れている間 `bufferStatus=0x20`
+だったので、**PID フィルタの手前で、そのブロックのバッファに何も届いていない**と読める
+（PID 不一致なら status か level が動くはず）。∴ **ハードウェア TS 入力は特定の TSD
+ブロックに結び付いている**公算が高い（ベンダの使い方 TSD0←CH_A / TSD1←CH_B が配線を
+そのまま反映している）。`tsSelect` はブロックが届く範囲の中から選ぶだけ、という理解。
+
+**デーモンを止めると TS 源自体が止まる**。`killall dione_server` してから TSD0/CH_A
+（地上ロック時）や TSD1/CH_B（BS ロック時）を読んでも 0 バイト。復調器は I2C 状態なので
+ロックを保つが、Dione の電源・クロックはデーモンが管理しているため、TS の供給が消える。
+
+**∴「ベンダに選局させて自分で読む」は原理的に成立しない。** 必要なブロックはデーモンが
+占有し、デーモンを外すと TS が来ない。自前で TSD を読むには**選局も自前で行う**しかない
+＝これは段階 C の入り口そのものである。材料は揃っている（ロック状態の復調器レジスタ
+ダンプ、`settuner` の引数意味、TSD の実測パラメータ）。
 
 ### ツール `tools/fapex-ts`（実装・ビルド済み）
 上記 ABI だけで TSD demux 出力を読む clean な chardev 利用者。`probe`（単発）/`scan`（HW 入力
