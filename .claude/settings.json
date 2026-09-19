@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "bash",
+            "command": "sh \"${CLAUDE_PROJECT_DIR}/.claude/hooks/no-disasm.sh\"",
+            "statusMessage": "clean-room 検査",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}
