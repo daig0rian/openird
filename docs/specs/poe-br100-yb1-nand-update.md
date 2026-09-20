@@ -77,13 +77,15 @@ MAC は保たれる。∴ OpenIRD でも「mtd1 = env 領域のみ書く・最�
 mtd1 に書き込み**、次回起動時に u-boot 自身に実行させる。
 
 ```
-① Linux 側: 更新ファイル一式を MassStorage(mtd9, YAFFS2) 上の作業ディレクトリへ配置
-② Linux 側: bootcmd=run update ＋ update=<書き込みコマンド列> を env として mtd1 先頭へ書く
+① Linux 側: 純正アプリがペイロードを MassStorage(mtd9, YAFFS2) 上の /flash/tmp_update へ展開
+② Linux 側: そのディレクトリを cwd にして write.sh を起動（§3.2）
+             → 容量を判定して write1Gb.sh / write512Mb.sh が u-boot のコマンド列を組み立て、
+               env として mtd1 先頭へ書く
 ③ reset
-④ u-boot: bootcmd → update を自動実行
+④ u-boot: bootcmd=run update → update を自動実行
      ・MassStorage の YAFFS 区画を ymount
      ・区画ごとに（同梱されているものだけ）:
-         RAM ステージング領域を 0xff で上限サイズ分フィル
+         RAM ステージング領域を 0xff で**書き込み固定長ぶん**フィル
          → YAFFS から .img を RAM へ読み込み
          → nand erase <消去範囲>  →  nand write <固定長>       （§2 の表）
      ・更新用 env を削除（delenvu）＝ 無限ループ防止
@@ -91,6 +93,30 @@ mtd1 に書き込み**、次回起動時に u-boot 自身に実行させる。
      ・reset
 ⑤ 次回起動: Linux 側の起動スクリプトがマーカーを見て後始末（§4）へ合流
 ```
+
+### 3.2 ペイロード内スクリプトの契約（OpenIRD が満たすべきもの）
+
+`write.sh` は OpenIRD 側で仕様どおり生成する（純正から流用しない・
+[update-v1b-container.md](update-v1b-container.md) §6-2）。そのために必要な契約:
+
+| 項目 | 内容 |
+|---|---|
+| 起点 | `write.sh`。cwd は展開先 `/flash/tmp_update`。`.img` の有無は **cwd の相対パス**で見る |
+| 呼ばれ方 | 終端が `return $?`＝**source される**（独立実行ではない）。終了ステータスを返す |
+| 容量判定 | `/sys/block/mtdblock0..10/size` の総和（単位 512B）を求め、`>= 262144`（=128MB）なら 1Gb 版、それ未満なら 512Mb 版へ |
+| env の書き込み | `/app/bin/nand_flash_write -u /dev/mtd1 <envfile>`。**機器上に既にあるベンダのツール**を呼ぶ |
+| env の形式 | `key=value` を `\0` 区切りで連結し、末尾は `\0\0` で終端。先頭から `bootdelay` / `baudrate` / `bootcmd=run update` / `update=<コマンド列>` |
+| u-boot コマンド列 | `;` 区切り。`ymount <start> <end>` → 区画ごとに `mw.b <staging> ff <write_len>` / `yrdm /flash/tmp_update/<name> <staging>` / `nand erase <off> <erase_len>` / `nand write <staging> <off> <write_len>` → `delenvu` → マーカー書き込み → `reset` |
+| RAM ステージング | **1Gb 機 `0x83000000` / 512Mb 機 `0x86000000`**（実測。機種で異なる） |
+| ymount 範囲 | 1Gb: `3d00000 7d00000`（mtd9 と完全一致）。512Mb: `2000000 3e40000`（区画表の終端 `0x3EC0000` より 512KB 手前。ベンダ側の不一致だが実配布どおり） |
+| 完了マーカー | `0x800` を `0xffffffff` で埋め、先頭に `46 57 55 50 00`（"FWUP\0"）を置いて `nand write <staging> <mtd1 先頭> 800` |
+
+- **`/app/bin/nand_flash_write` を呼んでよい。** factory 実行時点の機器はまだベンダ状態で、
+  このツールは機器上に存在する。OpenIRD の配布物にベンダバイナリを含めるわけではない
+  （SB-TV02 で `dione_server -w` を呼ぶのと同じ立て付け）。
+- ブートローダを書く枠（`u-boot.img` → `/app/bin/nand_flash_write /dev/mtd0`）はスクリプトの
+  先頭にあるが、実配布コンテナに `u-boot.img` が入らないので発火しない（§4）。**OpenIRD は
+  この枠を生成しない。**
 
 - **ロック回避が不要な理由**: u-boot の実行ロックは*インタラクティブなシリアル入力*だけを
   ゲートし、`bootcmd` の自動実行は妨げない（GPL の `main_loop` 実装・§3.5）。∴ この経路は
@@ -100,14 +126,18 @@ mtd1 に書き込み**、次回起動時に u-boot 自身に実行させる。
   区画の残りは消去状態（0xff）で埋まる。
 - 完了マーカーの書き込み先は NAND `0x300000` 長 `0x800`＝mtd1 先頭。**mtd1 が NAND
   `0x300000` から始まることは GPL の区画表で確定**（§1）。
-- `.img` を mtd9 上へ配置する主体は純正アプリ側の更新処理と見られる（確度: 推定・未追跡）。
-  **OpenIRD 側で factory を作るなら、この配置経路の再現が必要**（§6 U2）。
+- `.img` を `/flash/tmp_update` へ展開する主体は純正アプリ側の更新処理（確度: 高。展開先の
+  パスはスクリプトが `yrdm` に渡す絶対パスから確定）。**OpenIRD 側で再現する必要は無い**
+  ＝コンテナが受理されれば純正アプリが展開してくれる。どのコンポーネントが行うかだけが未追跡。
 
 ## 4. 後始末（再起動後の Linux 側）
 
 - マーカーを見て「u-boot で書き込み済みの再起動後」と判定した場合のみ走る。
-- 旧ファイル・ミラーファイル（`.1` / `.2`）の削除、Flight Record Log（mtd7）の消去・
-  再フォーマット、USB 経由更新の完了フラグ作成（確度: 推定）。
+- ペイロード内の `delete.sh` が担う（確度: 確定・実測）。同梱の一覧に従ってベンダアプリの
+  設定ファイルとそのミラー（`.1` / `.2`）を削除し、**Flight Record Log（mtd7）を
+  `/app/bin/nand_flash_write -e /dev/mtd7` で消去して YAFFS2 で mount し直す**。
+- **OpenIRD の factory は `delete.sh` を同梱しない。** 中身はベンダアプリの設定の始末で、
+  OpenIRD には対応物が無い。同梱しなければ走らない。
 - **ブートローダ（mtd0）を書く枠はスクリプトに存在する**が、対応ファイルが実配布
   コンテナに同梱されないため発火しない＝通常経路で mtd0 は書き換わらない。**OpenIRD は
   この枠を使わない**（復旧性＝ブートローダ健在を最後の安全網として残す）。
@@ -133,7 +163,18 @@ mtd1 に書き込み**、次回起動時に u-boot 自身に実行させる。
   | 10 | BBT | `0x3EC0000` | `0x1C0000` (1.75MB) |
 
   Kernel 起点 `0x380000` は従来の部分観察と一致。
-- **書き込み固定長（§2 相当の表）だけが未確定**。区画サイズとは別物なので流用できない（§7 U1）。
+- **書き込み固定長も確定**（`write512Mb.sh` の実測。RAM ステージングは `0x86000000`）:
+
+  | ペイロード内の名前 | 書き込み先 | 書き込みオフセット | **書き込み長** | 消去範囲 |
+  |---|---|---|---|---|
+  | `vmlinux.img` | mtd2 Kernel | `0x380000` | `0x200000` (2.0MB) | `0x340000` (3.25MB) |
+  | `rootfs.img` | mtd3 FileSystem | `0x6C0000` | `0x680000` (6.5MB) | `0x7C0000` (7.75MB) |
+  | `app_bin.img` | mtd4 App_binary | `0xE80000` | `0x500000` (5.0MB) | `0x640000` (6.25MB) |
+  | `emma_fw.img` | mtd5 EMMA_FW | `0x14C0000` | `0x180000` (1.5MB) | `0x2C0000` (2.75MB) |
+  | `init_setting.img` | mtd6 初期設定 | `0x1780000` | `0x40000` (256KB) | `0x180000` (1.5MB) |
+
+  完了マーカーの書き込み先は mtd1 先頭 `0x200000`。**rootfs の上限は 1Gb 機と同じ 6.5MB** で、
+  kernel だけが 3.0MB → 2.0MB に縮む。
 - ∴ **factory イメージは容量世代を跨いで共用できない**。OpenIRD の defconfig も分ける。
 
 ## 6. OpenIRD への落とし込み
@@ -156,7 +197,7 @@ mtd1 に書き込み**、次回起動時に u-boot 自身に実行させる。
 
 | # | 項目 | 状態 | 決着のさせ方 |
 |---|---|---|---|
-| U1 | 512Mb 機の**書き込み固定長**（区画表は §5 で確定済） | 未確定 | 該当スクリプト（`write512Mb.sh`）の全文取得。ペイロードを復号すれば読める |
-| U2 | `.img` 一式を mtd9 へ配置する経路 | 未追跡 | 実フラッシュ中の機器側の観察（§6.10–6.12 の再現手順を使う） |
+| ~~U1~~ | ~~512Mb 機のオフセット／上限表~~ | **決着** | 区画表は GPL、書き込み固定長は `write512Mb.sh` の実測。§5 に全数あり |
+| U2 | `/flash/tmp_update` への展開を行う純正コンポーネントの同定 | 未追跡（展開先パスは確定・§3） | 実フラッシュ中の機器側の観察。**pack のブロッカーではない**（展開はベンダ側が行う） |
 | ~~U3~~ | ~~mtd1 の開始オフセット~~ | **決着** | `0x300000`（GPL `nand_emma_ptt_1Gb.h`）。NAND ダンプの使用ブロック分布とも整合＝§1 に反映済み |
 | U4 | 更新完了フラグの意味（USB 経由更新との関係） | 推定 | 同上・ダンプ後に判断 |
