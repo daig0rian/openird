@@ -159,12 +159,19 @@ awk '/^insmod \/slot\/drv\/h57fmb\.ko$/ {found=1; exit} {print}
 cat "$RIG/slot-entry-tail.sh" >> "$new"
 chmod "$m" "$new"
 cp "$RIG/rig-daemon.sh" "$WORK/slot0.rig/rig-daemon.sh"; chmod 755 "$WORK/slot0.rig/rig-daemon.sh"
-if [ -f "$ROOT/tools/fapex-trace/fapex_trace.so" ]; then
-  cp "$ROOT/tools/fapex-trace/fapex_trace.so" "$WORK/slot0.rig/fapex_trace.so"
-  chmod 755 "$WORK/slot0.rig/fapex_trace.so"
-else
-  echo "  ⚠ fapex_trace.so が無い（scripts/build-fapex-trace.sh）。同梱せずに続行"
-fi
+# 観察ツールを同梱する。tmpfs に毎回 wget で入れ直す手間が消え、ネットワークが
+# デーモンに奪われている状態でも使える。
+for t in fapex-trace/fapex_trace.so fapex-ts/fapex-ts fapex-i2c/fapex-i2c \
+         fapex-gpio/fapex-gpio; do
+  src="$ROOT/tools/$t"
+  if [ -f "$src" ]; then
+    cp "$src" "$WORK/slot0.rig/$(basename "$t")"
+    chmod 755 "$WORK/slot0.rig/$(basename "$t")"
+    echo "   同梱: $(basename "$t") ($(stat -c%s "$src") bytes)"
+  else
+    echo "  ⚠ $t が無い。同梱せずに続行（scripts/build-$(basename "$(dirname "$t")").sh）"
+  fi
+done
 pack "$WORK/slot0.rig" "$OUT/rig-slot0.sqfs" "$WORK/slot0.pseudo"
 
 echo "=== 元イメージとの差分（意図した変更だけであること）==="
