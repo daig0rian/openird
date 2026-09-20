@@ -1,0 +1,63 @@
+{
+  "board": "poe-br100-yb1",
+  "defconfig": "emma3sep_softbank_poe-br100-yb1",
+  "model": "POE-BR100-YB1",
+  "soc": "Renesas EMMA3SEP (uPD61425 / D61425F1)",
+  "arch": "mips", "cpu": "mips32r2", "endian": "big",
+  "kernel_version": "2.6.27.39",
+  "bootloader": "u-boot 2013.5.27.00-emma3sep-01-svnRev.612",
+  "nvm": {
+    "type": "nand", "part": "Toshiba TC58DVG02D5TA00",
+    "size": "0x8000000", "erasesize": "0x20000", "pagesize": "0x800", "oobsize": "0x40",
+    "_note": "1Gb(128MB) SLC。生ダンプは 2048+64 のページ+OOB 形式になる（65536 ページ = 138412032B）。論理オフセットで見るには OOB を剥がすこと。"
+  },
+
+  "_provenance": "区画表: GPL drivers/mtd/nand/nand_emma_ptt_1Gb.h（MTDPART_OFS_APPEND の累積）。実機 NAND ダンプの使用ブロック分布と一致を確認（2026-09-20）。factory 書き込み表: docs/specs/poe-br100-yb1-nand-update.md §2。uImage 契約・squashfs 版: 実機ダンプの実測。",
+
+  "factory": {
+    "container": "v1b",
+    "family_tag": "BLUR",
+    "nand_generation": "1Gb",
+    "_note": "族タグはコンテナの族であって実モデル名ではない（update-v1b-container.md §2.1）。512Mb 機はオフセット体系が別＝別 defconfig・別ボード定義にする。",
+    "images": [
+      {"name": "vmlinux.img",      "mtd": 2, "write_offset": "0x600000",  "write_len": "0x300000",  "erase_len": "0x480000",  "openird": true,
+       "_note": "書き込み長は固定。超過分は黙って切り捨て＝区画後半が破損する。"},
+      {"name": "rootfs.img",       "mtd": 3, "write_offset": "0xa80000",  "write_len": "0x680000",  "erase_len": "0x900000",  "openird": true,
+       "_note": "GPL Makefile の ROOTFS_SQUASHFS_MAX = 6815744 = 0x680000 と一致。"},
+      {"name": "app_bin.img",      "mtd": 4, "write_offset": "0x1380000", "write_len": "0x1900000", "erase_len": "0x1b80000", "openird": false,
+       "_note": "ベンダの受信部品（段階 B の観察対象）。OpenIRD の factory には同梱しない＝温存。"},
+      {"name": "emma_fw.img",      "mtd": 5, "write_offset": "0x2f00000", "write_len": "0x180000",  "erase_len": "0x400000",  "openird": false,
+       "_note": "SoC FW。同上、温存。"},
+      {"name": "init_setting.img", "mtd": 6, "write_offset": "0x3300000", "write_len": "0x80000",   "erase_len": "0x300000",  "openird": false,
+       "_note": "個体の初期設定。同上、温存。"}
+    ]
+  },
+
+  "uimage": {
+    "os": 5, "arch": 5, "type": 2, "comp": 1,
+    "name": "emma3se",
+    "load": "0x82280000", "entry": "0x822841b0",
+    "_note": "実機ダンプ mtd2 先頭の実測（load≠entry）。os=linux arch=mips type=kernel comp=gzip。RAM base 0x80000000・256MB。"
+  },
+
+  "squashfs": {
+    "vendor_format": {"major": 3, "minor": 1, "endian": "be"},
+    "compressors": ["gzip"], "xattrs": false, "comp_options": false,
+    "_note": "ベンダカーネルの squashfs は in-tree ではなく patch 版 3.1（GPL fs/squashfs/{inode.c,squashfs2_0.c} と include/linux/squashfs_fs.h の SQUASHFS_MAJOR 3 / MINOR 1）。実機 mtd3/4/5 の像はいずれも BE マジック 'sqsh'。OpenIRD 側が 3.1BE を作るのか 4.0LE をカーネルに backport するのかは未決（NOTES の V3b）。"
+  },
+
+  "_partitions_note": "GPL nand_emma_ptt_1Gb.h。offset は MTDPART_OFS_APPEND の累積を展開したもの。各区画に不良ブロック用の余裕（2.5MB）が載っているため、size と factory の write_len は一致しない。",
+  "partitions": [
+    {"mtd":0,  "name":"u-boot",        "offset":"0x0000000", "size":"0x0300000", "policy":"preserve",  "note":"実イメージは約300KB。復旧の最後の安全網＝絶対に書かない"},
+    {"mtd":1,  "name":"u-boot_env_mac","offset":"0x0300000", "size":"0x0300000", "policy":"preserve",  "note":"更新機構が env 先頭を書く（回避不能）。MAC は最終ブロック 0x5e0000 にあり env 書込みは届かない。pack はこの区画の像を作らない"},
+    {"mtd":2,  "name":"kernel",        "offset":"0x0600000", "size":"0x0480000", "policy":"writable",  "image":"uimage",   "note":"factory 対象。uImage(gzip)"},
+    {"mtd":3,  "name":"rootfs",        "offset":"0x0A80000", "size":"0x0900000", "policy":"writable",  "image":"squashfs", "note":"factory 対象"},
+    {"mtd":4,  "name":"app_binary",    "offset":"0x1380000", "size":"0x1B80000", "policy":"preserve",  "image":"squashfs", "note":"ベンダ app。段階 B の観察対象＝温存"},
+    {"mtd":5,  "name":"emma_fw",       "offset":"0x2F00000", "size":"0x0400000", "policy":"preserve",  "image":"squashfs", "note":"SoC FW＝温存"},
+    {"mtd":6,  "name":"init_setting",  "offset":"0x3300000", "size":"0x0300000", "policy":"preserve",  "note":"個体の初期設定（ミラー 2 面）＝温存"},
+    {"mtd":7,  "name":"flight_rec_log","offset":"0x3600000", "size":"0x0300000", "policy":"preserve",  "image":"yaffs2",   "note":"更新後の後始末で消去され得る"},
+    {"mtd":8,  "name":"app_setting",   "offset":"0x3900000", "size":"0x0400000", "policy":"preserve",  "image":"yaffs2"},
+    {"mtd":9,  "name":"massstorage",   "offset":"0x3D00000", "size":"0x4000000", "policy":"preserve",  "image":"yaffs2",   "note":"更新ファイルの置き場でもある"},
+    {"mtd":10, "name":"bbt",           "offset":"0x7D00000", "size":"0x0300000", "policy":"preserve",  "note":"不良ブロックテーブル"}
+  ]
+}
