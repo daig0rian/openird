@@ -24,7 +24,7 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 MKIMAGE = os.path.join(ROOT, "host", "openird-mkimage")
 sys.path.insert(0, MKIMAGE)
 
-from ird import rdhb, v1b            # noqa: E402
+from ird import rdhb, v1b, zipcrypto  # noqa: E402
 from ird.board import h              # noqa: E402
 
 for _s in (sys.stdout, sys.stderr):
@@ -168,15 +168,15 @@ def test_v1b_crypto():
     else:
         check("16B 境界でない本体を拒否", True)
 
-    # 合成コンテナを組んでほどく。中間 ZIP は ZipCrypto を書けないので（stdlib は復号のみ）
-    # 無暗号で代用する＝ヘッダ・AES・csum・ペイロード列挙までを通しで見る。
-    # ZipCrypto の暗号化そのものは P2 で ird/zipcrypto.py を書いてから検査する。
+    # 合成コンテナを 3 段そろえて組み、ほどいて往復を見る。中間 ZIP も本物の
+    # ZipCrypto（ird/zipcrypto.py）で暗号化する＝代用なしで全段を通す。
     payload_files = [("vmlinux.img", b"\x27\x05\x19\x56" + b"K" * 500),
                      ("rootfs.img", b"sqsh" + b"R" * 900),
                      ("write.sh", b"#!/bin/sh\necho test\n")]
     payload_zip = _zip_of(payload_files)
     csum = "%s  blur.zip\n" % hashlib.sha1(payload_zip).hexdigest()
-    inner = _zip_of([("blur.zip", payload_zip), ("csum", csum.encode())])
+    inner = zipcrypto.write_zip([("blur.zip", payload_zip), ("csum", csum.encode())],
+                                password=TEST_PW, salt=b"\x01" * 11)
     pad = (-len(inner)) % v1b.BODY_ALIGN
     body = v1b.encrypt_body(inner + b"\x00" * pad, TEST_KEY)
     container = v1b.build_header("BLUR", (2, 1, 17), body) + body
@@ -197,6 +197,51 @@ def test_v1b_crypto():
         check("誤った鍵を検出", False, "例外が出なかった")
     except ValueError:
         check("誤った鍵を検出", True)
+
+    # ZIP パスワードが違えば中間 ZIP を読めない
+    try:
+        v1b.unpack(container, TEST_KEY, b"wrong-password")
+        check("誤った ZIP パスワードを検出", False, "例外が出なかった")
+    except ValueError:
+        check("誤った ZIP パスワードを検出", True)
+
+
+# --- ZipCrypto の書き出し（stdlib の復号器と突き合わせる） -------------------
+
+def test_zipcrypto():
+    print("[zipcrypto] ZipCrypto ZIP の書き出し")
+    items = [("blur.zip", b"PK\x03\x04" + bytes(range(256)) * 8),
+             ("csum", b"0" * 40 + b"  blur.zip\n")]
+    for method, mname in ((zipcrypto.STORED, "store"), (zipcrypto.DEFLATED, "deflate")):
+        blob = zipcrypto.write_zip(items, password=TEST_PW, method=method, salt=b"\x01" * 11)
+        # 独立実装（stdlib の ZipCrypto 復号器）で読み返せること＝相互運用の担保
+        with zipfile.ZipFile(io.BytesIO(blob)) as z:
+            z.setpassword(TEST_PW)
+            check("%s: stdlib で復号して往復" % mname,
+                  [(i, z.read(i)) for i in z.namelist()] == items)
+            check("%s: CRC を通る（testzip）" % mname, z.testzip() is None)
+        check("%s: 同じ salt なら同じバイト列（再現ビルド）" % mname,
+              zipcrypto.write_zip(items, password=TEST_PW, method=method,
+                                  salt=b"\x01" * 11) == blob)
+        with zipfile.ZipFile(io.BytesIO(blob)) as z:
+            z.setpassword(b"wrong-password")
+            try:
+                z.read("blur.zip")
+                check("%s: 誤ったパスワードを拒否" % mname, False, "読めてしまった")
+            except RuntimeError:
+                # ヘッダ最終バイト（CRC 最上位）の早期チェックが効いている
+                check("%s: 誤ったパスワードを拒否" % mname, True)
+
+    # password=None なら素の（無暗号）ZIP＝ペイロード ZIP 側で使う
+    plain = zipcrypto.write_zip(items, method=zipcrypto.STORED)
+    with zipfile.ZipFile(io.BytesIO(plain)) as z:
+        check("password なしなら無暗号 ZIP", [(i, z.read(i)) for i in z.namelist()] == items)
+
+    check("自前 encrypt→decrypt が往復",
+          zipcrypto.decrypt(zipcrypto.encrypt(b"OpenIRD" * 30, TEST_PW), TEST_PW)
+          == b"OpenIRD" * 30)
+    check("鍵ストリームはパスワード依存",
+          zipcrypto.encrypt(b"A" * 16, b"pw1") != zipcrypto.encrypt(b"A" * 16, b"pw2"))
 
 
 # --- RDHB（モジュール分割の回帰） -------------------------------------------
@@ -247,6 +292,7 @@ def main():
     test_boards()
     test_v1b()
     test_v1b_crypto()
+    test_zipcrypto()
     test_rdhb()
     test_samples()
     print()

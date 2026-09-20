@@ -21,7 +21,8 @@ SB-TV02-WFPL と違い、**この機種には開発者向けの直接書き込�
 | P0 | ボード定義 ＋ `probe-factory`（鍵不要のヘッダ観察） | **完了** |
 | P1 | `unpack-factory`（AES-128-ECB → ZipCrypto → 無暗号 ZIP） | **実装済み**。合成コンテナで往復を確認。純正コンテナでの検証は鍵ファイル設置待ち |
 | P1.5 | 平文から V1/V2 を仕様化（`docs/specs/` を更新） | 未着手（P1 の実行待ち） |
-| P2 | `pack-factory`（kernel と rootfs のみ）＋ `verify-factory` | 未着手 |
+| P2a | `ird/zipcrypto.py`（ZipCrypto 付き ZIP の書き出し） | **完了**。V1/V2 に依存しないので先に片付けた |
+| P2b | ペイロード生成（`write.sh` 系・csum）＋ `pack-factory` ＋ `verify-factory` | 未着手（V1/V2 待ち） |
 | P3 | UPnP 投入クライアント（別ツール・鍵を扱わない） | 未着手 |
 
 **unpack を pack より先に作る。** 仕様 §7 の U1/U2 は「鍵回収後に復号平文で検算すれば
