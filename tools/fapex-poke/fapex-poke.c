@@ -124,11 +124,17 @@ int main(int argc, char **argv)
 		unsigned size  = (unsigned)strtoul(argv[i + 2], NULL, 0);
 		i += 3;
 
+		/* A trailing 'v' on DIR means "this group passes its argument BY
+		 * VALUE" -- needed because one sequence can mix both conventions:
+		 * CLKPWR takes nr=0x21 by pointer and nr=0x23 by value (§5.5). */
+		int gbyval = byval;
 		unsigned dir;
-		if      (!strcmp(ds, "-"))  dir = 0;
-		else if (!strcmp(ds, "w"))  dir = 1;
-		else if (!strcmp(ds, "r"))  dir = 2;
-		else if (!strcmp(ds, "rw")) dir = 3;
+		if      (!strcmp(ds, "-"))   dir = 0;
+		else if (!strcmp(ds, "w"))   dir = 1;
+		else if (!strcmp(ds, "r"))   dir = 2;
+		else if (!strcmp(ds, "rw"))  dir = 3;
+		else if (!strcmp(ds, "wv"))  { dir = 1; gbyval = 1; }
+		else if (!strcmp(ds, "rwv")) { dir = 3; gbyval = 1; }
 		else { fprintf(stderr, "bad DIR '%s'\n", ds); rc = 2; break; }
 		if (size > MAX_ARG) { fprintf(stderr, "SIZE too large\n"); rc = 2; break; }
 
@@ -140,7 +146,7 @@ int main(int argc, char **argv)
 			k++; i++;
 		}
 		unsigned long gval = val;
-		if (byval && !have_val) {
+		if (gbyval && !have_val) {
 			gval = 0;
 			for (unsigned m = 0; m < 4 && m < size; m++)
 				gval |= (unsigned long)buf[m] << (8 * m);
@@ -149,17 +155,17 @@ int main(int argc, char **argv)
 		unsigned long req = ioc(dir, nr, size);
 		if (!quiet)
 			printf("fapex-poke: %s nr=0x%02x dir=%s size=%u req=0x%08lx%s\n",
-			       dev, nr, ds, size, req, byval ? " (by value)" : "");
+			       dev, nr, ds, size, req, gbyval ? " (by value)" : "");
 
 		for (int n = 0; n < repeat; n++) {
 			long r;
 
-			if (!quiet && (dir & 1) && size && !byval) {
+			if (!quiet && (dir & 1) && size && !gbyval) {
 				printf("  in :");
 				for (unsigned m = 0; m < size; m++) printf(" %02x", buf[m]);
 				printf("\n");
 			}
-			if (byval)
+			if (gbyval)
 				r = ioctl(fd, req, gval);
 			else if (size)
 				r = ioctl(fd, req, buf);
@@ -171,7 +177,7 @@ int main(int argc, char **argv)
 			printf("  ret=%ld", r);
 			if (r < 0) printf(" errno=%d (%s)", errno, strerror(errno));
 			printf("\n");
-			if (!quiet && (dir & 2) && size && !byval) {
+			if (!quiet && (dir & 2) && size && !gbyval) {
 				printf("  out:");
 				for (unsigned m = 0; m < size; m++) printf(" %02x", buf[m]);
 				printf("\n");
