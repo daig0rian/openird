@@ -13,8 +13,10 @@ case "${1:-}" in -h|--help) usage 0 ;; esac
 T="$(cd "$(dirname "$0")" && pwd)"
 
 # uv があればそれで（Windows の python stub を避ける）。無ければ素の python3。
+# uv 経由だと PEP 723 の pycryptodome が入るので AES 層まで検査できる。
+# 素の python3 では pycryptodome が無ければその項目だけ skip する。
 if command -v uv >/dev/null 2>&1; then
-	exec uv run --no-project python "$T/test_mkimage.py"
+	exec uv run "$T/test_mkimage.py"
 elif command -v python3 >/dev/null 2>&1; then
 	exec python3 "$T/test_mkimage.py"
 else

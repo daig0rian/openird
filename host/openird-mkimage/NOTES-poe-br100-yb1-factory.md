@@ -19,8 +19,8 @@ SB-TV02-WFPL と違い、**この機種には開発者向けの直接書き込�
 | 段 | 内容 | 状態 |
 |---|---|---|
 | P0 | ボード定義 ＋ `probe-factory`（鍵不要のヘッダ観察） | **完了** |
-| P1 | `unpack-factory`（AES-128-ECB → ZipCrypto → 無暗号 ZIP） | 未着手 |
-| P1.5 | 平文から V1/V2 を仕様化（`docs/specs/` を更新） | 未着手 |
+| P1 | `unpack-factory`（AES-128-ECB → ZipCrypto → 無暗号 ZIP） | **実装済み**。合成コンテナで往復を確認。純正コンテナでの検証は鍵ファイル設置待ち |
+| P1.5 | 平文から V1/V2 を仕様化（`docs/specs/` を更新） | 未着手（P1 の実行待ち） |
 | P2 | `pack-factory`（kernel と rootfs のみ）＋ `verify-factory` | 未着手 |
 | P3 | UPnP 投入クライアント（別ツール・鍵を扱わない） | 未着手 |
 

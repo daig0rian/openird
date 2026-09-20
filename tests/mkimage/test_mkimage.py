@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-only
 # Copyright (C) 2026 OpenIRD contributors
+# /// script
+# requires-python = ">=3.9"
+# dependencies = ["pycryptodome>=3.20"]
+# ///
 """openird-mkimage の自己完結テスト。
 
 秘密（鍵・ZIP パスワード）もベンダコンテナも要求しない＝ CI で回せる。
@@ -8,9 +12,12 @@
 オラクル検証（ヘッダの全数検査）が追加で走る。
 """
 import glob
+import hashlib
+import io
 import json
 import os
 import sys
+import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
@@ -123,6 +130,75 @@ def test_v1b():
             check("v1b でない入力を拒否 (%s)" % why, True)
 
 
+# --- v1b 暗号層と 3 段ほどき（合成コンテナで往復） ---------------------------
+
+TEST_KEY = b"OpenIRD-test-key"        # 16B。明らかにテスト用＝ベンダの鍵ではない
+TEST_PW = b"openird-test-password"
+
+
+def _zip_of(items, method=zipfile.ZIP_STORED):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", method) as z:
+        for name, data in items:
+            z.writestr(name, data)
+    return buf.getvalue()
+
+
+def test_v1b_crypto():
+    print("[v1b] 暗号層と 3 段ほどき")
+    try:
+        v1b._ecb(TEST_KEY)
+    except SystemExit:
+        print("  – pycryptodome 無し＝skip（uv run openird_mkimage.py で入る）")
+        return
+
+    # AES-128-ECB は決定的＝バイト一致で検査できる
+    plain16 = bytes(range(16)) * 64
+    check("ECB 復号→暗号化が往復", v1b.encrypt_body(v1b.decrypt_body(plain16, TEST_KEY), TEST_KEY) == plain16)
+    check("ECB 暗号化→復号が往復", v1b.decrypt_body(v1b.encrypt_body(plain16, TEST_KEY), TEST_KEY) == plain16)
+    check("ECB は位置独立（同じ平文ブロック → 同じ暗号文ブロック）",
+          v1b.encrypt_body(b"A" * 32, TEST_KEY)[:16] == v1b.encrypt_body(b"A" * 32, TEST_KEY)[16:])
+    for bad in (b"\x00" * 15, b"\x00" * 17):
+        try:
+            v1b.decrypt_body(bad, TEST_KEY)
+            check("16B 境界でない本体を拒否", False, "例外が出なかった")
+            break
+        except ValueError:
+            pass
+    else:
+        check("16B 境界でない本体を拒否", True)
+
+    # 合成コンテナを組んでほどく。中間 ZIP は ZipCrypto を書けないので（stdlib は復号のみ）
+    # 無暗号で代用する＝ヘッダ・AES・csum・ペイロード列挙までを通しで見る。
+    # ZipCrypto の暗号化そのものは P2 で ird/zipcrypto.py を書いてから検査する。
+    payload_files = [("vmlinux.img", b"\x27\x05\x19\x56" + b"K" * 500),
+                     ("rootfs.img", b"sqsh" + b"R" * 900),
+                     ("write.sh", b"#!/bin/sh\necho test\n")]
+    payload_zip = _zip_of(payload_files)
+    csum = "%s  blur.zip\n" % hashlib.sha1(payload_zip).hexdigest()
+    inner = _zip_of([("blur.zip", payload_zip), ("csum", csum.encode())])
+    pad = (-len(inner)) % v1b.BODY_ALIGN
+    body = v1b.encrypt_body(inner + b"\x00" * pad, TEST_KEY)
+    container = v1b.build_header("BLUR", (2, 1, 17), body) + body
+
+    r = v1b.unpack(container, TEST_KEY, TEST_PW)
+    check("族と版数を復元", r["header"]["family"] == "BLUR" and r["header"]["version"] == "2.1.17")
+    check("ペイロード名を復元", r["payload_name"] == "blur.zip")
+    check("csum が一致", r["csum_ok"])
+    check("csum のファイル名が一致", r["csum_name_ok"])
+    check("ZIP 末尾の詰め物を検出", r["trailing"] == b"\x00" * pad,
+          "%r" % (r["trailing"],))
+    got = [(e["name"], e["data"]) for e in r["entries"]]
+    check("ペイロードの全ファイルが往復", got == payload_files)
+
+    # 鍵が違えば ZIP として開けない
+    try:
+        v1b.unpack(container, b"wrong-key-16byte", TEST_PW)
+        check("誤った鍵を検出", False, "例外が出なかった")
+    except ValueError:
+        check("誤った鍵を検出", True)
+
+
 # --- RDHB（モジュール分割の回帰） -------------------------------------------
 
 def test_rdhb():
@@ -170,6 +246,7 @@ def test_samples():
 def main():
     test_boards()
     test_v1b()
+    test_v1b_crypto()
     test_rdhb()
     test_samples()
     print()

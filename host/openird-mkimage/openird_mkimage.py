@@ -25,7 +25,7 @@ import os
 import argparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ird import images, rdhb, v1b                       # noqa: E402
+from ird import images, rdhb, secrets, v1b              # noqa: E402
 from ird.board import load_board, part_by_mtd, h        # noqa: E402
 
 for _s in (sys.stdout, sys.stderr):            # Windows cp932 既定を回避
@@ -231,11 +231,107 @@ def cmd_probe_factory(a):
         sys.exit(1)
 
 
+ZIP_METHOD = {0: "store", 8: "deflate", 9: "deflate64", 12: "bzip2", 14: "lzma"}
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+IGNORED_DIRS = ("temp", "output", "build")
+
+
+def _guard_outdir(outdir):
+    """復号結果はベンダ由来の素材。リポジトリの追跡対象に落とさせない。"""
+    full = os.path.abspath(outdir)
+    try:
+        rel = os.path.relpath(full, REPO_ROOT)
+    except ValueError:
+        return                                   # 別ドライブ＝リポジトリ外
+    if rel.startswith(os.pardir):
+        return                                   # リポジトリ外
+    top = rel.replace("\\", "/").split("/", 1)[0]
+    if top not in IGNORED_DIRS:
+        sys.exit(
+            "✗ 出力先がリポジトリの中です: %s\n"
+            "  復号結果はベンダ由来の解析素材で、commit してはいけません（CONTRIBUTING.md §0）。\n"
+            "  リポジトリ外か、git 管理外の %s のどれかに出してください。"
+            % (full, " / ".join(d + "/" for d in IGNORED_DIRS)))
+
+
 def cmd_unpack_factory(a):
-    sys.exit(
-        "✗ 未実装（P1）: v1b の 3 段復号（AES-128-ECB → ZipCrypto ZIP → 無暗号 ZIP）。\n"
-        "  鍵とパスワードは所有者が自機から回収した値をファイルで渡す設計にする（仕様 §0）。\n"
-        "  鍵不要の観察は probe-factory を使うこと。")
+    _guard_outdir(a.outdir)
+    key, key_path = secrets.load_key(a.key_file)
+    pw, pw_path = secrets.load_zip_password(a.zip_pw_file)
+    with open(a.infile, "rb") as f:
+        data = f.read()
+
+    print("# %s  (%d B)" % (a.infile, len(data)))
+    secrets.report("AES 鍵       ", key, key_path)
+    secrets.report("ZIP パスワード", pw, pw_path)
+
+    try:
+        r = v1b.unpack(data, key, pw)
+    except (ValueError, v1b.NotV1b) as e:
+        sys.exit("✗ %s" % e)
+
+    hdr = r["header"]
+    print("\n## 段 0: 外側ヘッダ")
+    print("  族 %s / version %s / 本体 %d B" % (hdr["family"], hdr["version"], hdr["body_len"]))
+    for name, ok in v1b.checks(hdr):
+        print("  %s %s" % ("✓" if ok else "✗", name))
+
+    print("\n## 段 1: AES-128-ECB 復号 → 中間 ZIP（ZipCrypto）")
+    print("  平文 %d B  先頭 %r" % (len(r["plain"]), r["plain"][:4]))
+    print("  エントリ: %s" % ", ".join(r["inner_names"]))
+    tr = r["trailing"]
+    if tr is None:
+        print("  ⚠ EOCD が見つかりません（ZIP 構造の末尾を特定できない）")
+    else:
+        kinds = sorted(set(tr))
+        print("  ZIP 末尾 0x%x → 後ろに %d B の詰め物%s  (pack 側で再現する対象)"
+              % (r["zip_end"], len(tr),
+                 ("・中身 " + " ".join("%02x" % b for b in kinds[:4])) if tr else ""))
+
+    print("\n## 段 2: csum 検算")
+    if r["csum_text"] is None:
+        print("  ✗ csum がありません（仕様 §4 ではエントリは正確に 2 つ）")
+    else:
+        print("  csum: %r" % r["csum_text"].strip())
+        print("  %s SHA-1(%s) = %s" % ("✓" if r["csum_ok"] else "✗",
+                                       r["payload_name"], r["payload_sha1"]))
+        print("  %s csum のファイル名がペイロードと一致" % ("✓" if r["csum_name_ok"] else "✗"))
+
+    print("\n## 段 3: ペイロード ZIP（無暗号）")
+    print("  %-20s %10s %10s %-9s %s" % ("name", "size", "stored", "method", "crc"))
+    for e in r["entries"]:
+        print("  %-20s %10d %10d %-9s %08x"
+              % (e["name"], e["size"], e["compressed"],
+                 ZIP_METHOD.get(e["method"], "id%d" % e["method"]), e["crc"]))
+    methods = sorted({ZIP_METHOD.get(e["method"], "id%d" % e["method"]) for e in r["entries"]})
+    print("  → 圧縮方式: %s  (仕様の V2＝pack 側で合わせる対象)" % ", ".join(methods) if methods else "")
+
+    # 書き出し
+    os.makedirs(a.outdir, exist_ok=True)
+    stage1 = os.path.join(a.outdir, "stage1-inner.zip")
+    with open(stage1, "wb") as f:
+        f.write(r["plain"])
+    s2 = os.path.join(a.outdir, "stage2")
+    os.makedirs(s2, exist_ok=True)
+    with open(os.path.join(s2, r["payload_name"]), "wb") as f:
+        f.write(r["payload_zip"])
+    if r["csum_text"] is not None:
+        with open(os.path.join(s2, v1b.CSUM_NAME), "w", encoding="ascii", newline="") as f:
+            f.write(r["csum_text"])
+    pdir = os.path.join(a.outdir, "payload")
+    os.makedirs(pdir, exist_ok=True)
+    for e in r["entries"]:
+        safe = os.path.basename(e["name"])       # ZIP のパスは信用しない
+        with open(os.path.join(pdir, safe), "wb") as f:
+            f.write(e["data"])
+    print("\n✓ 出力: %s" % os.path.abspath(a.outdir))
+    print("    stage1-inner.zip   AES 復号結果（ZipCrypto ZIP）")
+    print("    stage2/            中間 ZIP の中身（%s と csum）" % r["payload_name"])
+    print("    payload/           区画イメージとスクリプト %d 点" % len(r["entries"]))
+
+    bad = [n for n, ok in v1b.checks(hdr) if not ok]
+    if bad or (r["csum_text"] is not None and not r["csum_ok"]):
+        sys.exit(1)
 
 
 def cmd_pack_factory(a):
@@ -304,9 +400,11 @@ def main():
     p.add_argument("--table", action="store_true", help="1 本でも表形式で出す")
     p.set_defaults(fn=cmd_probe_factory)
 
-    p = sub.add_parser("unpack-factory", help="v1b コンテナを 3 段復号（未実装）")
+    p = sub.add_parser("unpack-factory", help="v1b コンテナを 3 段復号（要 鍵・ZIP パスワード）")
     p.add_argument("infile")
-    p.add_argument("outdir")
+    p.add_argument("outdir", help="リポジトリ外か temp/ output/ build/ のどれか")
+    p.add_argument("--key-file", help="AES 鍵ファイル（既定 ~/.openird/v1b/%s）" % secrets.KEY_FILE)
+    p.add_argument("--zip-pw-file", help="ZIP パスワードファイル（既定 ~/.openird/v1b/%s）" % secrets.PW_FILE)
     p.set_defaults(fn=cmd_unpack_factory)
 
     p = sub.add_parser("pack-factory", help="v1b factory コンテナを作る（未実装）")

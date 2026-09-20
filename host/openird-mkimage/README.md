@@ -55,16 +55,31 @@ uv run --no-project python openird_mkimage.py <cmd> ...   # 依存不要のコ�
 |---|---|---|
 | `partitions poe-br100-yb1` | 不要 | 区画表（GPL の区画表由来・実機ダンプと一致を確認済み） |
 | `probe-factory <file>...` | **不要** | v1b コンテナのヘッダ 332B を読む。族タグ・版数・**h38 = SHA-1(本体)** の検算・本体長の 16B 整合。複数渡すと表で出る |
-| `unpack-factory <file> <outdir>` | 要 | 3 段復号（AES-128-ECB → ZipCrypto → 無暗号 ZIP）。**未実装（P1）** |
+| `unpack-factory <file> <outdir>` | 要 | 3 段復号（AES-128-ECB → ZipCrypto → 無暗号 ZIP）。段ごとに成果物を残し、csum を検算する |
 | `pack-factory <board> ...` | 要 | factory コンテナ生成。**未実装（P2）** |
+
+`unpack-factory` の出力先は**リポジトリの外**か、git 管理外の `temp/` `output/` `build/` に
+限る（復号結果はベンダ由来の解析素材で commit してはいけない）。ツールが機械的に拒否する。
 
 形式の仕様は [update-v1b-container.md](../../docs/specs/update-v1b-container.md)、機器側の
 書き込み機構は [poe-br100-yb1-nand-update.md](../../docs/specs/poe-br100-yb1-nand-update.md)。
 実装の段取りと残っている不明点は **NOTES-poe-br100-yb1-factory.md**。
 
-**鍵と ZIP パスワードはツールに埋め込まない。** 所有者が自機から回収した値を、値ではなく
-**ファイルのパス**で渡す設計にする（`ps` と shell history に残さないため）。ツールは鍵を
-出力せず、どの鍵を使ったかはフィンガープリントだけを示す。
+### 鍵と ZIP パスワードの渡し方
+
+**ツールに埋め込まない。既定値も持たない。** 所有者が自機から回収した値を、値ではなく
+**ファイルのパス**で渡す（値をコマンドライン引数や環境変数に載せると `ps` と shell history
+に残るため）。ツールは値を出力せず、指紋（SHA-256 先頭 4B）だけを示す。
+
+既定の置き場は **リポジトリの外**:
+
+| ファイル | 中身 |
+|---|---|
+| `~/.openird/v1b/aes-128-ecb.key` | 16 進 32 文字（空白・`:`・`0x`・`#` コメントは無視）または生 16B |
+| `~/.openird/v1b/zip.pass` | パスワード 1 行。末尾の改行だけ落とす（行末スペースは残す） |
+
+`--key-file` / `--zip-pw-file`、環境変数 `OPENIRD_V1B_KEY_FILE` / `OPENIRD_V1B_ZIPPW_FILE`
+でも指せる（いずれも**パス**であって値ではない）。
 
 RDHB 形式の仕様は [docs/specs/rdhb-kernel-container.md](../../docs/specs/rdhb-kernel-container.md)。
 区画レイアウトと実機への導入順は

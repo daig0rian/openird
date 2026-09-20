@@ -9,7 +9,9 @@
   0x14c..EOF    暗号本体（AES-128-ECB・長さは常に 16B の倍数）
 """
 import hashlib
+import io
 import struct
+import zipfile
 
 HDR_LEN = 0x14C           # 332B
 TAG_LEN = 0x20            # 0x00: 族タグ 32B
@@ -97,3 +99,134 @@ def build_header(family, version, body, h20=b"\x00" * LEN_H20, h30=b"\x00" * LEN
     hdr[OFF_VER:OFF_VER + LEN_VER] = struct.pack("BBBB", mm, mi, pp, 0)
     hdr[OFF_H38:OFF_H38 + LEN_H38] = hashlib.sha1(body).digest()
     return bytes(hdr)
+
+
+# --- 暗号層（仕様 §3: AES-128-ECB） -----------------------------------------
+
+def _ecb(key):
+    try:
+        from Crypto.Cipher import AES
+    except ImportError:
+        raise SystemExit(
+            "✗ AES に pycryptodome が要ります。\n"
+            "  `uv run openird_mkimage.py ...` で実行してください\n"
+            "  （--no-project だと PEP 723 の依存が入りません）。")
+    if len(key) != 16:
+        raise ValueError("AES-128 の鍵は 16 バイトです（得: %d）" % len(key))
+    return AES.new(key, AES.MODE_ECB)
+
+
+def decrypt_body(body, key):
+    """暗号本体 → 平文。ECB・パディング無し＝長さはそのまま（仕様 §3）。"""
+    if len(body) % BODY_ALIGN:
+        raise ValueError("本体長 %d が %dB 境界にありません" % (len(body), BODY_ALIGN))
+    return _ecb(key).decrypt(body)
+
+
+def encrypt_body(plain, key):
+    """平文 → 暗号本体。16B 境界に合わせてから呼ぶこと（仕様 §6-5）。"""
+    if len(plain) % BODY_ALIGN:
+        raise ValueError("平文長 %d が %dB 境界にありません" % (len(plain), BODY_ALIGN))
+    return _ecb(key).encrypt(plain)
+
+
+# --- ZIP 層（仕様 §4 / §5） -------------------------------------------------
+
+ZIP_MAGIC = b"PK\x03\x04"
+CSUM_NAME = "csum"
+
+
+def parse_csum(text):
+    """`sha1sum -c` 互換 1 行 '<40hex>␠␠<name>' を (hexdigest, name) に分解する。"""
+    line = text.strip().splitlines()[0] if text.strip() else ""
+    parts = line.split(None, 1)
+    if len(parts) != 2 or len(parts[0]) != 40:
+        raise ValueError("csum の形式が読めません: %r" % line)
+    return parts[0].lower(), parts[1].lstrip("*").strip()
+
+
+EOCD_MAGIC = b"PK\x05\x06"
+EOCD_LEN = 22
+
+
+def zip_end(data):
+    """ZIP 構造の末尾位置を返す（EOCD の終わり）。見つからなければ None。
+
+    本体長は 16B 境界に揃える必要がある（仕様 §3）ので、ZIP の後ろに詰め物が
+    入りうる。pack 側で何をどれだけ足すかを決めるための観察点。
+    """
+    i = data.rfind(EOCD_MAGIC)
+    if i < 0 or len(data) < i + EOCD_LEN:
+        return None
+    comment_len = struct.unpack_from("<H", data, i + 20)[0]
+    return i + EOCD_LEN + comment_len
+
+
+def open_inner_zip(plain, password):
+    """AES 復号直後の平文（= ZipCrypto 暗号化 ZIP）を開く。仕様 §4。"""
+    if plain[:4] != ZIP_MAGIC:
+        raise ValueError(
+            "復号結果が ZIP ではありません（先頭 %r）。鍵が違う可能性があります。" % plain[:4])
+    zf = zipfile.ZipFile(io.BytesIO(plain))
+    zf.setpassword(password)
+    return zf
+
+
+def unpack(data, key, password):
+    """コンテナを 3 段ほどいて、各段の成果物と検算結果を返す。
+
+    外側ヘッダ → AES-128-ECB → ZipCrypto ZIP（<family>.zip と csum）
+                                → 無暗号 ZIP（区画イメージとスクリプト）
+    """
+    hdr = parse(data)
+    plain = decrypt_body(data[HDR_LEN:], key)
+    zf = open_inner_zip(plain, password)
+
+    names = zf.namelist()
+    inner_names = [n for n in names if n != CSUM_NAME]
+    if len(inner_names) != 1:
+        raise ValueError("中間 ZIP のエントリが想定外です: %r（<family>.zip と csum の 2 つのはず）" % names)
+    payload_name = inner_names[0]
+
+    try:
+        payload_zip = zf.read(payload_name)
+    except RuntimeError as e:                      # 伝統的暗号のパスワード誤り
+        raise ValueError("中間 ZIP を開けません（ZIP パスワードが違う可能性）: %s" % e)
+
+    csum_text, csum_expect, csum_target = None, None, None
+    if CSUM_NAME in names:
+        csum_text = zf.read(CSUM_NAME).decode("ascii", "replace")
+        csum_expect, csum_target = parse_csum(csum_text)
+
+    payload_sha1 = hashlib.sha1(payload_zip).hexdigest()
+
+    entries = []
+    if payload_zip[:4] == ZIP_MAGIC:
+        with zipfile.ZipFile(io.BytesIO(payload_zip)) as pz:
+            for info in pz.infolist():
+                entries.append({
+                    "name": info.filename,
+                    "size": info.file_size,
+                    "compressed": info.compress_size,
+                    "method": info.compress_type,
+                    "crc": info.CRC,
+                    "data": pz.read(info.filename),
+                })
+
+    zend = zip_end(plain)
+    return {
+        "header": hdr,
+        "plain": plain,
+        "zip_end": zend,
+        "trailing": None if zend is None else plain[zend:],
+        "inner_names": names,
+        "payload_name": payload_name,
+        "payload_zip": payload_zip,
+        "payload_sha1": payload_sha1,
+        "csum_text": csum_text,
+        "csum_expect": csum_expect,
+        "csum_target": csum_target,
+        "csum_ok": csum_expect is not None and csum_expect == payload_sha1,
+        "csum_name_ok": csum_target == payload_name,
+        "entries": entries,
+    }
