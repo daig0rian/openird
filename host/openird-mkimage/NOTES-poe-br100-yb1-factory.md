@@ -143,3 +143,34 @@ tests/mkimage に回帰検査を追加した。
 
 > ベンダコンテナ・NAND ダンプ（`temp/`）は解析専用。commit しない。
 > 鍵・ZIP パスワードはリポジトリにもツールにも置かない（CONTRIBUTING.md §0）。
+
+## 2026-09-21 — 手順 1b 完了（root シェル取得）
+
+自作した factory コンテナで実機にベンダ rootfs ＋ root シェルを導入し、**シリアルと
+telnet の両方でログインできることを確認**した。ベンダアプリ `blur` は 75 プロセスで
+通常どおり動いたまま＝段階 B の観察環境として成立している。
+
+```
+[04:38:12] using update environment on mtd1
+[04:38:14] NAND erase/write  0x600000 / 0xa80000 / 0x1380000 / 0x2f00000 / 0x3300000
+[04:38:27] NAND write 0x300000 size 0x800      （FWUP マーカー）
+[04:38:46] OPENIRD alive on ttyS1
+[04:38:47] buildroot login: root
+[04:40:50] #
+```
+
+- **実ポートは ttyS1**。ttyS0 側の生存確認は届かなかった。
+- `/proc/cmdline` に `console=` が無いことを実機で確認（§8）。
+- `/proc/mtd` が `boards/poe-br100-yb1.json` の区画表と全項目一致。
+- `telnetd`(pid 932) と `getty ttyS0`(pid 936) も起動している＝挿し込み位置は正しい。
+
+∴ **V8 は完全に閉じた**。自作コンテナは純正アプリに受理され、書き込まれ、起動する。
+
+### ここまでで実機で踏んだ 3 つの罠（すべて仕様に反映済み）
+
+1. **ペイロード ZIP のファイルモード** — `.sh` に実行ビットが要る。かつ
+   「作成した版」が Unix でないとモードが無視される。外すと `./write.sh` が
+   Permission denied になり、**エラーを一切出さずに更新が中止**される。
+2. **`/etc/inittab` は使われない** — busybox init は sysinit を待ち、`rcS` が戻らない。
+3. **`rcS` も末尾に到達しない** — `setsid cttyhack /app/bin/setup.sh` に `&` が無く、
+   `setup.sh` は `blur` をフォアグラウンドで起動して戻らない。**介入点はこの行の直前**。

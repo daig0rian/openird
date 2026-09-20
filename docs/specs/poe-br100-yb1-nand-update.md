@@ -251,8 +251,10 @@ u-boot の既定環境には起動コマンドが 4 本ある（NAND ダンプ�
 
 - **製品出荷状態では `console=` が無く、Linux の出力は一切シリアルに出ない。**
   u-boot の `Starting kernel ...` の後が無音なのはこのため（カーネルが壊れている
-  わけではない）。
+  わけではない）。実機の `/proc/cmdline` で確認済み:
+  `rootfstype=squashfs root=/dev/mtdblock3 ro ip=none PRODUCT_FWIDS=PIX_AIRTUNER_LITE U_BOOT_REV=612`
 - **実シリアルポートは Linux から見て `ttyS1`**（`/dev/ttyS1` = char 4,65）。
+  ttyS0/ttyS1 の両方に生存確認を出して実機で確かめた結果、**ttyS1 だけが届いた**。
   ベンダ rootfs の `/etc/inittab` にあるコメント行は `ttyS0` だが、これは行末に
   `GENERIC_SERIAL` とある配布元の汎用テンプレートで、この機種の実ポートではない。
   **コメントを外すだけでは無反応**になる。
