@@ -94,6 +94,43 @@ mtd1 に書き込み**、次回起動時に u-boot 自身に実行させる。
 ⑤ 次回起動: Linux 側の起動スクリプトがマーカーを見て後始末（§4）へ合流
 ```
 
+### 3.1.1 Linux 側の受け取り手順（ベンダの平文スクリプト `/app/update.sh` より）
+
+`blur`（ベンダアプリ）が外側ヘッダを検査して AES を解き、**中間 ZIP をそのまま
+`/app/flashDev/updatefile.zip` に書く**。以降は平文シェルの担当で、次の順に進む。
+
+```
+mount /app/flashDev                       # mtd9(YAFFS2)。fstab では noauto
+cd /tmp                                   # tmpfs
+unzip -o -P <パスワード> /app/flashDev/updatefile.zip   # → blur.zip と csum
+  失敗したら中止
+sha1sum -c csum                           # blur.zip の SHA-1 を検証
+  失敗したら中止
+rm -rf /app/flashDev/tmp_update ; mkdir   # 作業ディレクトリを作り直す
+cd /app/flashDev/tmp_update
+unzip -o /tmp/blur.zip                    # 区画イメージとスクリプトを展開
+  失敗したら中止
+./write.sh                                # ← **実行**する。env を mtd1 へ書く
+  失敗したら中止
+touch start_update.txt                    # 「u-boot で更新中」の印
+umount/mount /app/flashDev ; reboot
+```
+
+- **`./write.sh` を実行する**＝ペイロード ZIP が実行ビットを保っていなければ
+  ならない（[update-v1b-container.md](update-v1b-container.md) §5）。
+- 機器の `/usr/bin/unzip` は **busybox ではなく Info-ZIP の実体バイナリ**。
+  `sha1sum` は busybox 1.17.4。
+- `mac.dat` が置かれていれば `nand_flash_write -l` で mtd1 に MAC を書く枠もあるが、
+  配布コンテナには無い。**OpenIRD も置かない**。
+- どの段で失敗しても後片付け（`rm -rf tmp_update` と `updatefile.zip` の削除）は
+  走らない＝**失敗すると作業中のファイルが mtd9 に残る**。切り分けの手がかりになる。
+- 更新後の再起動では `start_update.txt` があるため `delete.sh` の実行に分岐する（§4）。
+- 関連する fstab: `/`=mtd3(squashfs,ro) / `/app/bin`=mtd4(squashfs,ro) /
+  `/app/setting`=mtd8(yaffs2,rw) / `/app/flashDev`=mtd9(yaffs2,rw,noauto) / `/tmp`=tmpfs。
+
+> 中間 ZIP のパスワードはこのスクリプトに平文で置かれているが、**値は本書にも
+> リポジトリにも書かない**（CONTRIBUTING.md §0）。所有者が自機から回収する。
+
 ### 3.2 ペイロード内スクリプトの契約（OpenIRD が満たすべきもの）
 
 `write.sh` は OpenIRD 側で仕様どおり生成する（純正から流用しない・

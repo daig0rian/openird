@@ -115,6 +115,20 @@ factory.bin（外側コンテナ, <FAMILY>_UPDATE_v1b）
 
 - **全エントリが deflate**（確度: 確定。BLUR v2.1.17 の実測。`.img` のように既に圧縮済みの
   ものも含めて一律 deflate で、`store` は使われない）。ディレクトリ・エントリは無い。
+- **ファイルモードを正しく持たせること（確度: 確定・実機で踏んだ）**。機器側は
+  展開したスクリプトを `./write.sh` の形で**実行する**ため、実行ビットが要る。
+
+  | 条件 | 値 |
+  |---|---|
+  | `*.sh` の external attributes | `0o100755`（上位 16bit に Unix モード） |
+  | `*.img` の external attributes | `0o100644` |
+  | 「作成した版」の上位バイト | **`3` = Unix**（低位は 30 = 3.0） |
+
+  **どちらか一方でも欠けると駄目**。`version made by` が Unix でないと、展開側
+  （機器の `/usr/bin/unzip` は busybox ではなく Info-ZIP の実体）は external
+  attributes の Unix モードを無視し、実行ビットが落ちる。結果 `./write.sh` が
+  Permission denied になり、**更新は何も起こらずに静かに終わる**
+  （機器は普通に起動し、u-boot に `using update environment on mtd1` が出ない）。
 - 実コンテナ（BLUR v2.1.17）のエントリは **9 点**で、`u-boot.img` は**入っていない**（§4 の枠のみ）。
 - **各 `.img` は対応区画の先頭からの raw ダンプ**（追加ヘッダ無し）。実測で `vmlinux.img` は
   uImage マジック `27 05 19 56`、`rootfs.img` / `app_bin.img` / `emma_fw.img` は BE squashfs

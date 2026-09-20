@@ -125,13 +125,28 @@ def _compress(data, method, level):
     raise ValueError("未対応の圧縮方式: %d" % method)
 
 
+# 「作成した版」の上位バイトがファイル属性の解釈を決める。3 = Unix。
+# **これが Unix でないと、展開側は external attributes の Unix モードを見ない**
+# ＝ 実行ビットが落ちる。機器上では展開したスクリプトを `./write.sh` で実行するので、
+# ここを外すと Permission denied で更新が止まる。低位バイトは仕様版（3.0 = 30）。
+MADE_BY_UNIX30 = (3 << 8) | 30
+MODE_FILE = 0o100644
+MODE_EXEC = 0o100755
+
+
+def ext_attr_for(mode):
+    """Unix のモード（0o100644 等）を ZIP の external attributes に詰める。"""
+    return (mode & 0xFFFF) << 16
+
+
 def write_zip(entries, password=None, method=STORED, level=6,
               times=DOS_EPOCH, salt=None, data_descriptor=False,
-              version=20, ext_attr=0):
+              version_made=MADE_BY_UNIX30, version_needed=None,
+              ext_attr=ext_attr_for(MODE_FILE)):
     """(name, data) または (name, data, opts) の並びから ZIP を組む。
 
-    password を渡すと ZipCrypto で暗号化する。opts で "method" と "times" を
-    エントリごとに上書きできる（純正の並びを忠実に再現するため）。
+    password を渡すと ZipCrypto で暗号化する。opts で "method" / "times" /
+    "ext_attr" をエントリごとに上書きできる（純正の並びを忠実に再現するため）。
 
     data_descriptor=True でフラグ bit 3 を立て、各エントリの後ろに記述子を書く。
     純正の中間 ZIP がこの形（Info-ZIP の streaming 出力）なので、再梱包では
@@ -146,6 +161,8 @@ def write_zip(entries, password=None, method=STORED, level=6,
         opts = item[2] if len(item) > 2 else {}
         mth = opts.get("method", method)
         dtime, ddate = opts.get("times", times)
+        ea = opts.get("ext_attr", ext_attr)
+        need = version_needed if version_needed is not None else (20 if mth == DEFLATED else 10)
         nm = name.encode("ascii")
         crc = binascii.crc32(data) & 0xFFFFFFFF
         comp = _compress(data, mth, level)
@@ -157,13 +174,13 @@ def write_zip(entries, password=None, method=STORED, level=6,
             comp = encrypt_entry(comp, password, check, salt)
             flags |= FLAG_ENCRYPTED
         offset = len(out)
-        out += struct.pack("<4sHHHHHIIIHH", _LFH, version, flags, mth, dtime, ddate,
+        out += struct.pack("<4sHHHHHIIIHH", _LFH, need, flags, mth, dtime, ddate,
                            crc, len(comp), len(data), len(nm), 0) + nm + comp
         if data_descriptor:
             out += struct.pack("<4sIII", _DD, crc, len(comp), len(data))
-        central += struct.pack("<4sHHHHHHIIIHHHHHII", _CDH, version, version, flags, mth,
+        central += struct.pack("<4sHHHHHHIIIHHHHHII", _CDH, version_made, need, flags, mth,
                                dtime, ddate, crc, len(comp), len(data),
-                               len(nm), 0, 0, 0, 0, ext_attr, offset) + nm
+                               len(nm), 0, 0, 0, 0, ea, offset) + nm
         count += 1
     cd_off = len(out)
     out += central

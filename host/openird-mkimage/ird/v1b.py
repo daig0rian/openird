@@ -213,6 +213,8 @@ def unpack(data, key, password):
                     "method": info.compress_type,
                     "crc": info.CRC,
                     "times": zipcrypto.dos_time(info.date_time),
+                    "ext_attr": info.external_attr,
+                    "mode": info.external_attr >> 16,
                     "data": pz.read(info.filename),
                 })
 
@@ -237,11 +239,21 @@ def unpack(data, key, password):
 
 # --- 組み立て（仕様 §6） ----------------------------------------------------
 
+def default_ext_attr(name):
+    """機器上で `./write.sh` のように **実行される**スクリプトには実行ビットが要る。
+
+    純正も .sh が 0755、区画イメージが 0644。ここを落とすと機器側の update.sh が
+    `./write.sh` で Permission denied になり、更新が静かに止まる。
+    """
+    mode = zipcrypto.MODE_EXEC if name.endswith(".sh") else zipcrypto.MODE_FILE
+    return zipcrypto.ext_attr_for(mode)
+
+
 def build_payload_zip(entries, times=zipcrypto.DOS_EPOCH):
     """区画イメージとスクリプトを無暗号 ZIP にまとめる（仕様 §5）。
 
     純正は全エントリ deflate で、ディレクトリ・エントリを持たない。entries は
-    unpack が返す形（name / data / method / times を持つ dict）でも、
+    unpack が返す形（name / data / method / times / ext_attr を持つ dict）でも、
     (name, data) の組でも良い。
     """
     items = []
@@ -249,9 +261,11 @@ def build_payload_zip(entries, times=zipcrypto.DOS_EPOCH):
         if isinstance(e, dict):
             items.append((e["name"], e["data"],
                           {"method": e.get("method", zipcrypto.DEFLATED),
-                           "times": e.get("times", times)}))
+                           "times": e.get("times", times),
+                           "ext_attr": e.get("ext_attr") or default_ext_attr(e["name"])}))
         else:
-            items.append((e[0], e[1], {"method": zipcrypto.DEFLATED, "times": times}))
+            items.append((e[0], e[1], {"method": zipcrypto.DEFLATED, "times": times,
+                                       "ext_attr": default_ext_attr(e[0])}))
     return zipcrypto.write_zip(items, password=None)
 
 
@@ -271,7 +285,7 @@ def build_middle_zip(payload_name, payload_zip, password,
     return zipcrypto.write_zip(
         [(payload_name, payload_zip), (CSUM_NAME, build_csum(payload_name, payload_zip).encode("ascii"))],
         password=password, method=zipcrypto.STORED, times=times, salt=salt,
-        data_descriptor=vendor_style, version=10 if vendor_style else 20)
+        data_descriptor=vendor_style)
 
 
 def pad_to_block(plain):

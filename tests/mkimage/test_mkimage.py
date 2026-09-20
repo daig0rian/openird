@@ -268,6 +268,16 @@ def test_repack():
                                    times=r["entries"][0]["times"], salt=b"\x02" * 11)),
               TEST_KEY, h20=hdr["h20"], h30=hdr["h30"]) == out)
 
+    # 機器上で `./write.sh` を実行するので、実行ビットが落ちてはいけない。
+    # 落ちると update.sh が Permission denied で静かに止まる（2026-09-21 に実機で踏んだ）。
+    with zipfile.ZipFile(io.BytesIO(payload)) as pz:
+        for i in pz.infolist():
+            want = 0o100755 if i.filename.endswith(".sh") else 0o100644
+            check("%s のモードが %s" % (i.filename, oct(want)),
+                  (i.external_attr >> 16) == want, oct(i.external_attr >> 16))
+            check("%s が Unix 作成扱い（でないとモードが無視される）" % i.filename,
+                  i.create_system == 3, "create_system=%d" % i.create_system)
+
     # 純正の形（store + データ記述子 + 時刻由来の check byte）で組めているか
     plain = v1b.decrypt_body(out[v1b.HDR_LEN:], TEST_KEY)
     import struct as _s
