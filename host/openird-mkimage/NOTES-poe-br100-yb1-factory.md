@@ -22,7 +22,9 @@ SB-TV02-WFPL と違い、**この機種には開発者向けの直接書き込�
 | P1 | `unpack-factory`（AES-128-ECB → ZipCrypto → 無暗号 ZIP） | **実装済み**。合成コンテナで往復を確認。純正コンテナでの検証は鍵ファイル設置待ち |
 | P1.5 | 平文から V1/V2 を仕様化（`docs/specs/` を更新） | 未着手（P1 の実行待ち） |
 | P2a | `ird/zipcrypto.py`（ZipCrypto 付き ZIP の書き出し） | **完了**。V1/V2 に依存しないので先に片付けた |
-| P2b | ペイロード生成（`write.sh` 系・csum）＋ `pack-factory` ＋ `verify-factory` | 未着手（V1/V2 待ち） |
+| P2b | `repack-factory`（純正の組み直し・ペイロードの差し替え） | **完了** |
+| P2c | ベンダ rootfs を 3.1BE で往復する道具（`scripts/fetch-squashfs3.sh` ＋ `tools/vendor-rootfs/mkshell.sh`） | **完了** |
+| P2d | `pack-factory`（OpenIRD 自身の kernel/rootfs から factory 像を作る） | 未着手 |
 | P3 | UPnP 投入クライアント（別ツール・鍵を扱わない） | 未着手 |
 
 **unpack を pack より先に作る。** 仕様 §7 の U1/U2 は「鍵回収後に復号平文で検算すれば
@@ -60,6 +62,29 @@ V6 があるため、自作コンテナの初回投入では **中身を変え�
 ∴ **実機に流して初めて分かることは V8 だけ**に絞り込めた。バイト一致した方
 （`--rebuild none`）を投入する意味は無い（原本そのもの）。投入するなら
 `--rebuild all` の方で、これは ZIP 層を自前で組んだ別バイト列（+9,504B）。
+
+## 手順 1b の像（root シェル入りベンダ rootfs）— 2026-09-21
+
+段階 B の観察環境を、純正との差が最小の状態で用意する。差が大きいほどベンダアプリが
+落ちる要因が増えて観察にならない（SB-TV02 での教訓）。
+
+ベンダ rootfs には **シリアル getty の行が最初からコメントアウトで入っており、root は
+パスワード空**（`/etc/shadow` が `root::`）。busybox の telnetd も同梱されている。
+∴ 必要な改変は **`/etc/inittab` の `#` を 1 つ外すだけ**。
+
+```
+scripts/fetch-squashfs3.sh                          # mksquashfs 3.4（-be が要る）
+tools/vendor-rootfs/mkshell.sh <in.img> <out.img>   # fakeroot 下で展開→1行外す→3.1BE で梱包
+openird_mkimage.py repack-factory <純正.bin> <out.bin> --replace rootfs.img=<out.img>
+```
+
+**`fakeroot` 必須**。一般ユーザで `unsquashfs` するとデバイスノード 223 個が黙って
+作られず、`/dev/console` の無い rootfs ができて起動が無言で死ぬ。`mkshell.sh` は
+生成後に char/block/symlink の数と mode/owner を元イメージと突き合わせて検証する。
+
+検証（生成コンテナをほどいて純正 rootfs と全ファイル比較）:
+**差分は `/etc/inittab` の 1 ファイル・1 行のみ**。特殊ファイル 223 個・シンボリック
+リンク 291 個・setuid 1 個はすべて保たれている。
 
 ## 解決済み（記録）
 

@@ -56,7 +56,12 @@ uv run --no-project python openird_mkimage.py <cmd> ...   # 依存不要のコ�
 | `partitions poe-br100-yb1` | 不要 | 区画表（GPL の区画表由来・実機ダンプと一致を確認済み） |
 | `probe-factory <file>...` | **不要** | v1b コンテナのヘッダ 332B を読む。族タグ・版数・**h38 = SHA-1(本体)** の検算・本体長の 16B 整合。複数渡すと表で出る |
 | `unpack-factory <file> <outdir>` | 要 | 3 段復号（AES-128-ECB → ZipCrypto → 無暗号 ZIP）。段ごとに成果物を残し、csum を検算する |
-| `pack-factory <board> ...` | 要 | factory コンテナ生成。**未実装（P2）** |
+| `repack-factory <in> <out>` | 要 | 純正コンテナを組み直す。`--rebuild none/zipcrypto/all` でどの層から自前にするかを選べる。`--replace NAME=PATH` でペイロードの 1 点を差し替え（書き込み固定長を超えたら hard error） |
+| `pack-factory <board> ...` | 要 | OpenIRD 自身の factory 像を作る。**未実装** |
+
+`repack-factory --rebuild none` は原本とバイト一致する（ヘッダと AES 層の回帰テストになる）。
+`--replace` で差し替えた場合、自己検証は「差し替えなかった点は原本とバイト一致」「差し替えた点は
+渡したファイルと一致」を別々に確かめる。
 
 `unpack-factory` の出力先は**リポジトリの外**か、git 管理外の `temp/` `output/` `build/` に
 限る（復号結果はベンダ由来の解析素材で commit してはいけない）。ツールが機械的に拒否する。

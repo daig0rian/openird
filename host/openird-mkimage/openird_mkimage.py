@@ -10,7 +10,8 @@
 現状の実装範囲:
   mb86h61 / sb-tv02-wfpl   : 確定経路（booter-root から MTD を直接書く。暗号ゲート無し）。
   emma3sep / poe-br100-yb1 : 純正の更新コンテナ <FAMILY>_UPDATE_v1b を使う経路。
-                             probe-factory（鍵不要の観察）まで実装済み。unpack/pack は未実装。
+                             probe / unpack / repack まで実装済み。OpenIRD 自身の
+                             image を作る pack-factory は未実装。
 
 不明点（HOLD）は推測で埋めない。refuse して理由を示す。詳細は
 NOTES-sb-tv02-factory.md / NOTES-poe-br100-yb1-factory.md を参照。
@@ -22,6 +23,7 @@ NOTES-sb-tv02-factory.md / NOTES-poe-br100-yb1-factory.md を参照。
 """
 import sys
 import os
+import json
 import argparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -334,6 +336,59 @@ def cmd_unpack_factory(a):
         sys.exit(1)
 
 
+def _board_for_family(family):
+    """族タグから boards/*.json を引く（書き込み固定長の検査に使う）。"""
+    import glob as _glob
+    for path in _glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)), "boards", "*.json")):
+        try:
+            with open(path, encoding="utf-8") as f:
+                b = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if b.get("factory", {}).get("family_tag") == family:
+            return b
+    return None
+
+
+def _apply_replacements(r, specs, family):
+    """--replace name=path をペイロードに反映する。OpenWrt の check-size 相当を掛ける。"""
+    if not specs:
+        return []
+    board = _board_for_family(family)
+    limits = {}
+    if board:
+        limits = {im["name"]: (h(im["write_len"]), im["mtd"])
+                  for im in board["factory"]["images"]}
+        print("\n## 差し替え（ボード定義 %s で上限を検査）" % board["board"])
+    else:
+        print("\n## 差し替え（族 %r に対応するボード定義が無く、上限を検査できません）" % family)
+    by_name = {e["name"]: e for e in r["entries"]}
+    done = []
+    for spec in specs:
+        if "=" not in spec:
+            sys.exit("✗ --replace は name=path の形で指定してください: %r" % spec)
+        name, path = spec.split("=", 1)
+        if name not in by_name:
+            sys.exit("✗ ペイロードに %r がありません（あるのは %s）"
+                     % (name, ", ".join(by_name)))
+        with open(path, "rb") as f:
+            data = f.read()
+        old = len(by_name[name]["data"])
+        if name in limits:
+            cap, mtd = limits[name]
+            if len(data) > cap:
+                sys.exit("✗ %s が mtd%d の書き込み長を超えています: %d B > %d B。\n"
+                         "  超過分は機器側で黙って切り捨てられ、区画後半が壊れます。"
+                         % (name, mtd, len(data), cap))
+            print("  %-18s %d B → %d B  (mtd%d 上限 %d B の %d%%)"
+                  % (name, old, len(data), mtd, cap, 100 * len(data) // cap))
+        else:
+            print("  %-18s %d B → %d B" % (name, old, len(data)))
+        by_name[name]["data"] = data
+        done.append(name)
+    return done
+
+
 def cmd_repack_factory(a):
     """純正コンテナをほどいて、中身を変えずに組み直す（V8 の初弾）。
 
@@ -355,6 +410,11 @@ def cmd_repack_factory(a):
     hdr = r["header"]
     if not v1b.sha1_ok(hdr):
         sys.exit("✗ 元コンテナの h38 が合いません。壊れた入力は組み直さない。")
+
+    before = {e["name"]: e["data"] for e in r["entries"]}     # 差し替え前の原本
+    replaced = _apply_replacements(r, a.replace, hdr["family"])
+    if replaced and a.rebuild != "all":
+        sys.exit("✗ --replace はペイロードを変えるので --rebuild all でしか使えません。")
 
     # ZipCrypto の 12B ヘッダは通常ランダム。再現ビルドのため既定では固定値を使う。
     salt = None if a.random_salt else bytes.fromhex(a.salt)
@@ -399,8 +459,9 @@ def cmd_repack_factory(a):
         v = v1b.unpack(out, key, pw)
     except (ValueError, v1b.NotV1b) as e:
         sys.exit("✗ 生成物を読み直せません: %s" % e)
-    same = [(e["name"], e["data"]) for e in v["entries"]] == \
-           [(e["name"], e["data"]) for e in r["entries"]]
+    got = {e["name"]: e["data"] for e in v["entries"]}
+    want = {e["name"]: e["data"] for e in r["entries"]}
+    untouched = [n for n in before if n not in replaced]
     checks = [
         ("生成物の h38 が合う", v1b.sha1_ok(v["header"])),
         ("生成物の csum が合う", v["csum_ok"]),
@@ -408,8 +469,15 @@ def cmd_repack_factory(a):
          v["header"]["family"] == hdr["family"] and v["header"]["version"] == hdr["version"]),
         ("h20/h30 が原本と同じ",
          v["header"]["h20"] == hdr["h20"] and v["header"]["h30"] == hdr["h30"]),
-        ("ペイロード %d 点が原本と一致" % len(r["entries"]), same),
+        ("エントリの名前と順序が原本と同じ",
+         [e["name"] for e in v["entries"]] == [e["name"] for e in r["entries"]]),
+        ("差し替えなかった %d 点が原本とバイト一致" % len(untouched),
+         all(got.get(n) == before[n] for n in untouched)),
     ]
+    if replaced:
+        checks.append(("差し替えた %d 点が渡したファイルと一致（%s）"
+                       % (len(replaced), ", ".join(replaced)),
+                       all(got.get(n) == want[n] for n in replaced)))
     print("\n## 自己検証（生成物をほどき直す）")
     for name, ok in checks:
         print("  %s %s" % ("✓" if ok else "✗", name))
@@ -509,6 +577,8 @@ def main():
     p.add_argument("--salt", default="00" * 11,
                    help="ZipCrypto の 12B ヘッダに使う 11B（既定は固定＝再現ビルド）")
     p.add_argument("--random-salt", action="store_true", help="salt を毎回ランダムにする")
+    p.add_argument("--replace", action="append", metavar="NAME=PATH",
+                   help="ペイロードの 1 点を差し替える（繰り返し可。--rebuild all のときだけ）")
     p.add_argument("--key-file", help="AES 鍵ファイル（既定 ~/.openird/v1b/%s）" % secrets.KEY_FILE)
     p.add_argument("--zip-pw-file", help="ZIP パスワードファイル（既定 ~/.openird/v1b/%s）" % secrets.PW_FILE)
     p.set_defaults(fn=cmd_repack_factory)
