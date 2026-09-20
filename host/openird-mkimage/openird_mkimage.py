@@ -1,83 +1,46 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-only
 # Copyright (C) 2026 OpenIRD contributors
+# /// script
+# requires-python = ">=3.9"
+# dependencies = ["pycryptodome>=3.20"]
+# ///
 """openird-mkimage - OpenIRD install-image ツール（ボード別バックエンド）。
 
 現状の実装範囲:
-  mb86h61 / sb-tv02-wfpl : 確定経路（booter-root から MTD を直接書く。暗号ゲート無し）。
-  emma3sep / *-yb1       : 純正の更新コンテナを使う経路（未実装・別途）。
+  mb86h61 / sb-tv02-wfpl   : 確定経路（booter-root から MTD を直接書く。暗号ゲート無し）。
+  emma3sep / poe-br100-yb1 : 純正の更新コンテナ <FAMILY>_UPDATE_v1b を使う経路。
+                             probe-factory（鍵不要の観察）まで実装済み。unpack/pack は未実装。
 
 不明点（HOLD）は推測で埋めない。refuse して理由を示す。詳細は
-NOTES-sb-tv02-factory.md を参照。配布物にベンダバイナリ/鍵を含めない。
+NOTES-sb-tv02-factory.md / NOTES-poe-br100-yb1-factory.md を参照。
+配布物にベンダバイナリ/鍵を含めない。
+
+実行:
+  uv run openird_mkimage.py <cmd> ...                       # 依存を解決する（v1b の復号に必要）
+  uv run --no-project python openird_mkimage.py <cmd> ...   # 依存不要のコマンドのみ
 """
 import sys
 import os
-import json
-import struct
-import zlib
 import argparse
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from ird import images, rdhb, v1b                       # noqa: E402
+from ird.board import load_board, part_by_mtd, h        # noqa: E402
 
 for _s in (sys.stdout, sys.stderr):            # Windows cp932 既定を回避
     if hasattr(_s, "reconfigure"):
         _s.reconfigure(encoding="utf-8")
-
-HERE = os.path.dirname(os.path.abspath(__file__))
-SQUASHFS_MAGIC = b"hsqs"   # squashfs 4.0 LE (0x73717368)
-
-
-def load_board(name):
-    path = os.path.join(HERE, "boards", name + ".json")
-    if not os.path.exists(path):
-        sys.exit("✗ 未知のボード: %s（boards/ に %s.json が無い）" % (name, name))
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
-
-
-def h(x):
-    return int(x, 16) if isinstance(x, str) else int(x)
-
-
-def part_by_mtd(board, mtd):
-    for p in board["partitions"]:
-        if p["mtd"] == mtd:
-            return p
-    return None
 
 
 def cmd_partitions(a):
     b = load_board(a.board)
     print("# %s  (%s)  NVM %s  erase %s"
           % (b["board"], b["soc"], b["nvm"]["size"], b["nvm"]["erasesize"]))
-    print("%3s %-14s %10s %10s %-9s note" % ("mtd", "name", "offset", "size", "policy"))
+    print("%3s %-16s %10s %10s %-9s note" % ("mtd", "name", "offset", "size", "policy"))
     for p in b["partitions"]:
-        print("%3d %-14s %10s %10s %-9s %s"
+        print("%3d %-16s %10s %10s %-9s %s"
               % (p["mtd"], p["name"], p["offset"], p["size"], p["policy"], p.get("note", "")))
-
-
-SQUASHFS_COMP = {1: "gzip", 2: "lzma", 3: "lzo", 4: "xz", 5: "lz4", 6: "zstd"}
-SQUASHFS_INVALID_BLK = 0xFFFFFFFFFFFFFFFF
-SQUASHFS_FLAG_COMP_OPT = 1 << 10
-
-
-def check_squashfs(data, spec):
-    """squashfs 4.0 スーパーブロック（先頭 96B・LE）をボードのカーネルが読める形か検査する。
-    spec = board["squashfs"]: {"compressors": [...], "xattrs": bool}。"""
-    if len(data) < 96:
-        sys.exit("✗ squashfs が短すぎます（%dB）。" % len(data))
-    (_magic, _inodes, _mtime, block_size, _frags, comp, _blog, flags, _nids,
-     major, minor, _root, bytes_used, _idt, xattr_t) = struct.unpack_from("<IIIIIHHHHHHQQQQ", data, 0)
-    if (major, minor) != (4, 0):
-        sys.exit("✗ squashfs %d.%d（4.0 のみ対応）。" % (major, minor))
-    name = SQUASHFS_COMP.get(comp, "id%d" % comp)
-    if name not in spec.get("compressors", ["gzip"]):
-        sys.exit("✗ 圧縮 %s はこのボードのカーネルで読めません（可: %s）。"
-                 % (name, ", ".join(spec["compressors"])))
-    if flags & SQUASHFS_FLAG_COMP_OPT and not spec.get("comp_options", False):
-        sys.exit("✗ 圧縮オプション付き（flags 0x%x）。このボードのカーネルは解釈しません。" % flags)
-    if xattr_t != SQUASHFS_INVALID_BLK and not spec.get("xattrs", False):
-        sys.exit("✗ xattr テーブル付き。このボードのカーネルは xattr 入り inode を読めません（mksquashfs -no-xattrs）。")
-    print("  squashfs 4.0 / %s / block %dK / bytes_used %dB / xattr %s"
-          % (name, block_size // 1024, bytes_used, "有" if xattr_t != SQUASHFS_INVALID_BLK else "無"))
 
 
 def cmd_pack_rootfs(a):
@@ -89,43 +52,17 @@ def cmd_pack_rootfs(a):
         sys.exit("✗ mtd%d(%s) は policy=%s＝書き込み禁止。" % (a.mtd, part["name"], part["policy"]))
     with open(a.infile, "rb") as f:
         data = f.read()
-    if data[:4] != SQUASHFS_MAGIC:
-        sys.exit("✗ squashfs マジック 'hsqs' が先頭にありません（得: %r）。" % data[:4])
-    check_squashfs(data, b.get("squashfs", {}))
+    if data[:4] != images.SQUASHFS_MAGIC:
+        sys.exit("✗ squashfs マジック 'hsqs' がありません（得: %r）。" % data[:4])
+    images.check_squashfs(data, b["squashfs"])
     cap = h(part["size"])
     if len(data) > cap:
-        sys.exit("✗ rootfs %dB が mtd%d(%s) 容量 %dB を超過。" % (len(data), a.mtd, part["name"], cap))
+        sys.exit("✗ %dB > mtd%d 容量 %dB。" % (len(data), a.mtd, cap))
     with open(a.outfile, "wb") as f:
         f.write(data)
     print("✓ rootfs OK: %dB / %dB (%d%%) mtd%d(%s) → %s"
           % (len(data), cap, 100 * len(data) // cap, a.mtd, part["name"], a.outfile))
     print("  → 書き込み: mtd write <file> /dev/mtd%d（区画を切り直した後）" % a.mtd)
-
-
-# --- RDHB コンテナ（docs/specs/rdhb-kernel-container.md より。clean-room） ---
-RDHB_MAGIC = b"RDHB"
-RDHB_HDR_LEN = 0x4c            # 76B 固定
-RDHB_NAME_DEFAULT = "PIX-DT270-FW-Linux"   # 観察値。libooter が照合する可能性があり既定で複製
-RDHB_CONST = {0x04: 0xfffffffe, 0x20: 0, 0x24: 1, 0x28: 1, 0x2c: 1, 0x34: 1, 0x38: 0x301}
-
-
-def build_rdhb(image, load, name, cksum):
-    """生カーネル Image → RDHB ラッパー。docs/specs/rdhb-kernel-container.md の仕様どおり。"""
-    payload = zlib.compress(image, 6)          # 78 9c + deflate + adler4
-    total = RDHB_HDR_LEN + len(payload)
-    hdr = bytearray(b"\x00" * RDHB_HDR_LEN)
-    hdr[0x00:0x04] = RDHB_MAGIC
-    for off, v in RDHB_CONST.items():
-        struct.pack_into("<I", hdr, off, v)
-    struct.pack_into("<I", hdr, 0x08, cksum)           # HOLD: 既定 0
-    nm = name.encode("ascii")[:19]
-    hdr[0x0c:0x0c + len(nm)] = nm                       # 0x0c..0x1f, NUL 詰め
-    struct.pack_into("<I", hdr, 0x30, total // 4)       # 総長 ÷4
-    struct.pack_into("<I", hdr, 0x3c, len(payload) // 4)  # ペイロード長 ÷4
-    struct.pack_into("<I", hdr, 0x40, len(image) // 4)  # 展開後長 ÷4
-    struct.pack_into("<I", hdr, 0x44, load)             # load
-    struct.pack_into("<I", hdr, 0x48, load)             # entry = load
-    return bytes(hdr) + payload
 
 
 def cmd_pack_kernel(a):
@@ -138,13 +75,11 @@ def cmd_pack_kernel(a):
     if image[:2] == b"\x1f\x8b" or image[:2] == b"\x78\x9c":
         sys.exit("✗ 入力は *非圧縮* の生カーネル Image（arch/arm/boot/Image）を渡してください（gzip/zlib ではない）。")
     cksum = h(a.cksum) if a.cksum else 0
-    img = build_rdhb(image, load, a.name, cksum)
+    img = rdhb.build(image, load, a.name, cksum)
     if len(img) > cap:
         sys.exit("✗ RDHB 像 %dB > mtd5 容量 %dB。" % (len(img), cap))
     # 自己検証: 生成物を展開し直して元 Image と一致するか
-    d = zlib.decompressobj(wbits=-15)
-    back = d.decompress(img[RDHB_HDR_LEN + 2:]) + d.flush()
-    if back != image:
+    if rdhb.inflate(img) != image:
         sys.exit("✗ 内部エラー: 再展開が元 Image と不一致。")
     with open(a.outfile, "wb") as f:
         f.write(img)
@@ -160,18 +95,18 @@ def cmd_pack_kernel(a):
 def cmd_unpack_kernel(a):
     with open(a.infile, "rb") as f:
         img = f.read()
-    if img[:4] != RDHB_MAGIC:
+    if img[:4] != rdhb.MAGIC:
         sys.exit("✗ RDHB マジックがありません（得: %r）。" % img[:4])
-    g = lambda o: struct.unpack_from("<I", img, o)[0]
-    name = img[0x0c:0x24].split(b"\x00", 1)[0]
+    fl = rdhb.fields(img)
     print("# RDHB ヘッダ")
     print("  name=%r  load=0x%08x entry=0x%08x  cksum(0x08)=0x%08x"
-          % (name, g(0x44), g(0x48), g(0x08)))
-    print("  size語: total/4=0x%x payload/4=0x%x uncomp/4=0x%x" % (g(0x30), g(0x3c), g(0x40)))
-    d = zlib.decompressobj(wbits=-15)
-    out = d.decompress(img[RDHB_HDR_LEN + 2:]) + d.flush()   # 78 9c を飛ばし raw-inflate
+          % (fl["name"], fl["load"], fl["entry"], fl["cksum"]))
+    print("  size語: total/4=0x%x payload/4=0x%x uncomp/4=0x%x"
+          % (fl["total_div4"], fl["payload_div4"], fl["uncomp_div4"]))
+    out = rdhb.inflate(img)
     print("  展開後: %dB (0x40*4=%dB, %s)"
-          % (len(out), g(0x40) * 4, "一致" if len(out) == g(0x40) * 4 else "不一致"))
+          % (len(out), fl["uncomp_div4"] * 4,
+             "一致" if len(out) == fl["uncomp_div4"] * 4 else "不一致"))
     i = out.find(b"Linux version")
     if i >= 0:
         print("  banner: %r" % out[i:i + 70])
@@ -245,9 +180,69 @@ def cmd_probe(a):
         hexs = " ".join("%02x" % x for x in chunk)
         text = "".join(chr(x) if 32 <= x < 127 else "." for x in chunk)
         print("%04x  %-47s  %s" % (off, hexs, text))
-    for needle in (b"RDHB", b"PIX-", SQUASHFS_MAGIC):
+    for needle in (b"RDHB", b"PIX-", images.SQUASHFS_MAGIC):
         i = data.find(needle)
         print("  find %r: %s" % (needle, ("offset " + hex(i)) if i >= 0 else "見つからず"))
+
+
+# --- emma3sep / v1b ---------------------------------------------------------
+
+def _probe_one(path, verbose):
+    with open(path, "rb") as f:
+        data = f.read()
+    try:
+        hdr = v1b.parse(data)
+    except v1b.NotV1b as e:
+        print("✗ %s: %s" % (os.path.basename(path), e))
+        return False
+    ck = v1b.checks(hdr)
+    ok = all(v for _, v in ck)
+    if not verbose:
+        print("%-42s %-10s %-8s %11d  %s"
+              % (os.path.basename(path), hdr["family"], hdr["version"], len(data),
+                 "OK" if ok else "✗ " + ", ".join(n for n, v in ck if not v)))
+        return ok
+    print("# %s  (%d B)" % (path, len(data)))
+    print("  族タグ     : %-24s (族 %r)" % (hdr["tag"], hdr["family"]))
+    print("  version    : %-24s (0x34: %s)"
+          % (hdr["version"], " ".join("%02x" % x for x in hdr["version_raw"])))
+    print("  h20 (0x20) : %s  ※推定: 平文 MD5・未検証 (仕様 §7 U1)" % hdr["h20"].hex())
+    print("  h30 (0x30) : %s  ※推定: 平文 CRC32 系・未検証 (仕様 §7 U2)" % hdr["h30"].hex())
+    print("  h38 (0x38) : %s" % hdr["h38"].hex())
+    print("  本体       : %d B  (0x14c..EOF)" % hdr["body_len"])
+    for name, v in ck:
+        print("  %s %s" % ("✓" if v else "✗", name))
+    if not v1b.sha1_ok(hdr):
+        print("    実測 SHA-1(body) = %s" % hdr["body_sha1"].hex())
+    return ok
+
+
+def cmd_probe_factory(a):
+    verbose = len(a.files) == 1 and not a.table
+    if not verbose:
+        print("%-42s %-10s %-8s %11s  %s" % ("file", "family", "version", "size", "checks"))
+    bad = 0
+    for p in a.files:
+        if not _probe_one(p, verbose):
+            bad += 1
+    if not verbose:
+        print("\n%d 本中 %d 本が仕様どおり。" % (len(a.files), len(a.files) - bad))
+    if bad:
+        sys.exit(1)
+
+
+def cmd_unpack_factory(a):
+    sys.exit(
+        "✗ 未実装（P1）: v1b の 3 段復号（AES-128-ECB → ZipCrypto ZIP → 無暗号 ZIP）。\n"
+        "  鍵とパスワードは所有者が自機から回収した値をファイルで渡す設計にする（仕様 §0）。\n"
+        "  鍵不要の観察は probe-factory を使うこと。")
+
+
+def cmd_pack_factory(a):
+    sys.exit(
+        "✗ 未実装（P2）: unpack が先。理由は NOTES-poe-br100-yb1-factory.md の V1。\n"
+        "  ペイロードの write.sh 系は純正から流用せず仕様どおり自前生成する必要があり（仕様 §6-2）、\n"
+        "  その呼び出し契約がまだ仕様化されていない。")
 
 
 def cmd_full(a):
@@ -279,7 +274,7 @@ def main():
     p.add_argument("board")
     p.add_argument("infile", help="arch/arm/boot/Image（非圧縮）")
     p.add_argument("outfile")
-    p.add_argument("--name", default=RDHB_NAME_DEFAULT, help="RDHB 名(既定=観察値)")
+    p.add_argument("--name", default=rdhb.NAME_DEFAULT, help="RDHB 名(既定=観察値)")
     p.add_argument("--load", help="load/entry アドレス(既定=board の zreladdr)")
     p.add_argument("--cksum", help="0x08 チェックサム(既定 0=HOLD H1b)")
     p.set_defaults(fn=cmd_pack_kernel)
@@ -303,6 +298,20 @@ def main():
     p.add_argument("dumpfile")
     p.add_argument("--bytes", type=int, default=256)
     p.set_defaults(fn=cmd_probe)
+
+    p = sub.add_parser("probe-factory", help="v1b コンテナのヘッダを読む（鍵不要）")
+    p.add_argument("files", nargs="+")
+    p.add_argument("--table", action="store_true", help="1 本でも表形式で出す")
+    p.set_defaults(fn=cmd_probe_factory)
+
+    p = sub.add_parser("unpack-factory", help="v1b コンテナを 3 段復号（未実装）")
+    p.add_argument("infile")
+    p.add_argument("outdir")
+    p.set_defaults(fn=cmd_unpack_factory)
+
+    p = sub.add_parser("pack-factory", help="v1b factory コンテナを作る（未実装）")
+    p.add_argument("board")
+    p.set_defaults(fn=cmd_pack_factory)
 
     p = sub.add_parser("full", help=".full コンテナ（HOLD）")
     p.add_argument("board")

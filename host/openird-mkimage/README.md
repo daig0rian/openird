@@ -9,14 +9,33 @@ OpenIRD の install-image ツール（ボード別バックエンド）。`board
 実行は uv 経由（Windows の python stub を避ける）:
 
 ```
-uv run --no-project python openird_mkimage.py <cmd> ...
+uv run openird_mkimage.py <cmd> ...                       # 依存も解決する
+uv run --no-project python openird_mkimage.py <cmd> ...   # 依存不要のコマンドのみ
 ```
+
+依存は v1b コンテナの AES-128-ECB だけが必要とする（PEP 723 のインラインメタデータで
+`pycryptodome` を宣言）。他のコマンドは標準ライブラリのみで動く。
+
+構成は **1 容器形式 = 1 モジュール**（OpenWrt firmware-utils の作法）:
+
+| ファイル | 役割 |
+|---|---|
+| `openird_mkimage.py` | CLI（引数定義とディスパッチ） |
+| `ird/board.py` | `boards/<board>.json` の読み込み |
+| `ird/images.py` | squashfs / uImage の形式検査 |
+| `ird/rdhb.py` | mb86h61 のカーネル容器 RDHB |
+| `ird/v1b.py` | emma3sep の更新コンテナ `<FAMILY>_UPDATE_v1b` |
+
+自己完結テストは `make test-mkimage`（`tests/mkimage/run.sh`）。秘密もベンダ資材も
+要求しない。純正コンテナを持っているなら `OPENIRD_V1B_SAMPLES=<dir>` でオラクル検証も走る。
 
 ## ボード別の「factory」経路
 
 - **sb-tv02-wfpl (Fujitsu MB86H61)** — 開発者向けは **booter-root から MTD を直接書く**
   経路（暗号ゲート無し）。一般ユーザ向けの USB 経路は未解明点が残る（NOTES 参照）。
-- **emma3sep / *-yb1 (Renesas)** — 純正の更新コンテナ形式を使う経路。**未実装**（別途）。
+- **poe-br100-yb1 (Renesas EMMA3SEP)** — 純正の更新コンテナ `BLUR_UPDATE_v1b` を UPnP で
+  流し込む経路。この機種には開発者向けの直接書き込み経路が無い（u-boot がロック）ので
+  **これが本線**。現状は `probe-factory`（鍵不要の観察）まで実装済み。
 
 ## サブコマンド（sb-tv02-wfpl）
 
@@ -29,6 +48,23 @@ uv run --no-project python openird_mkimage.py <cmd> ...
 | `flash-script <board> [--rootfs][--kernel][--firstaid] [--via mtd\|dione] [-o]` | 機器上で実行する書き込み手順を生成（preserve 区画はガードで拒否）。既定は OpenIRD の `mtd` ツール、`--via dione` は区画切り直し前のベンダ状態向け |
 | `probe-kernel-header <dump>` | 任意ダンプ先頭を観察（RDHB/PIX-/hsqs 探索） |
 | `full <board>` | 未解明のため refuse（NOTES の H2/H3） |
+
+## サブコマンド（poe-br100-yb1）
+
+| cmd | 鍵 | 内容 |
+|---|---|---|
+| `partitions poe-br100-yb1` | 不要 | 区画表（GPL の区画表由来・実機ダンプと一致を確認済み） |
+| `probe-factory <file>...` | **不要** | v1b コンテナのヘッダ 332B を読む。族タグ・版数・**h38 = SHA-1(本体)** の検算・本体長の 16B 整合。複数渡すと表で出る |
+| `unpack-factory <file> <outdir>` | 要 | 3 段復号（AES-128-ECB → ZipCrypto → 無暗号 ZIP）。**未実装（P1）** |
+| `pack-factory <board> ...` | 要 | factory コンテナ生成。**未実装（P2）** |
+
+形式の仕様は [update-v1b-container.md](../../docs/specs/update-v1b-container.md)、機器側の
+書き込み機構は [poe-br100-yb1-nand-update.md](../../docs/specs/poe-br100-yb1-nand-update.md)。
+実装の段取りと残っている不明点は **NOTES-poe-br100-yb1-factory.md**。
+
+**鍵と ZIP パスワードはツールに埋め込まない。** 所有者が自機から回収した値を、値ではなく
+**ファイルのパス**で渡す設計にする（`ps` と shell history に残さないため）。ツールは鍵を
+出力せず、どの鍵を使ったかはフィンガープリントだけを示す。
 
 RDHB 形式の仕様は [docs/specs/rdhb-kernel-container.md](../../docs/specs/rdhb-kernel-container.md)。
 区画レイアウトと実機への導入順は

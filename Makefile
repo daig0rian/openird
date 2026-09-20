@@ -29,7 +29,7 @@ BR_MAKE = env PATH="$(BR_PATH)" BR2_DL_DIR="$(ROOT)/dl" \
 
 .DEFAULT_GOAL := $(if $(BOARD),all,help)
 
-.PHONY: help list-boards all kernel test-overlayfs test-kabi menuconfig linux-menuconfig savedefconfig clean distclean hooks check-buildroot check-board
+.PHONY: help list-boards all kernel test-overlayfs test-kabi test-mkimage menuconfig linux-menuconfig savedefconfig clean distclean hooks check-buildroot check-board
 
 help:
 	@echo "OpenIRD — make list-boards | make BOARD=<device> [menuconfig|clean]"
@@ -37,6 +37,7 @@ help:
 	@echo "     make kernel BOARD=<device> … 検証済みカーネル(mtd5像)を再現ビルド (要 Linux/WSL)"
 	@echo "     make test-overlayfs BOARD=<device> … overlayfs パッチの QEMU 機能テスト"
 	@echo "     make test-kabi BOARD=<device> … ベンダ製 .ko との構造体レイアウト互換テスト"
+	@echo "     make test-mkimage … openird-mkimage の自己完結テスト (BOARD 不要・uv のみ)"
 	@$(MAKE) -s list-boards
 
 list-boards:
@@ -74,6 +75,10 @@ test-overlayfs: check-board
 # ベンダ製 .ko とのカーネル内部 ABI 互換テスト（要 Linux/WSL）。詳細は tests/kabi/README.md
 test-kabi: check-board
 	@$(ROOT)/tests/kabi/run.sh $(BOARD)
+
+# openird-mkimage のボード定義・容器形式の自己完結テスト（秘密もベンダ資材も不要）
+test-mkimage:
+	@$(ROOT)/tests/mkimage/run.sh
 
 menuconfig linux-menuconfig savedefconfig: check-buildroot check-board
 	$(BR_MAKE) $@
