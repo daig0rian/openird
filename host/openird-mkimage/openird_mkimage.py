@@ -334,6 +334,98 @@ def cmd_unpack_factory(a):
         sys.exit(1)
 
 
+def cmd_repack_factory(a):
+    """純正コンテナをほどいて、中身を変えずに組み直す（V8 の初弾）。
+
+    --rebuild で「どこまで自前で組み直すか」を選ぶ。段を 1 つずつ増やせるので、
+    受理されなかったときにどの層が原因かを切り分けられる。
+    """
+    key, key_path = secrets.load_key(a.key_file)
+    pw, pw_path = secrets.load_zip_password(a.zip_pw_file)
+    with open(a.infile, "rb") as f:
+        orig = f.read()
+    print("# %s  (%d B)" % (a.infile, len(orig)))
+    secrets.report("AES 鍵       ", key, key_path)
+    secrets.report("ZIP パスワード", pw, pw_path)
+
+    try:
+        r = v1b.unpack(orig, key, pw)
+    except (ValueError, v1b.NotV1b) as e:
+        sys.exit("✗ %s" % e)
+    hdr = r["header"]
+    if not v1b.sha1_ok(hdr):
+        sys.exit("✗ 元コンテナの h38 が合いません。壊れた入力は組み直さない。")
+
+    # ZipCrypto の 12B ヘッダは通常ランダム。再現ビルドのため既定では固定値を使う。
+    salt = None if a.random_salt else bytes.fromhex(a.salt)
+
+    if a.rebuild == "none":
+        plain = r["plain"]
+        note = "平文をそのまま再暗号化（ヘッダと AES 層だけを自前で組む）"
+    elif a.rebuild == "zipcrypto":
+        mid = v1b.build_middle_zip(r["payload_name"], r["payload_zip"], pw,
+                                   times=a_times(r), salt=salt,
+                                   vendor_style=not a.plain_zip)
+        plain = v1b.pad_to_block(mid)
+        note = "ペイロード ZIP は原本のまま、中間 ZIP から自前で組む"
+    else:
+        payload = v1b.build_payload_zip(r["entries"])
+        mid = v1b.build_middle_zip(r["payload_name"], payload, pw,
+                                   times=a_times(r), salt=salt,
+                                   vendor_style=not a.plain_zip)
+        plain = v1b.pad_to_block(mid)
+        note = "ペイロード ZIP から全段を自前で組む（本番と同じ経路）"
+
+    out = v1b.pack(hdr["family"], tuple(hdr["version_raw"][:3]), plain, key,
+                   h20=hdr["h20"], h30=hdr["h30"])
+
+    print("\n## 組み直し: %s" % note)
+    print("  平文 %d B（原本 %d B / 差 %+d）" % (len(plain), len(r["plain"]), len(plain) - len(r["plain"])))
+    print("  出力 %d B（原本 %d B / 差 %+d）" % (len(out), len(orig), len(out) - len(orig)))
+    print("  h20/h30 は原本から複写（算出式は未解明・仕様 §7 U1/U2）")
+
+    identical = out == orig
+    if a.rebuild == "none":
+        print("  %s 原本とバイト一致" % ("✓" if identical else "✗"))
+        if not identical:
+            n = sum(1 for x, y in zip(out, orig) if x != y)
+            print("     先頭の相違位置: %s / 相違バイト数 %d"
+                  % (next((hex(i) for i, (x, y) in enumerate(zip(out, orig)) if x != y), "-"), n))
+    elif identical:
+        print("  ✓ 原本とバイト一致（ZIP の組み方まで純正と同じだった）")
+
+    # 自己検証: 出したものを読み直す
+    try:
+        v = v1b.unpack(out, key, pw)
+    except (ValueError, v1b.NotV1b) as e:
+        sys.exit("✗ 生成物を読み直せません: %s" % e)
+    same = [(e["name"], e["data"]) for e in v["entries"]] == \
+           [(e["name"], e["data"]) for e in r["entries"]]
+    checks = [
+        ("生成物の h38 が合う", v1b.sha1_ok(v["header"])),
+        ("生成物の csum が合う", v["csum_ok"]),
+        ("族タグ・版数が原本と同じ",
+         v["header"]["family"] == hdr["family"] and v["header"]["version"] == hdr["version"]),
+        ("h20/h30 が原本と同じ",
+         v["header"]["h20"] == hdr["h20"] and v["header"]["h30"] == hdr["h30"]),
+        ("ペイロード %d 点が原本と一致" % len(r["entries"]), same),
+    ]
+    print("\n## 自己検証（生成物をほどき直す）")
+    for name, ok in checks:
+        print("  %s %s" % ("✓" if ok else "✗", name))
+
+    with open(a.outfile, "wb") as f:
+        f.write(out)
+    print("\n✓ %s" % os.path.abspath(a.outfile))
+    if not all(ok for _, ok in checks):
+        sys.exit(1)
+
+
+def a_times(r):
+    """中間 ZIP の日時は原本のペイロード先頭エントリに合わせる（純正もそうなっている）。"""
+    return r["entries"][0]["times"] if r["entries"] else None
+
+
 def cmd_pack_factory(a):
     sys.exit(
         "✗ 未実装（P2）: unpack が先。理由は NOTES-poe-br100-yb1-factory.md の V1。\n"
@@ -406,6 +498,20 @@ def main():
     p.add_argument("--key-file", help="AES 鍵ファイル（既定 ~/.openird/v1b/%s）" % secrets.KEY_FILE)
     p.add_argument("--zip-pw-file", help="ZIP パスワードファイル（既定 ~/.openird/v1b/%s）" % secrets.PW_FILE)
     p.set_defaults(fn=cmd_unpack_factory)
+
+    p = sub.add_parser("repack-factory", help="純正コンテナを中身を変えずに組み直す")
+    p.add_argument("infile")
+    p.add_argument("outfile")
+    p.add_argument("--rebuild", choices=["none", "zipcrypto", "all"], default="all",
+                   help="どこまで自前で組むか: none=ヘッダと AES のみ / zipcrypto=中間 ZIP から / all=全段（既定）")
+    p.add_argument("--plain-zip", action="store_true",
+                   help="中間 ZIP をデータ記述子なしで作る（既定は純正と同じ bit3 あり）")
+    p.add_argument("--salt", default="00" * 11,
+                   help="ZipCrypto の 12B ヘッダに使う 11B（既定は固定＝再現ビルド）")
+    p.add_argument("--random-salt", action="store_true", help="salt を毎回ランダムにする")
+    p.add_argument("--key-file", help="AES 鍵ファイル（既定 ~/.openird/v1b/%s）" % secrets.KEY_FILE)
+    p.add_argument("--zip-pw-file", help="ZIP パスワードファイル（既定 ~/.openird/v1b/%s）" % secrets.PW_FILE)
+    p.set_defaults(fn=cmd_repack_factory)
 
     p = sub.add_parser("pack-factory", help="v1b factory コンテナを作る（未実装）")
     p.add_argument("board")

@@ -87,8 +87,9 @@ def decrypt(cipher, password):
 def encrypt_entry(data, password, check_byte, salt=None):
     """1 エントリ分の暗号ストリーム（12B ヘッダ ＋ 本体）を作る。
 
-    ヘッダの最終バイトは復号側の早期チェックに使われ、**CRC32 の最上位バイト**と
-    一致していなければならない（データ記述子を使わない場合）。
+    ヘッダの最終バイトは復号側の早期チェックに使われる。値の出どころは 2 通りで、
+    データ記述子（フラグ bit 3）を使わないなら **CRC32 の最上位バイト**、使うなら
+    **DOS 更新時刻の上位バイト**。呼び出し側が選んで渡す。
     salt を渡すと決定的になる（11B 使う）。
     """
     if salt is None:
@@ -102,8 +103,17 @@ def encrypt_entry(data, password, check_byte, salt=None):
 
 _LFH = b"PK\x03\x04"
 _CDH = b"PK\x01\x02"
+_DD = b"PK\x07\x08"
 _EOCD = b"PK\x05\x06"
 DOS_EPOCH = (0x0000, 0x0021)          # 1980-01-01 00:00:00（日付 0 は不正なので 1 日）
+FLAG_DATA_DESCRIPTOR = 1 << 3
+
+
+def dos_time(date_time):
+    """(年,月,日,時,分,秒) → DOS の (時刻, 日付) 2 語。"""
+    y, mo, d, h, mi, s = date_time
+    return (((h & 31) << 11) | ((mi & 63) << 5) | ((s // 2) & 31),
+            (((y - 1980) & 127) << 9) | ((mo & 15) << 5) | (d & 31))
 
 
 def _compress(data, method, level):
@@ -116,31 +126,47 @@ def _compress(data, method, level):
 
 
 def write_zip(entries, password=None, method=STORED, level=6,
-              dos_time=DOS_EPOCH, salt=None):
-    """(name, data) の並びから ZIP を組む。password を渡すと ZipCrypto で暗号化する。
+              times=DOS_EPOCH, salt=None, data_descriptor=False,
+              version=20, ext_attr=0):
+    """(name, data) または (name, data, opts) の並びから ZIP を組む。
 
-    データ記述子（フラグ bit 3）は使わない＝サイズと CRC を先に書く。純正の
-    中間 ZIP もエントリ 2 つの単純な構成なので、これで足りる。
+    password を渡すと ZipCrypto で暗号化する。opts で "method" と "times" を
+    エントリごとに上書きできる（純正の並びを忠実に再現するため）。
+
+    data_descriptor=True でフラグ bit 3 を立て、各エントリの後ろに記述子を書く。
+    純正の中間 ZIP がこの形（Info-ZIP の streaming 出力）なので、再梱包では
+    こちらに合わせる。この場合、暗号ヘッダの check byte は CRC ではなく
+    **DOS 時刻の上位バイト**になる。
     """
-    dtime, ddate = dos_time
     out = bytearray()
     central = bytearray()
-    for name, data in entries:
+    count = 0
+    for item in entries:
+        name, data = item[0], item[1]
+        opts = item[2] if len(item) > 2 else {}
+        mth = opts.get("method", method)
+        dtime, ddate = opts.get("times", times)
         nm = name.encode("ascii")
         crc = binascii.crc32(data) & 0xFFFFFFFF
-        comp = _compress(data, method, level)
+        comp = _compress(data, mth, level)
         flags = 0
+        if data_descriptor:
+            flags |= FLAG_DATA_DESCRIPTOR
         if password is not None:
-            comp = encrypt_entry(comp, password, crc >> 24, salt)
+            check = (dtime >> 8) & 0xFF if data_descriptor else (crc >> 24) & 0xFF
+            comp = encrypt_entry(comp, password, check, salt)
             flags |= FLAG_ENCRYPTED
         offset = len(out)
-        out += struct.pack("<4sHHHHHIIIHH", _LFH, 20, flags, method, dtime, ddate,
+        out += struct.pack("<4sHHHHHIIIHH", _LFH, version, flags, mth, dtime, ddate,
                            crc, len(comp), len(data), len(nm), 0) + nm + comp
-        central += struct.pack("<4sHHHHHHIIIHHHHHII", _CDH, 20, 20, flags, method,
+        if data_descriptor:
+            out += struct.pack("<4sIII", _DD, crc, len(comp), len(data))
+        central += struct.pack("<4sHHHHHHIIIHHHHHII", _CDH, version, version, flags, mth,
                                dtime, ddate, crc, len(comp), len(data),
-                               len(nm), 0, 0, 0, 0, 0, offset) + nm
+                               len(nm), 0, 0, 0, 0, ext_attr, offset) + nm
+        count += 1
     cd_off = len(out)
     out += central
-    out += struct.pack("<4sHHHHIIH", _EOCD, 0, 0, len(entries), len(entries),
+    out += struct.pack("<4sHHHHIIH", _EOCD, 0, 0, count, count,
                        len(central), cd_off, 0)
     return bytes(out)

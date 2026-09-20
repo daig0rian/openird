@@ -13,6 +13,8 @@ import io
 import struct
 import zipfile
 
+from . import zipcrypto
+
 HDR_LEN = 0x14C           # 332B
 TAG_LEN = 0x20            # 0x00: 族タグ 32B
 TAG_SUFFIX = "_UPDATE_v1b"
@@ -210,6 +212,7 @@ def unpack(data, key, password):
                     "compressed": info.compress_size,
                     "method": info.compress_type,
                     "crc": info.CRC,
+                    "times": zipcrypto.dos_time(info.date_time),
                     "data": pz.read(info.filename),
                 })
 
@@ -230,3 +233,53 @@ def unpack(data, key, password):
         "csum_name_ok": csum_target == payload_name,
         "entries": entries,
     }
+
+
+# --- 組み立て（仕様 §6） ----------------------------------------------------
+
+def build_payload_zip(entries, times=zipcrypto.DOS_EPOCH):
+    """区画イメージとスクリプトを無暗号 ZIP にまとめる（仕様 §5）。
+
+    純正は全エントリ deflate で、ディレクトリ・エントリを持たない。entries は
+    unpack が返す形（name / data / method / times を持つ dict）でも、
+    (name, data) の組でも良い。
+    """
+    items = []
+    for e in entries:
+        if isinstance(e, dict):
+            items.append((e["name"], e["data"],
+                          {"method": e.get("method", zipcrypto.DEFLATED),
+                           "times": e.get("times", times)}))
+        else:
+            items.append((e[0], e[1], {"method": zipcrypto.DEFLATED, "times": times}))
+    return zipcrypto.write_zip(items, password=None)
+
+
+def build_csum(payload_name, payload_zip):
+    """`sha1sum -c` 互換の 1 行（仕様 §4）。"""
+    return "%s  %s\n" % (hashlib.sha1(payload_zip).hexdigest(), payload_name)
+
+
+def build_middle_zip(payload_name, payload_zip, password,
+                     times=zipcrypto.DOS_EPOCH, salt=None, vendor_style=True):
+    """ペイロード ZIP と csum を ZipCrypto ZIP にまとめる（仕様 §4）。
+
+    vendor_style=True は純正の形に合わせる: 無圧縮(store) ＋ データ記述子(bit 3)。
+    純正の中間 ZIP は Info-ZIP の streaming 出力で、UT/Ux の extra field も持つが、
+    あれは情報用で読み側は無視するため再現しない。
+    """
+    return zipcrypto.write_zip(
+        [(payload_name, payload_zip), (CSUM_NAME, build_csum(payload_name, payload_zip).encode("ascii"))],
+        password=password, method=zipcrypto.STORED, times=times, salt=salt,
+        data_descriptor=vendor_style, version=10 if vendor_style else 20)
+
+
+def pad_to_block(plain):
+    """暗号本体は 16B の倍数でなければならない（仕様 §3）。0x00 を最小限だけ足す。"""
+    return plain + b"\x00" * ((-len(plain)) % BODY_ALIGN)
+
+
+def pack(family, version, plain, key, h20=b"\x00" * LEN_H20, h30=b"\x00" * LEN_H30):
+    """中間 ZIP の平文からコンテナ 1 本を組む。plain は呼び出し側で詰め物済みにしておく。"""
+    body = encrypt_body(plain, key)
+    return build_header(family, version, body, h20, h30) + body

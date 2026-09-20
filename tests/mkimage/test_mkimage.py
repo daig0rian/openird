@@ -206,6 +206,76 @@ def test_v1b_crypto():
         check("誤った ZIP パスワードを検出", True)
 
 
+# --- 組み直し（repack-factory と同じ経路を合成コンテナで） -------------------
+
+def _synth_container(key, pw):
+    files = [("vmlinux.img", b"\x27\x05\x19\x56" + b"K" * 3000),
+             ("rootfs.img", b"sqsh" + b"R" * 9000),
+             ("write.sh", b"#!/bin/sh\nexit 0\n")]
+    payload = v1b.build_payload_zip(files)
+    mid = v1b.build_middle_zip("blur.zip", payload, pw, salt=b"\x02" * 11)
+    plain = v1b.pad_to_block(mid)
+    return v1b.pack("BLUR", (2, 1, 17), plain, key,
+                    h20=bytes(range(16)), h30=b"\xde\xad\xbe\xef"), files
+
+
+def test_repack():
+    print("[repack] 組み直しの 3 段階")
+    try:
+        v1b._ecb(TEST_KEY)
+    except SystemExit:
+        print("  – pycryptodome 無し＝skip")
+        return
+    orig, files = _synth_container(TEST_KEY, TEST_PW)
+    r = v1b.unpack(orig, TEST_KEY, TEST_PW)
+    hdr = r["header"]
+
+    # none: 平文をそのまま再暗号化 → バイト一致でなければならない（ECB は決定的）
+    again = v1b.pack(hdr["family"], tuple(hdr["version_raw"][:3]), r["plain"], TEST_KEY,
+                     h20=hdr["h20"], h30=hdr["h30"])
+    check("rebuild=none は原本とバイト一致", again == orig)
+
+    # zipcrypto: ペイロード ZIP は原本のまま、中間 ZIP から組み直す
+    mid = v1b.build_middle_zip(r["payload_name"], r["payload_zip"], TEST_PW,
+                               times=r["entries"][0]["times"], salt=b"\x02" * 11)
+    out = v1b.pack(hdr["family"], tuple(hdr["version_raw"][:3]), v1b.pad_to_block(mid),
+                   TEST_KEY, h20=hdr["h20"], h30=hdr["h30"])
+    v = v1b.unpack(out, TEST_KEY, TEST_PW)
+    check("rebuild=zipcrypto: csum が合う", v["csum_ok"])
+    check("rebuild=zipcrypto: ペイロードが原本と一致",
+          [(e["name"], e["data"]) for e in v["entries"]] == files)
+
+    # all: ペイロード ZIP から組み直す
+    payload = v1b.build_payload_zip(r["entries"])
+    mid = v1b.build_middle_zip(r["payload_name"], payload, TEST_PW,
+                               times=r["entries"][0]["times"], salt=b"\x02" * 11)
+    out = v1b.pack(hdr["family"], tuple(hdr["version_raw"][:3]), v1b.pad_to_block(mid),
+                   TEST_KEY, h20=hdr["h20"], h30=hdr["h30"])
+    v = v1b.unpack(out, TEST_KEY, TEST_PW)
+    check("rebuild=all: csum が合う", v["csum_ok"])
+    check("rebuild=all: ペイロードが原本と一致",
+          [(e["name"], e["data"]) for e in v["entries"]] == files)
+    check("rebuild=all: 族/版数/h20/h30 を保つ",
+          v["header"]["family"] == "BLUR" and v["header"]["version"] == "2.1.17"
+          and v["header"]["h20"] == hdr["h20"] and v["header"]["h30"] == hdr["h30"])
+    check("rebuild=all: エントリ順と圧縮方式を保つ",
+          [(e["name"], e["method"]) for e in v["entries"]]
+          == [(e["name"], e["method"]) for e in r["entries"]])
+    check("本体が 16B 境界", v["header"]["body_aligned"])
+    check("同じ salt なら決定的",
+          v1b.pack(hdr["family"], (2, 1, 17), v1b.pad_to_block(
+              v1b.build_middle_zip(r["payload_name"], payload, TEST_PW,
+                                   times=r["entries"][0]["times"], salt=b"\x02" * 11)),
+              TEST_KEY, h20=hdr["h20"], h30=hdr["h30"]) == out)
+
+    # 純正の形（store + データ記述子 + 時刻由来の check byte）で組めているか
+    plain = v1b.decrypt_body(out[v1b.HDR_LEN:], TEST_KEY)
+    import struct as _s
+    _sig, ver, flg, mth = _s.unpack_from("<IHHH", plain, 0)
+    check("中間 ZIP が純正と同じ形（ver=10 / flag=0x0009 / store）",
+          (ver, flg, mth) == (10, 0x0009, 0), "ver=%d flag=0x%04x mth=%d" % (ver, flg, mth))
+
+
 # --- ZipCrypto の書き出し（stdlib の復号器と突き合わせる） -------------------
 
 def test_zipcrypto():
@@ -292,6 +362,7 @@ def main():
     test_boards()
     test_v1b()
     test_v1b_crypto()
+    test_repack()
     test_zipcrypto()
     test_rdhb()
     test_samples()
