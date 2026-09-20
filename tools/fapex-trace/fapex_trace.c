@@ -577,6 +577,54 @@ int close(int fd)
 	return set_errno(tr_syscall(SYS_close, fd, 0, 0, 0, 0, 0));
 }
 
+/* The Dione's firmware does NOT move through its ioctls: those carry 12- and
+ * 20-byte descriptors (register accesses and transfer descriptors).  A 232 KB
+ * firmware has to travel as bulk data, i.e. through read()/write() on the char
+ * dev, which nothing was logging.  Log those for /dev/h57fmb* only -- logging
+ * every read/write in the process would bury the trace. */
+long write(int fd, const void *buf, unsigned long n)
+{
+	long r = tr_syscall(SYS_write, fd, (long)buf, (long)n, 0, 0, 0);
+
+	if (is_h57(fd)) {
+		struct line l;
+
+		l.n = 0;
+		stamp(&l);
+		put(&l, "write ");
+		put(&l, fd_name(fd));
+		put(&l, " n=");
+		put_dec(&l, (long)n);
+		put_bytes(&l, "data", buf, n < 16 ? n : 16);
+		put(&l, " = ");
+		put_dec(&l, r);
+		emit(&l);
+	}
+	return set_errno(r);
+}
+
+long read(int fd, void *buf, unsigned long n)
+{
+	long r = tr_syscall(SYS_read, fd, (long)buf, (long)n, 0, 0, 0);
+
+	if (is_h57(fd)) {
+		struct line l;
+
+		l.n = 0;
+		stamp(&l);
+		put(&l, "read ");
+		put(&l, fd_name(fd));
+		put(&l, " n=");
+		put_dec(&l, (long)n);
+		if (r > 0)
+			put_bytes(&l, "data", buf, (unsigned long)r < 16 ? (unsigned long)r : 16);
+		put(&l, " = ");
+		put_dec(&l, r);
+		emit(&l);
+	}
+	return set_errno(r);
+}
+
 int ioctl(int fd, unsigned long cmd, ...)
 {
 	va_list ap;
