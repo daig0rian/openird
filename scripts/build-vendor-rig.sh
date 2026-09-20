@@ -162,7 +162,7 @@ cp "$RIG/rig-daemon.sh" "$WORK/slot0.rig/rig-daemon.sh"; chmod 755 "$WORK/slot0.
 # 観察ツールを同梱する。tmpfs に毎回 wget で入れ直す手間が消え、ネットワークが
 # デーモンに奪われている状態でも使える。
 for t in fapex-trace/fapex_trace.so fapex-ts/fapex-ts fapex-i2c/fapex-i2c \
-         fapex-gpio/fapex-gpio; do
+         fapex-gpio/fapex-gpio fapex-poke/fapex-poke; do
   src="$ROOT/tools/$t"
   if [ -f "$src" ]; then
     cp "$src" "$WORK/slot0.rig/$(basename "$t")"
