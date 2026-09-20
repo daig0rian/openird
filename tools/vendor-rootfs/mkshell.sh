@@ -13,7 +13,14 @@
 #   while : ; do setsid cttyhack /bin/sh ; done
 # の無限ループで、busybox init は sysinit アクションの完了を waitfor() で待つ。
 # ∴ rcS は永久に戻らず、inittab の respawn 行（ベンダ自身の getty や syslogd も
-# 含めて）は一つも実行されない。介入点は rcS の、このループの直前。
+# 含めて）は一つも実行されない。
+#
+# **さらに rcS は自分の末尾にも到達しない。** その手前の
+#   setsid cttyhack /app/bin/setup.sh
+# に & が無く、setup.sh は最後に ./bin/blur（メインアプリ）をフォアグラウンドで
+# 起動して戻らないため。∴ ベンダ自身の while ループも死んだコードで、これも
+# 実際には動いていない。**介入点は setup.sh を呼ぶ行の直前**＝rcS がまだ生きている
+# 最後の地点。
 #
 # シリアルについて: 製品用の bootargs には console= が無く（u-boot 既定環境の `rom`）、
 # **カーネルの出力は元から捨てられている**。実ポートは Linux から見て ttyS1 の
@@ -66,17 +73,19 @@ fakeroot -- bash -euc '
 	RCS="$W/root/etc/init.d/rcS"
 	[ -f "$RCS" ] || { echo "✗ /etc/init.d/rcS がありません"; exit 1; }
 	cp "$RCS" "$W/rcS.orig"
-	grep -qE "^while[[:space:]]*:" "$RCS" || {
-		echo "✗ rcS 末尾の無限ループが見つかりません（形が想定と違う）"; exit 1; }
+	grep -qE "cttyhack[[:space:]]+/app/bin/setup\.sh" "$RCS" || {
+		echo "✗ rcS に setup.sh を呼ぶ行がありません（形が想定と違う）"; exit 1; }
 	grep -q "OPENIRD" "$RCS" && { echo "✗ すでに改変済みです"; exit 1; }
 
-	# 生存確認と入口を、rcS が無限ループへ入る直前に挿し込む。
+	# 生存確認と入口を、rcS が setup.sh で止まる直前に挿し込む。
 	# 出力は ASCII のみ（シリアルに Unicode を出さない）。
 	{
 		echo "# --- OpenIRD observation entry points (inserted) ---"
-		echo "# /etc/inittab is never reached: rcS below never returns and"
-		echo "# busybox init waits for sysinit actions to finish."
+		echo "# Must come BEFORE setup.sh: it runs blur in the foreground and"
+		echo "# never returns, so nothing after it in rcS ever executes."
+		echo "# /etc/inittab is not usable either: busybox init waits for rcS."
 		for t in $TTYS; do
+			echo "stty -F /dev/$t 115200 2>/dev/null"
 			echo "echo \"OPENIRD alive on $t\" > /dev/$t 2>/dev/null"
 		done
 		if [ "$TELNETD" = "1" ]; then echo "/usr/sbin/telnetd"; fi
@@ -86,9 +95,9 @@ fakeroot -- bash -euc '
 		echo "# --- end OpenIRD ---"
 	} > "$W/block"
 
-	# 最初の `while :` 行の直前に挿し込む（head/tail で分割。awk は外側の
+	# setup.sh を呼ぶ行の直前に挿し込む（head/tail で分割。awk は外側の
 	# シングルクォートと噛み合わないのでここでは使わない）
-	N=$(grep -n -m1 -E "^while[[:space:]]*:" "$W/rcS.orig" | cut -d: -f1)
+	N=$(grep -n -m1 -E "cttyhack[[:space:]]+/app/bin/setup\.sh" "$W/rcS.orig" | cut -d: -f1)
 	head -n $((N - 1)) "$W/rcS.orig" > "$RCS"
 	cat "$W/block" >> "$RCS"
 	tail -n +"$N" "$W/rcS.orig" >> "$RCS"

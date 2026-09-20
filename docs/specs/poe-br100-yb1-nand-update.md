@@ -277,15 +277,29 @@ while : ; do setsid cttyhack /bin/sh ; done   # ← 無限ループ。戻らな�
 busybox init（1.17.4）は sysinit アクションを `waitfor()` で待つ
 （`init/init.c` の `run_actions()`）。∴ **rcS は永久に戻らず、inittab の
 `respawn` 行は一つも実行されない**。ベンダ自身が書いた `tty1`/`tty2` の getty も
-`syslogd`・`klogd` も、実際には動いていない。
+`syslogd`・`klogd` も、実際には動いていない（そもそも同梱 busybox には `syslogd` /
+`klogd` の applet が入っていない＝誰も気づいていない）。
 
-- **介入点は `rcS` の、この無限ループの直前。** ここならメインアプリの起動後、
-  かつ init が止まる前に入る。
-- ベンダはここで既に「UART 経由でシェルを出す」意図のループを書いている
-  （コメントにそう書いてある）が、`cttyhack` が掴むのは制御端末＝`/dev/console`。
-  製品用 bootargs には `console=` が無い（§8）ため実体が無く、シェルは出ない。
+**さらに rcS は自分の末尾にも到達しない。** その手前の
+
+```sh
+setsid cttyhack /app/bin/setup.sh     # & が無い
+```
+
+が戻らないため。`setup.sh` は最後に `./bin/blur`（メインアプリ）をフォアグラウンドで
+起動する。∴ 上の `while` ループもベンダ自身が到達できない死んだコードで、
+「UART にシェルを出す」意図は実際には果たされていない。
+
+**∴ 介入点は `setsid cttyhack /app/bin/setup.sh` の直前**＝rcS がまだ生きている
+最後の地点。ここならベンダの初期化はすべて済んでおり、アプリ起動の直前に入る。
+
+- ベンダの `while` ループは `cttyhack` で制御端末＝`/dev/console` を掴もうとするが、
+  製品用 bootargs には `console=` が無い（§8）ため実体が無い。**到達不能かつ
+  コンソール不在**の二重で塞がっている。
 - ∴ シリアルに入りたければ、`rcS` から **ポートを明示して** getty を立てるか、
-  ネットワーク側（`telnetd`）を使う。
+  ネットワーク側（`telnetd`）を使う。`telnetd` の applet は同梱 busybox に存在する。
+- **`iptables` は telnet を塞がない**。`setup.sh` が入れるのは ICMP timestamp と
+  UDP 514 を落とす 2 本だけで、既定ポリシーの DROP は無い。
 
 > ネットワークについて: `/etc/network/interfaces` には `lo` しか無く、eth0 は
 > ベンダアプリ側（`/app/bin` の udhcpc スクリプト群）が設定する。∴ `telnetd` を
