@@ -59,3 +59,33 @@ scripts/build-fapex-gpio.sh [BOARD]     # BOARD default: mb86h61_softbank_sb-tv0
 ```
 Output: `tools/fapex-gpio/fapex-gpio` (static ARM/musl binary). `scp` it to the
 device and run as root.
+
+## ★1 操作ごとに open/close する（2026-09-20・Dione 起動の鍵）
+
+ベンダは GPIO 操作 1 つごとに `/dev/fapi/fapi186` を**開いて閉じている**（トレースで毎回
+同じ fd 番号が再利用されることから分かる）。∴ **close してもピンの状態は保持される**。
+
+これは実際に結果を変える。`seq`/`hold` で 9 本の fd を同時に握り続ける方式では **Dione が
+USB に列挙しない**が、`write`（open → WRITEBIT → close）を並べる方式では**列挙する**。
+Dione を自前で起動するときは後者を使うこと（仕様 §5.5「自前ツールで Dione を USB 列挙まで
+起動できた」）。
+
+```sh
+G="fapex-gpio /dev/fapi/fapi186 write"
+$G 7 0; $G 8 0;  usleep 30000; $G 7 1; $G 8 1      # 衛星/復調器リセット解除
+$G 11 0;         usleep 20000; $G 11 1             # 地デジチューナ リセット解除
+$G 81 0; $G 78 0; $G 77 0; $G 49 0; $G 48 0; $G 74 0   # いったん全部 0
+$G 77 1; $G 81 1; $G 78 1; $G 49 1; $G 48 1        # 77→81→78→49→48 の順で投入
+usleep 50000;    $G 74 1                            # 50ms 後に DIONE リセット解除
+```
+
+CLKPWR（`fapi199`）を先に立ち上げて**開いたまま保持**しておくことも必要（`fapex-poke`）。
+
+## 注意
+
+- **`read` はピンを入力として開き直す。** 出力として保持しているピンを `read` すると
+  その駆動が失われる。設定の確認に使うと状態を壊すので、保持中のピンには使わない。
+- **電源レールを駆動している最中に保持プロセスを `killall` すると実機がリセットする**
+  （2026-09-20 に遭遇）。レールを急に落とさないこと。
+- ピン番号は GPL のボードコードの 10 進 GPIO 番号をそのまま渡す。トレースは 16 進で
+  表示するだけ（`0x51`=81, `0x4e`=78, `0x4d`=77, `0x4a`=74, `0x31`=49, `0x30`=48）。

@@ -47,3 +47,24 @@ FAPex ドライバは自分のステータスを ioctl の戻り値で返すの�
 ```
 scripts/build-fapex-poke.sh      # Buildroot(musl) ツールチェーンで static ARM
 ```
+
+## DIR に `v` を付けると値渡し
+
+FAPex のドライバはポインタ渡しと値渡しを混在させる。1 つの列で両方が必要になるため、
+DIR の末尾に `v` を付けるとそのグループだけ値渡しになる。
+
+| DIR | 意味 |
+|---|---|
+| `-` / `w` / `r` / `rw` | 引数なし / ポインタ渡しの write / read / read+write |
+| **`wv`** | write・引数を**値渡し** |
+| **`rwv`** | read+write・値渡し |
+
+実例は CLKPWR で、`nr=0x21` はポインタ渡し・`nr=0x23` は値渡しである（仕様 §5.5）。
+
+```sh
+# Dione を USB 列挙まで持ち込む CLKPWR 3 発（開いたまま保持する）
+fapex-poke --hold /dev/fapi/fapi199 \
+    0x00 - 0 + 0x21 w 8 0x06 0 0 0 0 0 0 0 + 0x23 wv 4 0x00 0x30 0 0 &
+```
+
+`--byval` はグローバル指定（全グループが値渡しになる）なので、混在する列では使わない。

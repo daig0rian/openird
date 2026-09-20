@@ -134,11 +134,31 @@ _IOW(0xFF, 0x62, FAPEX_I2C_RWParamStrT)    I2C_WRITE
 >   **CLKPWR/クロックではなく Dione ゲート**だった。`fapex_fdlclkpwr` を**載せない**＝BoardControl
 >   (setLed=SET_PWM 0x24) クラッシュ回避（§5.1 の壁が消滅）→ daemon が Dione を列挙（2-1.4 06b8:102d）
 >   → **block0 が立ち 0x20 が read/write とも ACK**（実レジスタ値あり）。手段: 自作 `tools/fapex-i2c`。
+> - **~~手動 GPIO 単独での Dione 起動は flaky~~ → 2026-09-20 に解決**。自前ツールだけで
+>   確実に USB 列挙まで持ち込める。鍵は (a) CLKPWR を同一 fd で `0x00`→`0x21`→`0x23`(値渡し
+>   `0x3000`) と出して**開いたまま保持**、(b) GPIO は**1 操作ごとに open/close**する
+>   （ベンダもそうしており、close してもピン状態は保持される）。手順は §5.5 の
+>   「自前ツールで Dione を USB 列挙まで起動できた」。
+> - **残り**: Dione の**ファーム転送**（`/slot/firm/mb86h57_h58_aac_*.bin`＝所有者の機器上の
+>   blob）と、その転送路 `h57fmb.ko` が GPL 非収録の proprietary ドライバである点。復調器が
+>   I2C で ACK するにはファームがロードされて動いている必要がある（それが「block0 が立つ」）。
 > - **残り**: demod init レジスタ列の捕捉（tune 要求→`demod_WriteSomeRegs` を I2C pre-log）。§5.4(b)。
->   手動 GPIO 単独での Dione 起動は flaky（daemon の board init を使えば確実）。(§5.4/§5.5)
 
-**前提**: OpenIRD 本番 rootfs（strace 入り）で起動、`ssh openird`。ベンダの
-`rootfs.img`(mtd6) と `slot0.img`(mtd7) は所有者のダンプ。
+## 5.0 観察の土台：観測 rig（2026-09-20 以降はこちらが本線）
+
+**現在の観察手段は `docs/specs/sb-tv02-wfpl-vendor-boot.md` §6 の観測 rig** である。
+ベンダの rootfs と slot をフラッシュに置き、起動スクリプト 2 本だけを差し替えて
+**ベンダアプリだけを自動起動しない**状態を作る。純正の環境がそのまま揃うので、下記
+サンドボックスに付きまとっていた副作用（`fapex_fdlclkpwr` を外さねばならない、`/dev` に
+mtd が無い、NVRAM が無い）が最初から無い。ビルドは `scripts/build-vendor-rig.sh`、
+使い方は `tools/vendor-rig/README.md`。観察ツール（`fapex-trace`/`-ts`/`-i2c`/`-gpio`/`-poke`）は
+rig の `/slot` に焼き込まれている。
+
+以下 §5 の chroot サンドボックス手順は **rig より前（2026-09-17〜18）の方法**で、経緯と
+そこで得た知見のために残す。いま同じ観察をするなら rig を使う。
+
+**（以下、旧サンドボックス手順）前提**: OpenIRD 本番 rootfs（strace 入り）で起動、
+`ssh openird`。ベンダの `rootfs.img`(mtd6) と `slot0.img`(mtd7) は所有者のダンプ。
 
 1. **RAM だけのサンドボックスを組む**（`temp/parts` 相当を `/tmp/vendor` に置く）:
    ベンダ rootfs と slot を loop・ro で mount し、`/dev` は tmpfs に差し替えて

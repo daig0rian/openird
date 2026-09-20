@@ -50,21 +50,50 @@ scripts/build-fapex-ts.sh          # Buildroot(musl) ツールチェーンで st
 FAPex を insmod（`fapi_sys→fapi_core→fapex_cfdl→fapex_fdltsd`。TS 面なので `fdltsd` が要る）
 した上で:
 
+**既定値はベンダ実測値**（2026-09-20・仕様 §5.6「ベンダ daemon の TSD 設定」）。以前の
+リファレンスボード想定から変えてあるので、まず**オプション無しの `probe`** を試すのが正しい。
+
+| 項目 | 既定 | 出所 |
+|---|---|---|
+| `--input` | `A`（tsSelect=0） | 実測 |
+| `--mode` | `serial`（**iflags=1**。以前の既定 `parps`=3 は誤り） | 実測 |
+| `--fltflags` | `0x04`（GPL ヘッダに名前が無いビット。`RM_TS_HEADER` は立てない） | 実測 |
+| `--bufkb` | `3760`（= `0x3ac000`） | 実測 |
+| `--thh` | `0xb798`（bufferSize と同値にしてはいけない） | 実測 |
+| `SET_INPUT` | **出さない**（ベンダは OPEN だけ。`--setinput` で有効化） | 実測 |
+
 ```sh
-# Path H 判定: 復調器を tune+lock させた状態で、HW 入力 CH x mode を総当り
+# 既定＝ベンダ実測値でそのまま probe（これが第一手）
+fapex-ts probe /dev/fapi/fapi000 /dev/fapi/fapi004
+
+# 生 TS を捕捉してファイルへ
+fapex-ts --pid 0x0000 --secs 10 -o /tmp/pat.ts capture /dev/fapi/fapi000 /dev/fapi/fapi004
+
+# 総当り（実測値が分かったので当面不要。空振り時の保険）
 fapex-ts scan /dev/fapi/fapi000 /dev/fapi/fapi004
-#  -> "CH_x mode ... <== TS-SYNC LOCKED" が出れば demod はその CH に直結（Path H 成立）
-
-# 単発 probe（既定 input=A, mode=parps, pid=0=PAT を 5 秒）
-fapex-ts --input A --mode parps probe /dev/fapi/fapi000 /dev/fapi/fapi004
-
-# 生 TS を捕捉してファイルへ（PID 指定・秒数/バイト上限・出力先）
-fapex-ts --input A --mode parps --pid 0x0000 --secs 10 -o /tmp/pat.ts \
-         capture /dev/fapi/fapi000 /dev/fapi/fapi004
 ```
 
-Path D を見る場合は `--linauto`（tsSelect=0x29, packet-RAM）。ただし Path D は Dione を
-THROUGH で上げて USB から TS が RAM に入っている前提。
+Path D を見る場合は `--linauto`（tsSelect=0x29, packet-RAM）。ただしベンダは packet-RAM を
+使わず HW TS 入力から読む（§5.6 で Path D の記述を訂正済み）。
+
+## 診断（止まった場所が分かる）
+
+- 各段階を実行の**前**に `[stage] …` を stderr へ出して flush する。止まったら最後の行が
+  どの ioctl かを示す。
+- `--stage-timeout N`（既定 10 秒・0 で無効）で ioctl ごとにウォッチドッグを張る。
+  `SA_RESTART` なしの `SIGALRM` でブロックを破り、`TIMED OUT` を報告する。
+- ポーリング中は 1 秒ごとに `[diag] fill=… roff=… status=… level=…` を出す。
+  **`bufferStatus` が肝**で、TS が流れているベンダの channel は `0x20` を示す。
+  自前ブロックで `0x0` のままなら「PID 不一致」ではなく「そのブロックに何も届いていない」。
+- stdout/stderr は行バッファ。ファイルへリダイレクトしても進行が見える。
+
+## 実機での注意（仕様 §5.6 参照）
+
+- **選局は `sfreq` で行う。`settuner` は使わない。** `settuner` は Dione の TsStreamer も
+  開くので、TSD を取り合って双方が壊れる（デーモン側が `ts_streamer.c:467 errno_=22` を
+  吐き続ける）。`playstop`（引数 0）で閉じることもできる。
+- TSD ブロックは独立しており、デーモンと**別ブロック**（TSD2=`fapi002`+`fapi068` 等）なら
+  共存できる。ただし別ブロックには TS が届かない（ハードウェア入力はブロックに結び付く）。
 
 ## 限界 / 次
 

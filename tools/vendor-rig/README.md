@@ -23,7 +23,9 @@
 | `slot-entry-tail.sh` | `slot_entry.sh` の末尾に連結 | ベンダアプリ起動（`insmod h57fmb.ko` ＋ `while : dione_server`）を除去し、静的 IP・`telnetd`・案内を追加 |
 | `rig-daemon.sh` | slot0 に `/slot/rig-daemon.sh` として同梱 | ベンダアプリを「コンソールをシェルとして残したまま」起動する |
 
-`tools/fapex-trace/fapex_trace.so` があれば `/slot/fapex_trace.so` として同梱される。
+観察ツールは `tools/` にある成果物が `/slot` へ同梱される（`fapex_trace.so`・`fapex-ts`・
+`fapex-i2c`・`fapex-gpio`・`fapex-poke`）。無いものは警告して飛ばす。毎回 wget で入れ直す
+必要が無く、デーモンがネットワークを奪った後でも使える。
 
 `slot_selector` を外すのは**安全上の理由**で、これは省略できない。同ツールは
 Slot Duplication（`/dev/mtd8` と `/dev/mtd9` を erase して slot0 を複製）を持ち、
