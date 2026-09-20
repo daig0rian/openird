@@ -238,3 +238,27 @@ umount/mount /app/flashDev ; reboot
 | U2 | `/flash/tmp_update` への展開を行う純正コンポーネントの同定 | 未追跡（展開先パスは確定・§3） | 実フラッシュ中の機器側の観察。**pack のブロッカーではない**（展開はベンダ側が行う） |
 | ~~U3~~ | ~~mtd1 の開始オフセット~~ | **決着** | `0x300000`（GPL `nand_emma_ptt_1Gb.h`）。NAND ダンプの使用ブロック分布とも整合＝§1 に反映済み |
 | U4 | 更新完了フラグの意味（USB 経由更新との関係） | 推定 | 同上・ダンプ後に判断 |
+
+## 8. シリアルコンソールと起動引数（観察の足場）
+
+u-boot の既定環境には起動コマンドが 4 本ある（NAND ダンプの mtd0 から観察）。
+
+| 名前 | bootargs | 用途 |
+|---|---|---|
+| `rom` | `rootfstype=squashfs root=/dev/mtdblock3 ro ip=none PRODUCT_FWIDS=…` | **製品用。`console=` が無い** |
+| `rom_dev` | `console=ttyS1,115200` ＋ 上と同じ | 開発用 |
+| `nfs` / `nfs_dev` | `root=/dev/nfs rw ip=:::::eth0:dhcp` | NFS 起動 |
+
+- **製品出荷状態では `console=` が無く、Linux の出力は一切シリアルに出ない。**
+  u-boot の `Starting kernel ...` の後が無音なのはこのため（カーネルが壊れている
+  わけではない）。
+- **実シリアルポートは Linux から見て `ttyS1`**（`/dev/ttyS1` = char 4,65）。
+  ベンダ rootfs の `/etc/inittab` にあるコメント行は `ttyS0` だが、これは行末に
+  `GENERIC_SERIAL` とある配布元の汎用テンプレートで、この機種の実ポートではない。
+  **コメントを外すだけでは無反応**になる。
+- `getty` はカーネルコンソールとは独立に `/dev/ttyS1` を開くので、`console=` が
+  無いままでもログインできる。`/etc/securetty` には `ttyS0`〜`ttyS3` が載っており
+  root ログインは許可される。`/etc/shadow` の root はパスワード空。
+- カーネルの起動メッセージまで見たい場合は `rom_dev` 相当の bootargs が要るが、
+  既定環境は u-boot に組み込まれているため、更新機構の env（`delenvu` で消される）
+  では恒久的に変えられない。**まず getty で足場を作るのが先。**
