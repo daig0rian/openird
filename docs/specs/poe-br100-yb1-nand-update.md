@@ -262,3 +262,31 @@ u-boot の既定環境には起動コマンドが 4 本ある（NAND ダンプ�
 - カーネルの起動メッセージまで見たい場合は `rom_dev` 相当の bootargs が要るが、
   既定環境は u-boot に組み込まれているため、更新機構の env（`delenvu` で消される）
   では恒久的に変えられない。**まず getty で足場を作るのが先。**
+
+## 9. 起動シーケンスの落とし穴 — `/etc/inittab` は使われない
+
+**ベンダ rootfs の `/etc/inittab` を編集しても効かない。** 実機で 2 度踏んだ。
+
+`/etc/inittab` は `::sysinit:/etc/init.d/rcS` を持ち、その `rcS` の末尾が
+
+```sh
+setsid cttyhack /app/bin/setup.sh     # メインアプリを起動
+while : ; do setsid cttyhack /bin/sh ; done   # ← 無限ループ。戻らない
+```
+
+busybox init（1.17.4）は sysinit アクションを `waitfor()` で待つ
+（`init/init.c` の `run_actions()`）。∴ **rcS は永久に戻らず、inittab の
+`respawn` 行は一つも実行されない**。ベンダ自身が書いた `tty1`/`tty2` の getty も
+`syslogd`・`klogd` も、実際には動いていない。
+
+- **介入点は `rcS` の、この無限ループの直前。** ここならメインアプリの起動後、
+  かつ init が止まる前に入る。
+- ベンダはここで既に「UART 経由でシェルを出す」意図のループを書いている
+  （コメントにそう書いてある）が、`cttyhack` が掴むのは制御端末＝`/dev/console`。
+  製品用 bootargs には `console=` が無い（§8）ため実体が無く、シェルは出ない。
+- ∴ シリアルに入りたければ、`rcS` から **ポートを明示して** getty を立てるか、
+  ネットワーク側（`telnetd`）を使う。
+
+> ネットワークについて: `/etc/network/interfaces` には `lo` しか無く、eth0 は
+> ベンダアプリ側（`/app/bin` の udhcpc スクリプト群）が設定する。∴ `telnetd` を
+> 起動しても、アドレスが付くのはアプリが立ち上がってから。

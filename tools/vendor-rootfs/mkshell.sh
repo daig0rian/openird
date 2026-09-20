@@ -3,19 +3,23 @@
 # Copyright (C) 2026 OpenIRD contributors
 # ベンダ rootfs 像に「root シェルへの入口」だけを足して、同じ形式で梱包し直す。
 #
-#   使い方: tools/vendor-rootfs/mkshell.sh <in.img> <out.img> [--tty <name>] [--telnetd]
+#   使い方: tools/vendor-rootfs/mkshell.sh <in.img> <out.img> [--tty "ttyS0 ttyS1"] [--no-telnetd]
 #   前提:   Linux/WSL・fakeroot・scripts/fetch-squashfs3.sh でビルドした mksquashfs
 #
 # 何のためか: 段階 B の観察環境を、ベンダ純正との差が最小の状態で用意する。差が
 # 大きいほどベンダアプリが落ちる要因が増えて観察にならない（SB-TV02 での教訓）。
-# 改変は **/etc/inittab のシリアル getty 行 1 行だけ**。ベンダの rootfs には
-# getty 行が最初からコメントアウトで入っており、root はパスワード空。
 #
-# tty 名に注意: ベンダのコメント行は `ttyS0` だが、これは配布元の汎用テンプレート
-# （行末に GENERIC_SERIAL とある）で、この機種の実ポートではない。u-boot の既定環境を
-# 見ると実ポートは **ttyS1**（開発用 bootcmd が console=ttyS1,115200 を渡す）。
-# なお製品用 bootcmd には console= が無く、**カーネルの出力は元から捨てられている**。
-# getty はカーネルコンソールとは無関係に /dev/ttyS1 を開くので、これでも入れる。
+# **/etc/inittab を編集しても効かない。** ベンダの /etc/init.d/rcS は末尾が
+#   while : ; do setsid cttyhack /bin/sh ; done
+# の無限ループで、busybox init は sysinit アクションの完了を waitfor() で待つ。
+# ∴ rcS は永久に戻らず、inittab の respawn 行（ベンダ自身の getty や syslogd も
+# 含めて）は一つも実行されない。介入点は rcS の、このループの直前。
+#
+# シリアルについて: 製品用の bootargs には console= が無く（u-boot 既定環境の `rom`）、
+# **カーネルの出力は元から捨てられている**。実ポートは Linux から見て ttyS1 の
+# はずだが（開発用 `rom_dev` が console=ttyS1,115200 を渡す）、確証を得るため
+# 既定では **ttyS0 と ttyS1 の両方**に生存確認を出して getty を立てる。
+# getty はカーネルコンソールとは無関係にポートを開くので console= が無くても入れる。
 #
 # 注意: 出力はベンダ由来の解析素材で、配布物ではない。commit しないこと
 #       （CONTRIBUTING.md §0）。所有者が自分の機器のダンプから自分で作る。
@@ -26,12 +30,12 @@ case "${1:-}" in -h|--help) usage 0 ;; "") usage ;; esac
 [ $# -ge 2 ] || usage
 
 IN=$(readlink -f "$1"); OUT=$(readlink -f "$2"); shift 2
-TELNETD=0
-TTY=ttyS1                       # この機種の実シリアルポート（上のコメント参照）
+TELNETD=1                       # 既定で有効（シリアルが駄目でも入れる道を残す）
+TTYS="ttyS0 ttyS1"              # 両方に出して、どちらが実ポートか実機で確かめる
 while [ $# -gt 0 ]; do
 	case "$1" in
-		--telnetd) TELNETD=1 ;;
-		--tty) shift; TTY=${1:-}; [ -n "$TTY" ] || { echo "✗ --tty に名前がありません"; exit 1; } ;;
+		--no-telnetd) TELNETD=0 ;;
+		--tty) shift; TTYS=${1:-}; [ -n "$TTYS" ] || { echo "✗ --tty に名前がありません"; exit 1; } ;;
 		*) echo "✗ 未知の引数: $1"; exit 1 ;;
 	esac
 	shift
@@ -54,38 +58,60 @@ echo "元イメージ: BE squashfs 3.x / block $BLK / $(stat -c%s "$IN") B"
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 
 fakeroot -- bash -euc '
-	W="$1"; IN="$2"; OUT="$3"; MKSQ="$4"; BLK="$5"; TELNETD="$6"; TTY="$7"
+	W="$1"; IN="$2"; OUT="$3"; MKSQ="$4"; BLK="$5"; TELNETD="$6"; TTYS="$7"
 
 	unsquashfs -d "$W/root" "$IN" >"$W/unsq.log" 2>&1
 	grep -E "created .* (devices|symlinks)" "$W/unsq.log" | sed "s/^/  /"
 
-	IT="$W/root/etc/inittab"
-	[ -f "$IT" ] || { echo "✗ /etc/inittab がありません"; exit 1; }
-	cp "$IT" "$W/inittab.orig"
+	RCS="$W/root/etc/init.d/rcS"
+	[ -f "$RCS" ] || { echo "✗ /etc/init.d/rcS がありません"; exit 1; }
+	cp "$RCS" "$W/rcS.orig"
+	grep -qE "^while[[:space:]]*:" "$RCS" || {
+		echo "✗ rcS 末尾の無限ループが見つかりません（形が想定と違う）"; exit 1; }
+	grep -q "OPENIRD" "$RCS" && { echo "✗ すでに改変済みです"; exit 1; }
 
-	# コメント行の # を外し、同時に tty 名を実ポートへ直す（元は汎用テンプレートの ttyS0）
-	sed -i "s|^#ttyS[0-9]*\(::respawn:/sbin/getty -L \)ttyS[0-9]*|${TTY}\1${TTY}|" "$IT"
-	if ! grep -qE "^${TTY}::respawn:/sbin/getty" "$IT"; then
-		echo "✗ シリアル getty のコメント行が見つかりません（inittab の形が想定と違う）"; exit 1
-	fi
-	[ -e "$W/root/dev/$TTY" ] || { echo "✗ /dev/$TTY がありません"; exit 1; }
-	grep -qx "$TTY" "$W/root/etc/securetty" 2>/dev/null \
-		|| echo "  ⚠ $TTY が /etc/securetty に無い＝root で login できない可能性"
+	# 生存確認と入口を、rcS が無限ループへ入る直前に挿し込む。
+	# 出力は ASCII のみ（シリアルに Unicode を出さない）。
+	{
+		echo "# --- OpenIRD observation entry points (inserted) ---"
+		echo "# /etc/inittab is never reached: rcS below never returns and"
+		echo "# busybox init waits for sysinit actions to finish."
+		for t in $TTYS; do
+			echo "echo \"OPENIRD alive on $t\" > /dev/$t 2>/dev/null"
+		done
+		if [ "$TELNETD" = "1" ]; then echo "/usr/sbin/telnetd"; fi
+		for t in $TTYS; do
+			echo "while : ; do /sbin/getty -L 115200 $t ; sleep 2 ; done &"
+		done
+		echo "# --- end OpenIRD ---"
+	} > "$W/block"
 
-	if [ "$TELNETD" = "1" ]; then
-		[ -e "$W/root/usr/sbin/telnetd" ] || { echo "✗ telnetd がありません"; exit 1; }
-		grep -q "telnetd" "$IT" || printf "\n# OpenIRD: observation entry point\nnull::respawn:/usr/sbin/telnetd -F\n" >> "$IT"
-	fi
+	# 最初の `while :` 行の直前に挿し込む（head/tail で分割。awk は外側の
+	# シングルクォートと噛み合わないのでここでは使わない）
+	N=$(grep -n -m1 -E "^while[[:space:]]*:" "$W/rcS.orig" | cut -d: -f1)
+	head -n $((N - 1)) "$W/rcS.orig" > "$RCS"
+	cat "$W/block" >> "$RCS"
+	tail -n +"$N" "$W/rcS.orig" >> "$RCS"
+	chmod 755 "$RCS"
 
-	echo "--- /etc/inittab の差分 ---"
-	diff -u "$W/inittab.orig" "$IT" | tail -n +3 | sed "s/^/  /" || true
+	for t in $TTYS; do
+		[ -e "$W/root/dev/$t" ] || { echo "✗ /dev/$t がありません"; exit 1; }
+		grep -qx "$t" "$W/root/etc/securetty" 2>/dev/null \
+			|| echo "  ⚠ $t が /etc/securetty に無い＝root で login できない可能性"
+	done
+	[ "$TELNETD" = "0" ] || [ -e "$W/root/usr/sbin/telnetd" ] \
+		|| { echo "✗ telnetd がありません"; exit 1; }
+	grep -q "OPENIRD" "$RCS" || { echo "✗ 挿し込みに失敗しました"; exit 1; }
+
+	echo "--- /etc/init.d/rcS の差分 ---"
+	diff -u "$W/rcS.orig" "$RCS" | tail -n +3 | sed "s/^/  /" || true
 
 	rm -f "$OUT"
 	"$MKSQ" "$W/root" "$OUT" -be -b "$BLK" -noappend >"$W/mk.log" 2>&1 || { tail -20 "$W/mk.log"; exit 1; }
 	grep -E "^Creating|^Filesystem size" "$W/mk.log" | sed "s/^/  /"
-' _ "$W" "$IN" "$OUT" "$MKSQ" "$BLK" "$TELNETD" "$TTY"
+' _ "$W" "$IN" "$OUT" "$MKSQ" "$BLK" "$TELNETD" "$TTYS"
 
-# 生成物の検証: メタデータが元と一致し、違うのは inittab だけであること
+# 生成物の検証: メタデータが元と一致し、違うのは rcS だけであること
 echo "--- 検証 ---"
 meta() { unsquashfs -ll "$1" 2>/dev/null | awk '/^[-dlcb]/{print $1,$2,$3,$NF}' | sed 's#squashfs-root##' | sort; }
 count() { unsquashfs -ll "$1" 2>/dev/null | grep -c "^$2"; }
@@ -94,10 +120,10 @@ for t in "c:キャラクタデバイス" "b:ブロックデバイス" "l:シン�
 	a=$(count "$IN" "$k"); b=$(count "$OUT" "$k")
 	[ "$a" = "$b" ] && echo "  ✓ $n $a 個が保たれている" || { echo "  ✗ $n が $a → $b"; exit 1; }
 done
-if diff <(meta "$IN") <(meta "$OUT") | grep -vE "inittab" | grep -q "^[<>]"; then
-	echo "  ✗ inittab 以外のメタデータに差があります:"
-	diff <(meta "$IN") <(meta "$OUT") | grep -vE "inittab" | head -10
+if diff <(meta "$IN") <(meta "$OUT") | grep -vE "rcS" | grep -q "^[<>]"; then
+	echo "  ✗ rcS 以外のメタデータに差があります:"
+	diff <(meta "$IN") <(meta "$OUT") | grep -vE "rcS" | head -10
 	exit 1
 fi
-echo "  ✓ inittab 以外は mode/owner/size/name まで一致"
+echo "  ✓ rcS 以外は mode/owner/size/name まで一致"
 echo "✓ $OUT ($(stat -c%s "$OUT") B)"
