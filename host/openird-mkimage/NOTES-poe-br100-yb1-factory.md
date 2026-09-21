@@ -35,7 +35,7 @@ SB-TV02-WFPL と違い、**この機種には開発者向けの直接書き込�
 
 | # | 不明点 | 状態 | 影響 |
 |---|---|---|---|
-| V3b | OpenIRD の rootfs を squashfs 3.1BE で作るか、mainline 4.0 をベンダカーネルに backport して 4.0LE にするか | **未決（設計判断）** | 高。Buildroot の mksquashfs は 4.x ＝ 3.1BE を作れない。overlayfs を 2.6.31 に移植したのと同じ手口で 4.0 を 2.6.27 に持ち込むのが素直だが、未着手 |
+| ~~V3b~~ | ~~rootfs を 3.1BE にするか 4.0 を backport するか~~ | **決着: 3.1BE で行く**（2026-09-21） | 下記 |
 | ~~V7~~ | ~~h20/h30 の算出式~~ | **解く必要が無くなった**（2026-09-21） | 実機で h20/h30 だけを反転した像が受理された＝判定に使われていない（仕様 §7 U3）。`pack-factory` は任意値でよい |
 | ~~V8~~ | ~~自作コンテナが純正アプリに受理されるか~~ | **決着**（2026-09-21・実機で受理→書込→起動→root ログイン） | 末尾の「手順 1b 完了」を参照 |
 
@@ -115,6 +115,27 @@ tests/mkimage に回帰検査を追加した。
 **教訓**: 容器の形式だけを仕様化していたが、機器側が**何をどう実行するか**まで
 追わないと足りない。ベンダの平文スクリプトを読むのが最短だった。
 
+## 旧 V3b の決着 — rootfs は squashfs 3.1BE のままにする
+
+`scripts/fetch-squashfs3.sh`（squashfs-tools 3.4 を sha256 pin で取得・ビルド）を
+用意した時点で、**3.1BE を書ける**ようになった。ベンダ rootfs を展開 → 改変 →
+3.1BE で再梱包した像が実機で起動し root ログインまで通っている。
+∴ **カーネルに mainline 4.0 を backport する動機が無い。**
+
+4.0 に移しても得るものが無いことも確認した:
+
+- **圧縮**: mainline 4.0（2.6.29 時点）も gzip のみ（lzo は 2.6.36、xz は 2.6.38 から）。
+  3.4 と同じ。
+- **xattr**: squashfs は overlayfs の lower（読み取り専用）＝ xattr は要らない。
+  xattr が要るのは upper 側（jffs2）。
+- **段階 B**: 3.1 のままならベンダの `app_bin`（3.1BE）をそのまま mount できる。
+  4.0 に置き換えると、ホストで変換して置き直す手間が増える。むしろ 3.1 維持が有利。
+
+**残っているのは判断ではなく配線**: Buildroot 側で `BR2_TARGET_ROOTFS_SQUASHFS` を
+切り、post-image スクリプトから自前の `mksquashfs -be -b 16384` を呼ぶ。Buildroot が
+生成したツリーを 3.1BE で固めて起動させるのは未実施だが、squashfs はツリーの出所を
+気にしないので形式上の懸念は無い。
+
 ## 解決済み（記録）
 
 - **旧 V1 — `write.sh` の呼び出し契約**（2026-09-20・純正 BLUR v2.1.17 の復号平文より）…
@@ -136,7 +157,7 @@ tests/mkimage に回帰検査を追加した。
   GPL の `fs/squashfs/{inode.c,squashfs2_0.c}` と `include/linux/squashfs_fs.h`
   （`SQUASHFS_MAJOR 3` / `SQUASHFS_MINOR 1`）＝ mainline in-tree（4.0・2.6.29〜）ではなく
   patch 版。実機 NAND ダンプの mtd3/4/5 はいずれも BE マジック `sqsh` を持つ。
-  → 残る判断は V3b。
+  → 3.1BE のまま扱う（旧 V3b の決着・下記）。
 - **旧 V4 — ダウングレード拒否の有無**（実機検証済）… **拒否されない**。純正イメージで確認。
   ∴ `--fw-version` に版数の順序制約を設ける必要はない。
 - **旧 V5 — 512Mb 機の区画表**… GPL `drivers/mtd/nand/nand_emma_ptt_512Mb.h` に全数あり。
