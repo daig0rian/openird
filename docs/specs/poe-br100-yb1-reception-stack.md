@@ -100,12 +100,18 @@ i2c-emma.{c,h}`、`drivers/i2c/algos/i2c-algo-emma.{c,h}`）。u-boot 側にも
 `i2c_master_send` / `i2c_master_recv` / `i2c_smbus_read_*` を参照し、文字列
 `emma_i2c_0` を持つ。∴ 復調器は標準アダプタ上に居る。
 
-**チューナは復調器の I2C ゲートの向こう**にある。根拠となるシンボル:
+**このモジュール群では、チューナは復調器の I2C ゲートの向こう**にある。根拠:
 
 | モジュール | シンボル |
 |---|---|
 | `ei2c_ofdm_drv` | `ei2c_get_through_demod_tc90512` / `ei2c_set_demod_tc90512` |
 | `fe_common_drv` | `TunerRead_viaDemod` / `TunerWrite_viaDemod` / `Tuner_set_slave_addr` / `getSlvAdr_Demod1` / `getSlvAdr_Demod2` |
+
+**⚠ ただしこれは本機の構成ではない。** これらのモジュールが語るのは復調器とチューナが
+別チップの設計（TC905xx ＋ 別チューナ）で、本機の `blur` はその経路を使わない
+（§3.1 で `/dev/fe_main` への ioctl が 0 件と実測）。本機のフロントエンドは
+**MaxLinear MXL683＝RF チューナと ISDB-T 復調の 1 チップ**と見られ、それなら
+バス上に 1 アドレスしか現れないこと（§4.1）とも整合する。詳細は §2.2。
 
 `fe_main_drv` は**段階 C の chardev が出すべき値をそのまま持っている**:
 `FE_get_agc` / `FE_get_ber` / `FE_get_cn` / `FE_get_sync` / `FE_select_channel` /
@@ -124,6 +130,55 @@ i2c-emma.{c,h}`、`drivers/i2c/algos/i2c-algo-emma.{c,h}`）。u-boot 側にも
 `selectDemod1` / `selectDemod2` / `selectTuner1`〜`4` / `use_ofdm` / `use_psk` /
 `i2c_port` があり、**1 つのバイナリが実行時の設定で多機種を賄う**作りと分かる。
 ∴ **本機に載っている実物は、シンボルからは確定できない**（分解写真は `MXL683`）。
+
+### 2.2 本機のフロントエンドは `blur` 内の MxLWare68x が制御する（2026-09-21）
+
+`blur` の可読文字列に **`MxLWare68x_API_*` が 154 箇所・41 種**ある。MaxLinear の
+MXL68x 系ホストライブラリで、**チューナ系と復調系の API が同じライブラリに同居**
+している（`CfgTunerChanTune` / `CfgTunerAGC` と `CfgDemodMPEGOut` / `ReqDemodCNR`）
+＝**1 チップで RF と復調を兼ねる部品**であることの裏づけ。基板写真の `MXL683` と整合する。
+
+初期化から受信までに現れる API（名前のみ。呼び出し順は未観測）:
+`CfgDrvInit` → `CfgDevPowerSupply` → `CfgDevXtal` → **`CfgDevFirmwareDownload`** →
+`CfgDevInit` / `CfgDevOperationalMode` → **`CfgTunerChanTune`** → `CfgDemodMPEGOut` →
+`CfgDemodBerPer`。状態取得は `ReqTunerLockStatus` / `ReqDemodLockStatus` /
+`ReqDemodCNR` / `ReqDemodBER` / `ReqDemodTMCCParams` / `ReqTunerAGCStatus` ほか。
+`blur` 内にはさらに薄い制御層 `MxL68x_Ctrl_{Initialize,SetSource,SetFreq,GetCN,
+GetBER,GetAGC,GetTMCC,SetFastScan}` がある。
+
+#### MXL683 のオープン実装は存在しない（2026-09-21 調査・否定的結論）
+
+段階 C の重さを左右するので調べた。**使えるものは無い。**
+
+| 見つけたもの | 中身 | 使えるか |
+|---|---|---|
+| HiSilicon STB SDK の第三者ミラー（`HiSTBLinuxV100R005C00SPC0xx` 等 8 リポジトリ）の `source/msp/drv/frontend/demod/MXL68x/` | `MxL68x.c` / `_Main.c` / `_PhyCtrlApi.{c,h}` / `_PhyCfg.c` / `_OEM_Drv.{c,h}` / **`_FwDownload.c`**。`MxLWare68x_API_*` が 45 種、ISDB-T と `mxl683`/`mxl681` に言及 | **不可**。全ファイルが `Copyright (c) 2011, MaxLinear, Inc.` のみで**許諾文が 1 行も無い**（`MODULE_LICENSE` 無し、リポジトリに LICENSE/COPYING 無し）＝GPL ドロップに紛れ込んだベンダ SDK |
+| Amlogic カーネル各種（`linux-amlogic` / `linux-meson` / `vero2-linux` / `vero3-linux`） | `CONFIG_AM_MXL683_FE` と `AM_DTV_DEMOD_MXL683` の**宣言だけ**。Makefile の `obj-$(CONFIG_AM_MXL683_FE) += mxl683/` は**コメントアウト**され、`mxl683/` ディレクトリは公開物から除かれている | **不可**（実体が無い） |
+| mainline `drivers/media/dvb-frontends/mxl692.c` | `SPDX-License-Identifier: GPL-2.0`。「Copyright (c) 2016 MaxLinear, Inc. … **which was released under GPL V2**」 | **参考のみ**。ATSC/QAM 専用で **ISDB-T を扱わない**。別世代・別ファミリ |
+
+GitHub のコード索引に `mxl683` という名のファイルは **0 件**。
+
+**含意**: (a) MaxLinear は MxL69x では GPLv2 で出した前例があるが、MxL683（2012 年の
+部品）については公開実装が無い。(b) ∴ 段階 C の復調側は
+**観察（バス上のバイト列）＋データシートから起こすしかない**。上の MaxLinear
+コードは許諾が無いので、**読んで実装の出所にしてはならない**（clean-room 以前に
+ライセンスの問題）。
+
+**段階 C への含意（重い）**:
+
+1. 本機の復調は **TC90522 系のレジスタ列ではなく MXL68x 系のシーケンス**。
+   ∴ mainline の GPL `tc90522.c` は**この機種の意味論の出所にならない**。
+2. **`CfgDevFirmwareDownload` があり、チップ内 RAM にファームを流し込む必要がある。**
+   `/lib/firmware` も `.fw` も rootfs・app のどちらにも無いので、実体は `blur`
+   バイナリの中にある公算が大きい。∴ 段階 C でも**所有者の機器上の blob を実行時に
+   使う**形になる（§1-5 と整合。配布物には入れられない）。
+3. スレーブアドレスは静的文字列に無く、`slave addr(OFDM) = 0x%x` として実行時に
+   出るだけ。**実測で `0x60` に確定**（§4.1）。
+
+なお `blur` は **`DEMOD_*` の ioctl 名を 24 種すべて文字列として持つ**
+（`DEMOD_SET_CHANNEL` / `DEMOD_GET_CN` / `DEMOD_ACCESS_DEMOD_REG` …）。
+§2.1 の `fe_main_drv` の `FE_*` 関数群と対になる名前で、**コードは持っているが
+本機では使っていない**（§3.1）。
 
 ## 3. ユーザランド ↔ カーネルの境界（これが契約）
 
@@ -358,17 +413,23 @@ AV サブシステム（`csd` / `val_merge` / `CSD_*` 割り込み）はこの�
 
 ## 7. 未解明・次
 
-1. **`0x60` の品種とアクセス手順**。バス 1 で応答する唯一の素子で、選局の
-   トラフィックはここ宛て。§2.1 の構造から復調器と読めるが、素直なレジスタ
-   読みでは中身が出ない（§4.1）。**最優先**。
-   - **有望な筋**: `fe_main_drv` が `FE_debug_show_demod_reg_all`（復調器レジスタの
-     全ダンプ）と `FE_set_debuglevel` を持ち、`fe_common_drv` には
-     `demod_saddr=… tuner_slv=…` を出す printk がある。これらは `/dev/fe_main` の
-     ioctl から届くはずで、**blur はこの chardev を使っていない**（§3.1）＝
-     試しても受信を乱しにくい。ioctl 番号が分からないので、そこをどう割るかが課題。
+1. **MXL683 のアクセス手順**（`0x60`・バス 1）。素直なレジスタ読みでは中身が
+   出ない（§4.1）＝MXL68x 系固有の手順が要る。**最優先**。
+   - MxLWare68x の API 名（§2.2）は分かったが、**I2C 上のバイト列は未観測**。
+     `blur` は `/dev/i2c-N` を開かず `/dev/io_controller` 越しにカーネルへ降ろす
+     （§3.1）ので、ユーザランドのトレーサではバイト列が採れない。
+   - **有望な筋 2**: i2c アダプタ `i2c-emma` は **GPL ソースが手元にある**（§2）。
+     そこに転送のログを足した `.ko` を自前でビルドして差し替えれば、**カーネル側
+     から往来のバイト列がそのまま採れる**。ベンダのモジュールには触らず、GPL
+     コードの改変だけで済むので出自も綺麗（`Origin: gpl-derived`）。前提として
+     2.6.27 カーネルのビルド環境が要る（CLAUDE.md「BMMPX1301 の次アクション ①」）。
+   - **有望な筋**: `fe_main_drv` の `FE_debug_show_demod_reg_all` / `FE_set_debuglevel`
+     と、`fe_common_drv` の `demod_saddr=… tuner_slv=…` printk。`/dev/fe_main` の
+     ioctl（名前は `DEMOD_*`・§2.2）から届くはずで、**blur はこの chardev を
+     使っていない**＝試しても受信を乱しにくい。ioctl 番号の割り出しが課題。
    - UPnP 経由でログレベルを上げる筋は否定済み（§4.2）。
-2. **チューナの品種**。復調器のゲート越しなのでバス走査では見えない（§2.1）。
-   `0x60` を開ける手順が分かれば、その先に出る。
+2. **MXL683 のファーム**。`CfgDevFirmwareDownload` が要求する blob が `blur` の
+   どこにあり、どう渡されるか（§2.2）。段階 C の実行時依存になる。
 3. ~~`/dev/fe_main` の ioctl 契約~~ — **解決（否定的に）**。`fe_main` は使われない（§3.1）。
    周波数は syscall 境界を渡らない。段階 C はこの経路を再現しない（§3.2）。
 4. **生 TS の取り出し口**。`/dev/val_demux` + `/dev/mem2` の mmap が本命だが、
