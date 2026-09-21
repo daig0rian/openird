@@ -38,7 +38,7 @@ Origin: gpl-derived
 +module_param(trace, int, S_IRUGO | S_IWUSR);
 +MODULE_PARM_DESC(trace, "log every I2C message: 0 off, 1 on");
 +
-+#define EMMA_TRACE_MAX 32
++#define EMMA_TRACE_MAX 64
 +
 +static void emma_trace_msg(struct i2c_adapter *i2c_adap, int i, int num,
 +			   const struct i2c_msg *m, int ret)
