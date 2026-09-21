@@ -4,8 +4,10 @@
 # ベンダ rootfs 像に「root シェルへの入口」だけを足して、同じ形式で梱包し直す。
 #
 #   使い方: tools/vendor-rootfs/mkshell.sh <in.img> <out.img> [--tty "ttyS0 ttyS1"]
-#           [--no-telnetd] [--tag TEXT]
+#           [--no-telnetd] [--tag TEXT] [--observe DIR]
 #           --tag は生存確認メッセージに識別子を入れる（どの像が載っているかを実機で測る用）
+#           --observe は段階 B の観察用に 3 点を足す（DIR の中身を /opt/openird へ、
+#             /etc/securetty に pts/0..9、LD_PRELOAD のゲート。詳細は下）
 #   前提:   Linux/WSL・fakeroot・scripts/fetch-squashfs3.sh でビルドした mksquashfs
 #
 # 何のためか: 段階 B の観察環境を、ベンダ純正との差が最小の状態で用意する。差が
@@ -30,11 +32,20 @@
 # 既定では **ttyS0 と ttyS1 の両方**に生存確認を出して getty を立てる。
 # getty はカーネルコンソールとは無関係にポートを開くので console= が無くても入れる。
 #
+# --observe DIR（段階 B の観察環境）で足すのは次の 3 点だけ:
+#   1. DIR の中身を /opt/openird/ に置く（mode 0755）
+#   2. /etc/securetty に pts/0..pts/9 を足す。ベンダの securetty は tty* と ttyS* しか
+#      挙げていないので、busybox login が pty 越しの root を拒否する＝telnet で
+#      "Login incorrect" になる。ここを足すと通常の telnet で root に入れる
+#   3. OPENIRD ブロックに LD_PRELOAD のゲートを入れる。**既定では無効**で、
+#      /app/setting/openird-trace（mtd8 = yaffs2 rw）があるときだけ効く。
+#      ∴ トレースの入切は焼き直さずに切り替えられる
+#
 # 注意: 出力はベンダ由来の解析素材で、配布物ではない。commit しないこと
 #       （CONTRIBUTING.md §0）。所有者が自分の機器のダンプから自分で作る。
 set -eu
 
-usage() { sed -n '4,9p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-1}"; }
+usage() { sed -n '4,11p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-1}"; }
 case "${1:-}" in -h|--help) usage 0 ;; "") usage ;; esac
 [ $# -ge 2 ] || usage
 
@@ -42,9 +53,12 @@ IN=$(readlink -f "$1"); OUT=$(readlink -f "$2"); shift 2
 TELNETD=1                       # 既定で有効（シリアルが駄目でも入れる道を残す）
 TTYS="ttyS0 ttyS1"              # 両方に出して、どちらが実ポートか実機で確かめる
 TAG=""                          # 生存確認メッセージに付ける識別子（実験の測定用）
+OBSERVE=""                      # 観察ツールの置き場（空なら何も足さない）
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--no-telnetd) TELNETD=0 ;;
+		--observe) shift; OBSERVE=${1:-}; [ -d "$OBSERVE" ] || { echo "✗ --observe にディレクトリがありません"; exit 1; }
+		       OBSERVE=$(readlink -f "$OBSERVE") ;;
 		--tty) shift; TTYS=${1:-}; [ -n "$TTYS" ] || { echo "✗ --tty に名前がありません"; exit 1; } ;;
 		--tag) shift; TAG=${1:-}; [ -n "$TAG" ] || { echo "✗ --tag に文字列がありません"; exit 1; }
 		       case "$TAG" in *[!A-Za-z0-9._-]*) echo "✗ --tag は英数字と . _ - のみ"; exit 1 ;; esac ;;
@@ -71,6 +85,7 @@ W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 
 fakeroot -- bash -euc '
 	W="$1"; IN="$2"; OUT="$3"; MKSQ="$4"; BLK="$5"; TELNETD="$6"; TTYS="$7"; TAG="$8"
+	OBSERVE="$9"
 
 	unsquashfs -d "$W/root" "$IN" >"$W/unsq.log" 2>&1
 	grep -E "created .* (devices|symlinks)" "$W/unsq.log" | sed "s/^/  /"
@@ -98,6 +113,13 @@ fakeroot -- bash -euc '
 		for t in $TTYS; do
 			echo "while : ; do /sbin/getty -L 115200 $t ; sleep 2 ; done &"
 		done
+		if [ -n "$OBSERVE" ]; then
+			echo "# Tracing is opt-in and survives no reflash: /app/setting is"
+			echo "# yaffs2 rw, so the flag can be set or cleared on the device."
+			echo "if [ -f /app/setting/openird-trace ] ; then"
+			echo "  export LD_PRELOAD=/opt/openird/yb1_trace.so"
+			echo "fi"
+		fi
 		echo "# --- end OpenIRD ---"
 	} > "$W/block"
 
@@ -118,13 +140,32 @@ fakeroot -- bash -euc '
 		|| { echo "✗ telnetd がありません"; exit 1; }
 	grep -q "OPENIRD" "$RCS" || { echo "✗ 挿し込みに失敗しました"; exit 1; }
 
+	if [ -n "$OBSERVE" ]; then
+		# 1. 観察ツール
+		mkdir -p "$W/root/opt/openird"
+		cp "$OBSERVE"/* "$W/root/opt/openird/"
+		chmod 755 "$W/root/opt/openird" "$W/root/opt/openird"/*
+		chown 0:0 "$W/root/opt" "$W/root/opt/openird" "$W/root/opt/openird"/*
+		echo "--- /opt/openird ---"
+		ls -l "$W/root/opt/openird" | sed "s/^/  /"
+		[ -f "$W/root/opt/openird/yb1_trace.so" ] \
+			|| { echo "✗ yb1_trace.so がありません（LD_PRELOAD のゲートが空振りする）"; exit 1; }
+
+		# 2. pty を securetty に足す（telnet の root ログインが通るようになる）
+		ST="$W/root/etc/securetty"
+		[ -f "$ST" ] || { echo "✗ /etc/securetty がありません"; exit 1; }
+		grep -qx "pts/0" "$ST" && { echo "✗ securetty は改変済みです"; exit 1; }
+		for i in 0 1 2 3 4 5 6 7 8 9; do echo "pts/$i" >> "$ST"; done
+		echo "  /etc/securetty に pts/0..9 を追加"
+	fi
+
 	echo "--- /etc/init.d/rcS の差分 ---"
 	diff -u "$W/rcS.orig" "$RCS" | tail -n +3 | sed "s/^/  /" || true
 
 	rm -f "$OUT"
 	"$MKSQ" "$W/root" "$OUT" -be -b "$BLK" -noappend >"$W/mk.log" 2>&1 || { tail -20 "$W/mk.log"; exit 1; }
 	grep -E "^Creating|^Filesystem size" "$W/mk.log" | sed "s/^/  /"
-' _ "$W" "$IN" "$OUT" "$MKSQ" "$BLK" "$TELNETD" "$TTYS" "$TAG"
+' _ "$W" "$IN" "$OUT" "$MKSQ" "$BLK" "$TELNETD" "$TTYS" "$TAG" "$OBSERVE"
 
 # 生成物の検証: メタデータが元と一致し、違うのは rcS だけであること
 echo "--- 検証 ---"
@@ -135,10 +176,18 @@ for t in "c:キャラクタデバイス" "b:ブロックデバイス" "l:シン�
 	a=$(count "$IN" "$k"); b=$(count "$OUT" "$k")
 	[ "$a" = "$b" ] && echo "  ✓ $n $a 個が保たれている" || { echo "  ✗ $n が $a → $b"; exit 1; }
 done
-if diff <(meta "$IN") <(meta "$OUT") | grep -vE "rcS" | grep -q "^[<>]"; then
-	echo "  ✗ rcS 以外のメタデータに差があります:"
-	diff <(meta "$IN") <(meta "$OUT") | grep -vE "rcS" | head -10
+# 意図して触る場所だけを差分から除く。ここを広げると「他は一致」の保証が緩む。
+if [ -n "$OBSERVE" ]; then
+	ALLOW="rcS|/etc/securetty|/opt(/openird)?(/|$)"
+	WHAT="rcS・securetty・/opt/openird 以外"
+else
+	ALLOW="rcS"
+	WHAT="rcS 以外"
+fi
+if diff <(meta "$IN") <(meta "$OUT") | grep -vE "$ALLOW" | grep -q "^[<>]"; then
+	echo "  ✗ $WHAT のメタデータに差があります:"
+	diff <(meta "$IN") <(meta "$OUT") | grep -vE "$ALLOW" | head -10
 	exit 1
 fi
-echo "  ✓ rcS 以外は mode/owner/size/name まで一致"
+echo "  ✓ $WHAT は mode/owner/size/name まで一致"
 echo "✓ $OUT ($(stat -c%s "$OUT") B)"
