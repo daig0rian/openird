@@ -3,7 +3,9 @@
 # Copyright (C) 2026 OpenIRD contributors
 # ベンダ rootfs 像に「root シェルへの入口」だけを足して、同じ形式で梱包し直す。
 #
-#   使い方: tools/vendor-rootfs/mkshell.sh <in.img> <out.img> [--tty "ttyS0 ttyS1"] [--no-telnetd]
+#   使い方: tools/vendor-rootfs/mkshell.sh <in.img> <out.img> [--tty "ttyS0 ttyS1"]
+#           [--no-telnetd] [--tag TEXT]
+#           --tag は生存確認メッセージに識別子を入れる（どの像が載っているかを実機で測る用）
 #   前提:   Linux/WSL・fakeroot・scripts/fetch-squashfs3.sh でビルドした mksquashfs
 #
 # 何のためか: 段階 B の観察環境を、ベンダ純正との差が最小の状態で用意する。差が
@@ -39,10 +41,13 @@ case "${1:-}" in -h|--help) usage 0 ;; "") usage ;; esac
 IN=$(readlink -f "$1"); OUT=$(readlink -f "$2"); shift 2
 TELNETD=1                       # 既定で有効（シリアルが駄目でも入れる道を残す）
 TTYS="ttyS0 ttyS1"              # 両方に出して、どちらが実ポートか実機で確かめる
+TAG=""                          # 生存確認メッセージに付ける識別子（実験の測定用）
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--no-telnetd) TELNETD=0 ;;
 		--tty) shift; TTYS=${1:-}; [ -n "$TTYS" ] || { echo "✗ --tty に名前がありません"; exit 1; } ;;
+		--tag) shift; TAG=${1:-}; [ -n "$TAG" ] || { echo "✗ --tag に文字列がありません"; exit 1; }
+		       case "$TAG" in *[!A-Za-z0-9._-]*) echo "✗ --tag は英数字と . _ - のみ"; exit 1 ;; esac ;;
 		*) echo "✗ 未知の引数: $1"; exit 1 ;;
 	esac
 	shift
@@ -65,7 +70,7 @@ echo "元イメージ: BE squashfs 3.x / block $BLK / $(stat -c%s "$IN") B"
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 
 fakeroot -- bash -euc '
-	W="$1"; IN="$2"; OUT="$3"; MKSQ="$4"; BLK="$5"; TELNETD="$6"; TTYS="$7"
+	W="$1"; IN="$2"; OUT="$3"; MKSQ="$4"; BLK="$5"; TELNETD="$6"; TTYS="$7"; TAG="$8"
 
 	unsquashfs -d "$W/root" "$IN" >"$W/unsq.log" 2>&1
 	grep -E "created .* (devices|symlinks)" "$W/unsq.log" | sed "s/^/  /"
@@ -86,7 +91,8 @@ fakeroot -- bash -euc '
 		echo "# /etc/inittab is not usable either: busybox init waits for rcS."
 		for t in $TTYS; do
 			echo "stty -F /dev/$t 115200 2>/dev/null"
-			echo "echo \"OPENIRD alive on $t\" > /dev/$t 2>/dev/null"
+			if [ -n "$TAG" ]; then M="OPENIRD alive on $t [$TAG]"; else M="OPENIRD alive on $t"; fi
+			echo "echo \"$M\" > /dev/$t 2>/dev/null"
 		done
 		if [ "$TELNETD" = "1" ]; then echo "/usr/sbin/telnetd"; fi
 		for t in $TTYS; do
@@ -118,7 +124,7 @@ fakeroot -- bash -euc '
 	rm -f "$OUT"
 	"$MKSQ" "$W/root" "$OUT" -be -b "$BLK" -noappend >"$W/mk.log" 2>&1 || { tail -20 "$W/mk.log"; exit 1; }
 	grep -E "^Creating|^Filesystem size" "$W/mk.log" | sed "s/^/  /"
-' _ "$W" "$IN" "$OUT" "$MKSQ" "$BLK" "$TELNETD" "$TTYS"
+' _ "$W" "$IN" "$OUT" "$MKSQ" "$BLK" "$TELNETD" "$TTYS" "$TAG"
 
 # 生成物の検証: メタデータが元と一致し、違うのは rcS だけであること
 echo "--- 検証 ---"
