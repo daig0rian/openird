@@ -27,10 +27,16 @@
  * nothing ever flows.  Measured: polling the vendor's own active buffers from
  * a fresh fd reports offset 0 while the vendor sees them advancing.
  *
- * Script lines are whitespace separated and take one of two forms:
+ * Script lines are whitespace separated:
  *   <cmd> [word ...]   issue that request, payload given as 32-bit words
+ *   load $N <phys>     read one 32-bit word of physical memory into $N
  *   hold <seconds>     keep the fd open and wait (so the capture can run)
- * Blank lines and lines starting with '#' are ignored.
+ * Blank lines and lines starting with '#' are ignored.  Anywhere a word is
+ * expected, "$N" (N = 0..7) substitutes a stored value.
+ *
+ * "load" exists because handles are decided at run time: an allocate returns
+ * its handle by writing it to the address the caller passed, not into the
+ * ioctl buffer, so the next request cannot be written literally in advance.
  *
  * The argument size, direction and type come out of <cmd> itself (MIPS _IOC
  * encoding: SIZEBITS=13, DIRBITS=3, NONE/READ/WRITE = 1/2/4 -- note that this
@@ -47,10 +53,17 @@
 #define SYS_open	4005
 #define SYS_close	4006
 #define SYS_ioctl	4054
+#define SYS_munmap	4091
 #define SYS_nanosleep	4166
+#define SYS_mmap2	4210
 
 #define O_RDONLY	0x0000
 #define O_RDWR		0x0002
+#define O_SYNC		0x0010		/* MIPS: O_DSYNC, enough for /dev/mem */
+#define PROT_READ	0x1
+#define MAP_SHARED	0x001
+#define PAGE_SHIFT	12
+#define PAGE_SIZE	(1UL << PAGE_SHIFT)
 
 /* MIPS _IOC encoding (asm-mips/ioctl.h), which is NOT asm-generic's. */
 #define IOC_NRBITS	8
@@ -225,6 +238,42 @@ static long do_one(long fd, unsigned long cmd, const unsigned long *w, int nw)
 /* --- script mode: several requests, one fd ------------------------------ */
 
 static char script[8192];
+static unsigned long var[8];
+
+/* One 32-bit word of physical memory, through /dev/mem.  Used to pick up a
+ * handle an allocate wrote to shared memory. */
+static int read_phys(unsigned long phys, unsigned long *out)
+{
+	unsigned long off = phys & (PAGE_SIZE - 1);
+	const volatile unsigned char *m;
+	long fd, r;
+
+	fd = tr_syscall(SYS_open, (long)"/dev/mem", O_RDONLY | O_SYNC, 0, 0, 0, 0);
+	if (fd < 0)
+		return -1;
+	r = tr_syscall(SYS_mmap2, 0, (long)PAGE_SIZE, PROT_READ, MAP_SHARED,
+		       fd, (long)((phys - off) >> PAGE_SHIFT));
+	if (r < 0 && r > -4096) {
+		tr_syscall(SYS_close, fd, 0, 0, 0, 0, 0);
+		return -1;
+	}
+	m = (const volatile unsigned char *)r + off;
+	*out = ((unsigned long)m[0] << 24) | ((unsigned long)m[1] << 16) |
+	       ((unsigned long)m[2] << 8) | (unsigned long)m[3];
+	tr_syscall(SYS_munmap, r, (long)PAGE_SIZE, 0, 0, 0, 0);
+	tr_syscall(SYS_close, fd, 0, 0, 0, 0, 0);
+	return 0;
+}
+
+/* Like parse(), but "$N" yields the stored value. */
+static int parse_arg(const char *s, unsigned long *out)
+{
+	if (s[0] == '$' && s[1] >= '0' && s[1] <= '7' && s[2] == 0) {
+		*out = var[s[1] - '0'];
+		return 0;
+	}
+	return parse(s, out);
+}
 
 static int is_space(char c)
 {
@@ -277,12 +326,52 @@ static int run_script(long fd, const char *path)
 		if (*line)
 			*line++ = 0;
 
+		if (streq(tok, "load")) {
+			char *a, *b;
+			unsigned long phys;
+			int idx;
+
+			while (is_space(*line))
+				line++;
+			a = line;
+			while (*line && !is_space(*line))
+				line++;
+			if (*line)
+				*line++ = 0;
+			while (is_space(*line))
+				line++;
+			b = line;
+			while (*line && !is_space(*line))
+				line++;
+			if (*line)
+				*line++ = 0;
+			if (a[0] != '$' || a[1] < '0' || a[1] > '7' ||
+			    parse_arg(b, &phys)) {
+				put("bad load line\n");
+				flushout();
+				continue;
+			}
+			idx = a[1] - '0';
+			if (read_phys(phys, &var[idx])) {
+				put("load: cannot read 0x");
+				puthex(phys, 8);
+				put("\n");
+			} else {
+				put("$");
+				putdec(idx);
+				put(" = 0x");
+				puthex(var[idx], 8);
+				put("\n");
+			}
+			flushout();
+			continue;
+		}
 		if (streq(tok, "hold")) {
 			long ts[2];
 
 			while (is_space(*line))
 				line++;
-			if (parse(line, &w[0]))
+			if (parse_arg(line, &w[0]))
 				w[0] = 1;
 			ts[0] = (long)w[0];
 			ts[1] = 0;
@@ -293,7 +382,7 @@ static int run_script(long fd, const char *path)
 			tr_syscall(SYS_nanosleep, (long)ts, 0, 0, 0, 0, 0);
 			continue;
 		}
-		if (parse(tok, &cmd)) {
+		if (parse_arg(tok, &cmd)) {
 			put("bad cmd in script: ");
 			put(tok);
 			put("\n");
@@ -311,7 +400,7 @@ static int run_script(long fd, const char *path)
 				line++;
 			if (*line)
 				*line++ = 0;
-			if (parse(a, &w[nw]))
+			if (parse_arg(a, &w[nw]))
 				break;
 			nw++;
 		}
