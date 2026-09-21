@@ -37,7 +37,8 @@
 #   2. /etc/securetty に pts/0..pts/9 を足す。ベンダの securetty は tty* と ttyS* しか
 #      挙げていないので、busybox login が pty 越しの root を拒否する＝telnet で
 #      "Login incorrect" になる。ここを足すと通常の telnet で root に入れる
-#   3. OPENIRD ブロックに LD_PRELOAD のゲートを入れる。**既定では無効**で、
+#   3. OPENIRD ブロックに LD_PRELOAD のゲートと、汎用フック
+#      /app/setting/openird-pre.sh（あれば source）を入れる。**既定では無効**で、
 #      /app/setting/openird-trace（mtd8 = yaffs2 rw）があるときだけ効く。
 #      ∴ トレースの入切は焼き直さずに切り替えられる
 #
@@ -127,6 +128,19 @@ fakeroot -- bash -euc '
 			echo "    [ -f \"\$m\" ] && insmod \"\$m\" trace=1"
 			echo "  done"
 			echo "fi"
+			# One generic hook so later experiments need no reflash: the
+			# rootfs is read-only squashfs, but /app/setting is writable and
+			# survives a reboot, so a file dropped there is enough.  Sourced,
+			# not forked, so it can also set the environment the vendor
+			# application inherits (LD_PRELOAD, LD_LIBRARY_PATH, ...).
+			# It runs after telnetd and the gettys above, so a hook that
+			# hangs or fails still leaves a way into the device.
+			echo "# Sourced, so it can export into the environment setup.sh sees."
+			echo "# Do not call exit from it: that would end rcS early and"
+			echo "# the vendor application would never start."
+			echo "if [ -f /app/setting/openird-pre.sh ] ; then"
+			echo "  . /app/setting/openird-pre.sh"
+			echo "fi"
 		fi
 		echo "# --- end OpenIRD ---"
 	} > "$W/block"
@@ -177,7 +191,10 @@ fakeroot -- bash -euc '
 
 # 生成物の検証: メタデータが元と一致し、違うのは rcS だけであること
 echo "--- 検証 ---"
-meta() { unsquashfs -ll "$1" 2>/dev/null | awk '/^[-dlcb]/{print $1,$2,$3,$NF}' | sed 's#squashfs-root##' | sort; }
+# ディレクトリ自身の size は squashfs のディレクトリ表の符号化長で、中身が同じでも
+# 他所で inode 番号がずれると変わる（/opt にファイルを足すと /usr/sbin の値が動く）。
+# 実体のメタデータではないので比較から外す。ファイルの size は見る。
+meta() { unsquashfs -ll "$1" 2>/dev/null | awk '/^[-dlcb]/{if (substr($1,1,1)=="d") $3="-"; print $1,$2,$3,$NF}' | sed 's#squashfs-root##' | sort; }
 count() { unsquashfs -ll "$1" 2>/dev/null | grep -c "^$2"; }
 for t in "c:キャラクタデバイス" "b:ブロックデバイス" "l:シンボリックリンク"; do
 	k=${t%%:*}; n=${t#*:}
