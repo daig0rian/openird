@@ -75,3 +75,5 @@ tools/yb1-i2c/yb1-i2c
 # Python のバイトコードキャッシュ
 __pycache__/
 *.pyc
+# yb1-mem build artifact (source-only in repo)
+tools/yb1-mem/yb1-mem
