@@ -81,6 +81,34 @@ trailer と仕様参照がその証跡**になる。詳細は [docs/clean-room.m
 - `docs/specs/` に置く仕様は **Open 層のみ**（観察・公開データ由来）。個体識別情報
   （MAC / S/N / Wi-Fi キー等）は投入前に伏字化すること。
 
+### 3.1 仕様の実装状態を宣言する
+
+`docs/specs/*.md` は H1 の直後に機械可読の `openird-spec` ヘッダを置き、
+`Status` / `As-of` / `Impl` / `Tests` を宣言する。**付け忘れはテストが落とす。**
+
+```
+<!-- openird-spec
+Status: verified
+As-of:  BLUR v2.1.17 ほか純正 29 本 / 実機 POE-BR100-YB1 (2026-09-21)
+Impl:   host/openird-mkimage/ird/v1b.py, host/openird-mkimage/ird/zipcrypto.py
+Tests:  tests/mkimage/
+-->
+```
+
+テスト側は `check(..., spec="<ファイル名>#<節番号>")` で仕様の節を引く（散文の解析では
+なく構造化された引数）。検査は **片側だけを縛る**:
+
+- **妨げないもの**: 仕様が先行している状態。仕様を直した直後に実装が古いのは
+  「観察 → 仕様化 → 実装」の正常な途中経過であり、未実装であることの裏付けでもある。
+  `Status: specified` で実装もテストも無い仕様は無条件で通る。∴ 仕様だけのコミット
+  （`Origin: observed`）は何も要求されない。
+- **落とすもの**: ①実装していないのに `implemented` / `verified` と宣言している
+  （過大申告）。②実装してテストまで書いたのに `specified` のまま（宣言の更新漏れ）。
+
+∴ `Status` は目安ではなく**検証される宣言**になる。値の一覧と運用は
+[docs/specs/README.md](docs/specs/README.md)、検査の実体は
+[tests/spec_status.py](tests/spec_status.py)。
+
 ---
 
 ## 4. コミットの形式
@@ -113,6 +141,10 @@ tools/setup-hooks.sh
 - `pre-commit` … blob・鍵・公開しない作業メモ・巨大ファイルの混入を拒否（ガードレール）。
 - `commit-msg` … subject 形式・`Signed-off-by`・`Origin`、および `clean-room`
   実装に対する `Spec-Ref` の有無を検査。
+
+仕様の `openird-spec` ヘッダ（§3.1）はフックではなく**テスト**が検査する。
+コミット時ではなく `make test-mkimage` で落ちる（秘密もベンダ資材も要らないので
+どの環境でも回せる）。
 
 CI（public 化後）でも同じ検査を再実行する。
 

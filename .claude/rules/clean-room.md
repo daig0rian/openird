@@ -41,6 +41,15 @@ gdb / gdbserver 自体は観察手段として使ってよい。**データ**を
 `Origin: clean-room | gpl-derived | observed | upstream`。clean-room の実装コードは
 `Spec-Ref: docs/specs/<file>#<section>` が必須。
 
+## 仕様の実装状態（`make test-mkimage` が検査）
+
+`docs/specs/*.md` は H1 直後に `openird-spec` ヘッダで `Status` / `As-of` / `Impl` /
+`Tests` を宣言する（付け忘れはテストが落ちる）。テストは
+`check(..., spec="<file>#<節>")` で節を引く。**仕様が先行している状態は正常**なので
+妨げない（`Status: specified` は無条件で通る）。落ちるのは「未実装なのに
+`implemented`/`verified` と宣言」と「実装済みなのに `specified` のまま」の 2 方向。
+詳細は [CONTRIBUTING.md](../../CONTRIBUTING.md) §3.1。
+
 ## hook の誤検知を外す
 
 規約自体を書く・grep する等で禁止語が commit や検索文字列に現れる場合、コマンド内の
