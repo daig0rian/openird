@@ -2632,3 +2632,46 @@ nr=0x16  ret=-3
 
 ∴ 次の作業は **「起動時の I2C バストレースを採り、MXL683 へのファーム転送の
 構造（ブロックの区切り・アドレス・開始/完了の合図）を仕様化する」**。
+
+## 26. MXL683 のファームは区画上のファイルではない（2026-09-22）
+
+§25.3 で次の関門になった A1（チップ内 RAM へのファーム転送）について、
+**ファームの所在だけ**先に確かめた。
+
+### 26.1 どの区画にも無い
+
+| 区画 | 中身 | MXL683 のファーム |
+|---|---|---|
+| mtd3 `FileSystem(SQUASHFS)` | rootfs | **無し**（`/lib/firmware` 相当も無い） |
+| mtd4 `App_binary(SQUASHFS)` | `/app/bin` | **無し**。`.bin` は `mb86h57_h58_aac_{trc,idle}.bin`（**トランスコーダ**のファーム）と `spirom_writer_usb_pixela_102Dh.bin` だけ |
+| mtd5 `EMMA_FW(SQUASHFS)` | `emma3sep_driver_std_op0.mem` ＋ 2 本のスクリプト | **無し**（これは**裏 CPU** のファーム・§22） |
+| mtd6 `Initial setting` | 先頭が `PIX`、`POE-BR100-YB1`、`NOT USE A PANEL` 等 | **無し**（板の素性と設定・128KB） |
+| mtd7/8/9 | ログ / `/app/setting` / MassStorage（yaffs2） | — |
+
+### 26.2 ★ `blur` の中にある
+
+`blur`（10.2MB）の文字列に:
+
+```
+Ctrl_DownloadFirmwareInMbin: Invalid file header ID (%c)
+Ctrl_DownloadFirmwareInMbin: Invalid segment header ID (%c)
+Err : MxLWare68x_API_CfgDevFirmwareDownload %d
+Download firmware success.
+```
+
+∴ **ファームは MaxLinear の `MBIN` 形式**（ファイルヘッダ ID ＋ セグメント
+ヘッダ ID を持つ、MxLWare 標準のコンテナ）で、**`blur` に埋め込まれている**。
+`MxLWare68x_API_CfgDevFirmwareDownload` がそれを I2C で流す。
+
+**∴ 「区画上のファイルとして置かれている」という見立ては外れ。**
+
+### 26.3 段階 C への含意
+
+- ファームは**所有者の機器上の `blur` の中**にある。§1-5 のとおり
+  **配布物には含めない**。所有者が自機の `blur` から実行時に取り出す形になる。
+- `MBIN` は**構造の決まったコンテナ**なので、**`blur` を走査してヘッダを探す**
+  だけで取り出せる見込みがある。これは**データの観察**であって逆アセンブルでは
+  ない（`.clean-room` の許す範囲）。
+- ∴ A1 は「①`blur` から MBIN を切り出す ②`MBIN` の構造を仕様化する
+  ③I2C でどう流すかを起動時バストレースから起こす」の 3 つに分かれる。
+  ③ は §4.2 のトレースで既に採れる状態。
