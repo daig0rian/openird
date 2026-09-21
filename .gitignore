@@ -80,3 +80,6 @@ tools/yb1-mem/yb1-mem
 
 # yb1-ioctl build artifact (source-only in repo)
 tools/yb1-ioctl/yb1-ioctl
+
+# yb1-mxl build artifact (source-only in repo)
+tools/yb1-mxl/yb1-mxl
