@@ -73,18 +73,57 @@ chardev 越しに使う。SB-TV02 の FAPex と違い、**モジュールが役�
 
 **含意 3 点**:
 
-1. **復調器は東芝 TC90522/TC90532**（モジュール名）。SB-TV02-WFPL と同系列＝
-   [sb-tv02-wfpl-stage-b-fapex.md](sb-tv02-wfpl-stage-b-fapex.md) §5.5 の観察が効く。
-   mainline Linux に GPL の `tc90522.c` があるので、段階 C の復調側は
-   `Origin: gpl-derived` で書ける見込み。
-2. **チューナは MaxLinear MxL135RF**（モジュール名）。分解写真からの同定
-   （`MXL683` を復調器と読んだ）と食い違う。**実機で未確定**（§7）。
-3. `demod_*` / `tuner_*` の .ko は**実機で load されない**のに地上波がロックする
-   （§5）。∴ LITE 機種の復調・チューナ制御は `fe_main_drv` / `fe_common_drv` /
+1. `demod_*` / `tuner_*` の .ko は**実機で load されない**のに地上波がロックする
+   （§5）。∴ 本機の復調・チューナ制御は `fe_main_drv` / `fe_common_drv` /
    `ei2c_ofdm_drv` の中にあり、別 .ko は他グレード（W/R・衛星）向けと考えられる。
+2. **ファイル名は品種の証拠にならない。** `demod_tc90522_90532_drv` /
+   `tuner_MxLinear_MxL135RF_drv` という名前はあるが、これらは load されない。
+   load される側のシンボルはまったく別の品種（`tc90512` / `hst111ah`）を語る。
+   §2.1 のとおり 1 つのバイナリが設定で多機種を賄う作りなので、**本機の実物は
+   シンボルからは確定できない**（分解写真は `MXL683`）。
+3. 復調器が東芝 TC905xx 系であれば、mainline の GPL `tc90522.c` が意味論の出所に
+   なり得る（SB-TV02-WFPL と同系列＝
+   [sb-tv02-wfpl-stage-b-fapex.md](sb-tv02-wfpl-stage-b-fapex.md) §5.5 も効く）。
+   **ただし品種未確定なので、これは当てにできる前提ではない**（§7-1）。
 
-`i2c_emma` / `i2c_algo_emma` は **GPL v2 を宣言しているのにソースが GPL ドロップに
-無い**（同梱は `arch/mips/emma` と `drivers/mtd` だけ）。`h57fmb` も同じ。
+`i2c_emma` / `i2c_algo_emma` の **GPL ソースは配布されている**（`drivers/i2c/busses/
+i2c-emma.{c,h}`、`drivers/i2c/algos/i2c-algo-emma.{c,h}`）。u-boot 側にも
+`drivers/i2c/i2c-emma3sx.c` がある。∴ i2c の足回りは `Origin: gpl-derived` で書ける。
+
+### 2.1 モジュールのシンボルから読める構造（2026-09-21）
+
+`nm` と `strings` による観察（clean-room で許された範囲。逆アセはしていない）。
+**各シンボルの意味は名前から推定したもので、実装は読んでいない。**
+
+`ei2c_ofdm_drv` は独自の I2C コントローラを持つのではなく、**Linux 標準の i2c
+クライアントドライバ**である: `i2c_register_driver` / `i2c_attach_client` /
+`i2c_master_send` / `i2c_master_recv` / `i2c_smbus_read_*` を参照し、文字列
+`emma_i2c_0` を持つ。∴ 復調器は標準アダプタ上に居る。
+
+**チューナは復調器の I2C ゲートの向こう**にある。根拠となるシンボル:
+
+| モジュール | シンボル |
+|---|---|
+| `ei2c_ofdm_drv` | `ei2c_get_through_demod_tc90512` / `ei2c_set_demod_tc90512` |
+| `fe_common_drv` | `TunerRead_viaDemod` / `TunerWrite_viaDemod` / `Tuner_set_slave_addr` / `getSlvAdr_Demod1` / `getSlvAdr_Demod2` |
+
+`fe_main_drv` は**段階 C の chardev が出すべき値をそのまま持っている**:
+`FE_get_agc` / `FE_get_ber` / `FE_get_cn` / `FE_get_sync` / `FE_select_channel` /
+`FE_select_source` / `FE_set_lna` / `FE_set_ISIC` / `FE_debug_show_demod_reg_all` /
+`FE_set_debuglevel`。UPnP の `X_GetOfdmTunerInfo`（§5）の Agc/Ber/Cn と 1:1 に対応する。
+
+**ただし blur はこの経路を使っていない**（§3.1）。`io_controller_drv` が
+`ei2c_read_reg_separate` / `ei2c_write_reg` / `ei2c_get_tuner_hst111ah_S` 等を直接
+呼んでおり、blur が ioctl するのは `/dev/io_controller` の方。∴ `/dev/fe_main` は
+**このアプリが使っていない並行インターフェース**であって、機能が無いのではない。
+
+**品種の語彙が .ko のファイル名と食い違う。** 実機で load されるモジュール群の
+シンボルは `tc90512`（復調）と `hst111ah`（チューナ・S/T 両方）を語るが、
+ファイル名側は `demod_tc90522_90532_drv` / `tuner_MxLinear_MxL135RF_drv` で、
+そちらは **load されない**（§2）。`fe_common_drv` の init ログ文字列には
+`selectDemod1` / `selectDemod2` / `selectTuner1`〜`4` / `use_ofdm` / `use_psk` /
+`i2c_port` があり、**1 つのバイナリが実行時の設定で多機種を賄う**作りと分かる。
+∴ **本機に載っている実物は、シンボルからは確定できない**（分解写真は `MXL683`）。
 
 ## 3. ユーザランド ↔ カーネルの境界（これが契約）
 
@@ -143,14 +182,14 @@ chardev 越しに使う。SB-TV02 の FAPex と違い、**モジュールが役�
 OpenIRD が作るのは `fe_main`/`io_controller` の代替ではなく、**ハードウェアを直接
 叩く自前ドライバ**だからである。必要な事実は次の 2 つに絞られる:
 
-1. 復調器 TC90522/TC90532 とチューナ MxL135RF の **I2C バスとスレーブアドレス**。
-   レジスタの意味論は、復調器については mainline の GPL `tc90522.c` から取れる。
+1. 復調器とチューナの **品種・I2C バス・スレーブアドレス・アクセス手順**。
 2. 復調器が出した TS が SoC のどこに入り、どう読み出されるか（`csd`/`val_merge` の
    AV サブシステム）。ここだけが proprietary で、観察でしか辿れない。
 
 ∴ 次は `io_controller` のポインタ追跡を深掘りするのではなく、**I2C バスの直接
-探索**に進んだ。結果は §4.1＝**標準 i2c バスには `0x60` しか居らず、復調器は
-そこに居ない**。1 の前半は未達で、§7-1 が最優先の課題になった。
+探索**に進んだ。結果は §4.1＝**バス 1 で応答するのは `0x60` ただ 1 つ**で、
+§2.1（チューナは復調器のゲート越し）と合わせると `0x60` が復調器と読める。
+品種とアクセス手順が未達で、§7-1 が最優先の課題になった。
 
 静的ノードだが未使用のもの（rootfs に居るだけで `/proc/devices` に登録が無い）:
 `/dev/tsout_demux` (210,0)、`/dev/i2c-2`、`/dev/i2c-3`。
@@ -196,14 +235,29 @@ librt ＋ `libcrypto.so.1.0.0` `libssl.so.1.0.0` `libjpeg.so.8.0.2` `libz.so.1.2
   走査後も `blur` は動き続け、受信も変わらなかった（503→`Cn` 33）。
 
 **含意**: 選局時に IRQ 65 が跳ねる（§4）のに、バス 1 には `0x60` しか居ない。
-∴ 選局のバストラフィックは `0x60` 宛てである。一方で **復調器 TC90522/TC90532 は
-Linux の i2c バス上に見つからない**。`ei2c_ofdm_drv`（＝"EMMA I2C for OFDM"）が
-`fe_common_drv` の依存に居ることと合わせると、**復調器は標準 i2c アダプタではなく
-`/dev/ei2c` 側の別 I2C コントローラにぶら下がっている**公算が大きい。未確認。
+∴ 選局のバストラフィックは `0x60` 宛てである。そして §2.1 で **チューナは復調器の
+I2C ゲートの向こうに居る**と分かったので、**`0x60` が復調器**で、チューナは
+バス上に直接は現れない、と読むのが整合する。
 
-`0x60` の品種も未確定。MaxLinear のチューナは 8bit `0xC0`（=7bit `0x60`）を使うものが
-多く、モジュール名（`MxL135RF`）とも基板写真（`MXL683`）とも矛盾しないが、
-読み出し内容からは同定できていない。
+`0x60` の品種は未確定。素直なレジスタ読みでは中身が出ないので、正しいアクセス
+手順（サブアドレス方式など）が要る。
+
+### 4.2 検討して否定した筋（記録）
+
+- **PIIC2 説は否定**。SoC の I2C は 3 本ある（u-boot `emmaregs.h`:
+  `PTOP_PIIC0/1/2_BASE_OFS` = `0x7000`/`0x8000`/`0x9000`、`PBRD_BASE=0x10100000`
+  ∴ `0x10107000`/`0x10108000`/**`0x10109000`**）。u-boot は
+  `CONFIG_SYS_MAX_I2C_BUS 3` で 3 本使うが、**Linux 側のヘッダは PIIC0/1 しか
+  定義せず** `platform.c` も 2 本しか登録しない。そこで「`ei2c_ofdm_drv` が
+  PIIC2 を直接叩いているのでは」と考えたが、**同モジュールのシンボルが標準の
+  i2c クライアント API そのもの**だったので否定した（§2.1）。IRQ も
+  `EMMA_IRQ_INT(56)/(57)`＝実機表示 64/65 の 2 本だけで、58 に当たる 66 は無い。
+- **`/dev/mem` から I2C のレジスタは覗けない**。この カーネルの `/dev/mem` は
+  RAM しか許可せず、`0x10107000` を読むと `Bad address`（EFAULT）。RAM 側
+  （`0x00030000` の EMMA ファーム）は読める。
+- **UPnP `X_SetLoggingLevel` は 1 と 2 しか受け付けず**（他は 402）、受理しても
+  ドライバ側のログは出ない。`fe_common_drv` が持つ
+  `demod_saddr=%#.2x tuner_slv=%#.2x …` の printk を出させる経路ではない。
 
 ## 5. 外部からの駆動系＝ベンダ UPnP（観察の足場）
 
@@ -304,23 +358,24 @@ AV サブシステム（`csd` / `val_merge` / `CSD_*` 割り込み）はこの�
 
 ## 7. 未解明・次
 
-1. **復調器がどのバスに居るか**。Linux の i2c バスには `0x60` しか居らず、
-   TC90522/TC90532 は見つからなかった（§4.1）。`/dev/ei2c`（`ei2c_ofdm_drv`）が
-   別の I2C コントローラを持っている公算が大きいが未確認。ここが割れないと
-   段階 C の復調側が始まらない。**最優先**。
-   - 手がかり: `ei2c_ofdm_drv` は `i2c_emma` に依存しない／`io_controller_drv` も
-     `ei2c_ofdm_drv` に依存する／`/proc/iomem` に i2c のレジスタ領域が出ない。
-   - GPL の u-boot（`gpl/u-boot`）に EMMA3SEP の I2C ドライバがあれば、同じ IP の
-     レジスタ配置が読める可能性がある（GPL なので `Origin: gpl-derived` にできる）。
-2. **`0x60` の品種とアクセス手順**。選局のバストラフィックはここ宛てだが、
-   素直なレジスタ読みでは中身が出ない（§4.1）。
+1. **`0x60` の品種とアクセス手順**。バス 1 で応答する唯一の素子で、選局の
+   トラフィックはここ宛て。§2.1 の構造から復調器と読めるが、素直なレジスタ
+   読みでは中身が出ない（§4.1）。**最優先**。
+   - **有望な筋**: `fe_main_drv` が `FE_debug_show_demod_reg_all`（復調器レジスタの
+     全ダンプ）と `FE_set_debuglevel` を持ち、`fe_common_drv` には
+     `demod_saddr=… tuner_slv=…` を出す printk がある。これらは `/dev/fe_main` の
+     ioctl から届くはずで、**blur はこの chardev を使っていない**（§3.1）＝
+     試しても受信を乱しにくい。ioctl 番号が分からないので、そこをどう割るかが課題。
+   - UPnP 経由でログレベルを上げる筋は否定済み（§4.2）。
+2. **チューナの品種**。復調器のゲート越しなのでバス走査では見えない（§2.1）。
+   `0x60` を開ける手順が分かれば、その先に出る。
 3. ~~`/dev/fe_main` の ioctl 契約~~ — **解決（否定的に）**。`fe_main` は使われない（§3.1）。
    周波数は syscall 境界を渡らない。段階 C はこの経路を再現しない（§3.2）。
 4. **生 TS の取り出し口**。`/dev/val_demux` + `/dev/mem2` の mmap が本命だが、
    `val_merge` は Proprietary＝観察でしか辿れない。スクランブル解除より**上流**で
    タップできることを確認する必要がある（§0）。
-5. `i2c_emma` / `i2c_algo_emma` / `h57fmb` の **GPL ソース未同梱**。請求するか、
-   自前実装するかの判断。
+5. ~~`i2c_emma` の GPL ソース未同梱~~ — **誤りだった**。GPL tarball は完全なツリーで、
+   i2c の GPL ソースは入っている（§2）。`h57fmb` は GPL 宣言だがソース未確認。
 
 ## 8. 観察手順（再現用）
 
