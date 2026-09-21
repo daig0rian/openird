@@ -17,6 +17,7 @@
  *   yb1-mem <phys> <len> scan        find MPEG-TS sync (0x47 every 188 bytes)
  *   yb1-mem <phys> <len> dump [n]    hex dump the first n bytes (default 128)
  *   yb1-mem <phys> <len> words [n]   dump n 32-bit words (for device registers)
+ *   yb1-mem <phys> <len> churn [n] [ms]   which words move over ms
  *   yb1-mem <phys> <len> nonzero     report where the region is not all zero
  *
  * "words" exists because the SoC register windows the vendor application maps
@@ -33,7 +34,10 @@
 #define SYS_open	4005
 #define SYS_close	4006
 #define SYS_mmap2	4210
+#define SYS_read	4003
 #define SYS_munmap	4091
+#define SYS__llseek	4140
+#define SYS_nanosleep	4166
 
 #define O_RDONLY	0x0000
 #define O_SYNC		0x0010		/* MIPS: O_DSYNC, enough for /dev/mem */
@@ -106,7 +110,10 @@ static int streq(const char *a, const char *b)
 	return *a == *b;
 }
 
-static long parse(const char *s)
+/* Returns 0 and stores the value, or -1 if the string is not a number.
+ * The value is unsigned: kernel virtual addresses (0xc0......) are ordinary
+ * inputs here, so "negative means error" would reject half the address space. */
+static int parse(const char *s, unsigned long *out)
 {
 	unsigned long v = 0;
 	int hex = 0;
@@ -132,7 +139,16 @@ static long parse(const char *s)
 			return -1;
 		v = v * (hex ? 16 : 10) + d;
 	}
-	return (long)v;
+	*out = v;
+	return 0;
+}
+
+/* For optional count arguments, where a bad string just means "use default". */
+static unsigned long parse_or(const char *s, unsigned long dflt)
+{
+	unsigned long v;
+
+	return parse(s, &v) == 0 ? v : dflt;
 }
 
 /* --- commands ----------------------------------------------------------- */
@@ -305,6 +321,65 @@ static void cmd_words(const u8 *m, unsigned long len, unsigned long n)
 	put("\n");
 }
 
+/* Which 32-bit words in this window move?
+ *
+ * The AV subsystem is driven through shared memory (a command stack posted by
+ * the main CPU, plus state the sub-CPU writes back), so the areas that matter
+ * are the ones that change while something is happening.  Snapshot, wait, read
+ * again, and report only what moved -- the output stays small enough to sweep
+ * a lot of windows over a slow link. */
+#define CHURN_MAX	4096		/* words held in the snapshot buffer */
+
+static unsigned int snap[CHURN_MAX];
+
+static void cmd_churn(const u8 *m, unsigned long len, unsigned long n,
+		      unsigned long ms)
+{
+	const volatile unsigned int *w = (const volatile unsigned int *)m;
+	long ts[2];
+	unsigned long i, changed = 0, shown = 0;
+
+	if (((unsigned long)m & 3) != 0) {
+		put("address is not 4-byte aligned\n");
+		return;
+	}
+	if (n > len / 4)
+		n = len / 4;
+	if (n > CHURN_MAX)
+		n = CHURN_MAX;
+	for (i = 0; i < n; i++)
+		snap[i] = w[i];
+
+	ts[0] = (long)(ms / 1000);
+	ts[1] = (long)((ms % 1000) * 1000000ul);
+	tr_syscall(SYS_nanosleep, (long)ts, 0, 0, 0, 0, 0);
+
+	for (i = 0; i < n; i++) {
+		unsigned int now = w[i];
+
+		if (now == snap[i])
+			continue;
+		changed++;
+		if (shown < 16) {
+			shown++;
+			put("  +0x");
+			puthex(i * 4, 5);
+			put(": ");
+			puthex(snap[i], 8);
+			put(" -> ");
+			puthex(now, 8);
+			put("\n");
+		}
+	}
+	put("churn ");
+	putdec(changed);
+	put(" / ");
+	putdec(n);
+	put(" words in ");
+	putdec(ms);
+	put(" ms\n");
+}
+
 static void cmd_nonzero(const u8 *m, unsigned long len)
 {
 	unsigned long i, nz = 0, firstnz = 0;
@@ -330,14 +405,94 @@ static void cmd_nonzero(const u8 *m, unsigned long len)
 	put("\n");
 }
 
+/* Read a KERNEL VIRTUAL address through /dev/kmem.
+ *
+ * The other commands mmap physical memory, which cannot reach a module's
+ * variables: module text and data are vmalloc'd, so they have no physical
+ * address a userland mmap could name.  /dev/kmem's read path does handle
+ * vmalloc (it goes through vread(), which walks the vmlist and zero-fills
+ * anything unmapped), so reading is both possible and safe there -- but it
+ * only works through read(), not mmap().  Hence a separate command.
+ *
+ * Addresses come from /proc/kallsyms.  This reads; it never writes. */
+static u8 kbuf[4096];
+
+static void cmd_kread(const char *dev, unsigned long addr, unsigned long len)
+{
+	long long res = 0;
+	unsigned long got = 0, i;
+	long fd, r;
+
+	if (len > sizeof(kbuf))
+		len = sizeof(kbuf);
+	fd = tr_syscall(SYS_open, (long)dev, O_RDONLY, 0, 0, 0, 0);
+	if (fd < 0) {
+		put("open ");
+		put(dev);
+		put(" failed: ");
+		putdec((unsigned long)-fd);
+		put("\n");
+		return;
+	}
+	/* _llseek takes the offset split into two words; kernel addresses are
+	 * above 2GB so the low word alone would look negative to lseek(2). */
+	r = tr_syscall(SYS__llseek, fd, 0, (long)addr, (long)&res, 0 /* SEEK_SET */, 0);
+	if (r < 0) {
+		put("llseek failed: ");
+		putdec((unsigned long)-r);
+		put("\n");
+		tr_syscall(SYS_close, fd, 0, 0, 0, 0, 0);
+		return;
+	}
+	while (got < len) {
+		r = tr_syscall(SYS_read, fd, (long)(kbuf + got),
+			       (long)(len - got), 0, 0, 0);
+		if (r <= 0)
+			break;
+		got += (unsigned long)r;
+	}
+	tr_syscall(SYS_close, fd, 0, 0, 0, 0, 0);
+
+	put(dev);
+	put(" 0x");
+	puthex(addr, 8);
+	put("  read ");
+	putdec(got);
+	put(" of ");
+	putdec(len);
+	if (r < 0) {
+		put("  (read failed: ");
+		putdec((unsigned long)-r);
+		put(")");
+	}
+	put("\n");
+	for (i = 0; i + 4 <= got; i += 4) {
+		if ((i & 15) == 0) {
+			if (i)
+				put("\n");
+			puthex(addr + i, 8);
+			put(":");
+		}
+		put(" ");
+		puthex(((unsigned long)kbuf[i] << 24) |
+		       ((unsigned long)kbuf[i + 1] << 16) |
+		       ((unsigned long)kbuf[i + 2] << 8) |
+		       (unsigned long)kbuf[i + 3], 8);
+	}
+	put("\n");
+}
+
 static void usage(void)
 {
-	put("yb1-mem [@dev] <phys> <len> scan|stats|dump|words|nonzero [n]\n"
+	put("yb1-mem [@dev] <addr> <len> scan|stats|dump|words|churn|kread|nonzero [n] [ms]\n"
 	    "  @dev    : map this device instead of /dev/mem (offset is its own)\n"
+	    "  kread   : <addr> is a KERNEL VIRTUAL address, read via /dev/kmem\n"
+	    "            (the only way to reach a module's variables; see kallsyms)\n"
 	    "  scan    : find MPEG-TS sync (0x47 every 188 bytes)\n"
 	    "  stats   : walk the packets, count PIDs and scrambling_control\n"
 	    "  dump    : hex dump the first n bytes (default 128)\n"
 	    "  words   : dump n 32-bit words -- use this for SoC registers\n"
+	    "  churn   : which of n words change over ms milliseconds (default 64, 500)\n"
 	    "  nonzero : how much of the region is not zero\n"
 	    "0x prefix for hex.  Reads only; nothing is written.\n");
 }
@@ -361,12 +516,20 @@ int main(int argc, char **argv)
 		flushout();
 		return 1;
 	}
-	phys = (unsigned long)parse(argv[1]);
-	len = (unsigned long)parse(argv[2]);
-	if ((long)phys < 0 || (long)len <= 0) {
-		put("bad phys/len\n");
+	if (parse(argv[1], &phys) || parse(argv[2], &len) || len == 0) {
+		put("bad address/len\n");
 		flushout();
 		return 1;
+	}
+
+	/* kread reaches kernel virtual addresses, which mmap cannot name. */
+	if (streq(argv[3], "kread")) {
+		cmd_kread(dev[0] == '/' && dev[1] == 'd' && dev[2] == 'e' &&
+			  dev[3] == 'v' && dev[4] == '/' && dev[5] == 'm' &&
+			  dev[6] == 'e' && dev[7] == 'm' && dev[8] == 0
+			  ? "/dev/kmem" : dev, phys, len);
+		flushout();
+		return 0;
 	}
 
 	/* mmap needs a page-aligned offset; keep the slack and skip it after. */
@@ -406,9 +569,12 @@ int main(int argc, char **argv)
 	if (streq(argv[3], "scan"))
 		cmd_scan(m, len);
 	else if (streq(argv[3], "dump"))
-		cmd_dump(m, len, argc > 4 ? (unsigned long)parse(argv[4]) : 128);
+		cmd_dump(m, len, argc > 4 ? parse_or(argv[4], 128) : 128);
 	else if (streq(argv[3], "words"))
-		cmd_words(m, len, argc > 4 ? (unsigned long)parse(argv[4]) : 16);
+		cmd_words(m, len, argc > 4 ? parse_or(argv[4], 16) : 16);
+	else if (streq(argv[3], "churn"))
+		cmd_churn(m, len, argc > 4 ? parse_or(argv[4], 64) : 64,
+			  argc > 5 ? parse_or(argv[5], 500) : 500);
 	else if (streq(argv[3], "stats"))
 		cmd_stats(m, len);
 	else if (streq(argv[3], "nonzero"))
