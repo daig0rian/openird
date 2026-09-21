@@ -16,7 +16,13 @@
  * Usage:
  *   yb1-mem <phys> <len> scan        find MPEG-TS sync (0x47 every 188 bytes)
  *   yb1-mem <phys> <len> dump [n]    hex dump the first n bytes (default 128)
+ *   yb1-mem <phys> <len> words [n]   dump n 32-bit words (for device registers)
  *   yb1-mem <phys> <len> nonzero     report where the region is not all zero
+ *
+ * "words" exists because the SoC register windows the vendor application maps
+ * (BHIF at 0x10000000, XDMA at 0x10009000, timer at 0x10110000) are peripheral
+ * registers, and byte-wide loads to those are not guaranteed to read back what
+ * a 32-bit load would.  Use "words" there and "dump" for memory.
  *
  * Numbers are decimal unless prefixed with 0x.  Reading is passive: nothing is
  * written, so the vendor application is not disturbed.
@@ -274,6 +280,31 @@ static void cmd_dump(const u8 *m, unsigned long len, unsigned long n)
 	put("\n");
 }
 
+/* 32-bit reads, four per line, offsets relative to the start address. */
+static void cmd_words(const u8 *m, unsigned long len, unsigned long n)
+{
+	const volatile unsigned int *w = (const volatile unsigned int *)m;
+	unsigned long i;
+
+	if (((unsigned long)m & 3) != 0) {
+		put("address is not 4-byte aligned\n");
+		return;
+	}
+	if (n > len / 4)
+		n = len / 4;
+	for (i = 0; i < n; i++) {
+		if ((i & 3) == 0) {
+			if (i)
+				put("\n");
+			puthex(i * 4, 6);
+			put(":");
+		}
+		put(" ");
+		puthex(w[i], 8);
+	}
+	put("\n");
+}
+
 static void cmd_nonzero(const u8 *m, unsigned long len)
 {
 	unsigned long i, nz = 0, firstnz = 0;
@@ -301,10 +332,12 @@ static void cmd_nonzero(const u8 *m, unsigned long len)
 
 static void usage(void)
 {
-	put("yb1-mem <phys> <len> scan|stats|dump|nonzero [n]\n"
+	put("yb1-mem [@dev] <phys> <len> scan|stats|dump|words|nonzero [n]\n"
+	    "  @dev    : map this device instead of /dev/mem (offset is its own)\n"
 	    "  scan    : find MPEG-TS sync (0x47 every 188 bytes)\n"
 	    "  stats   : walk the packets, count PIDs and scrambling_control\n"
 	    "  dump    : hex dump the first n bytes (default 128)\n"
+	    "  words   : dump n 32-bit words -- use this for SoC registers\n"
 	    "  nonzero : how much of the region is not zero\n"
 	    "0x prefix for hex.  Reads only; nothing is written.\n");
 }
@@ -312,9 +345,17 @@ static void usage(void)
 int main(int argc, char **argv)
 {
 	unsigned long phys, len, off, maplen;
+	const char *dev = "/dev/mem";
 	long fd, r;
 	const u8 *m;
 
+	/* "@/dev/mem2 ..." maps that device instead; the offset is then the
+	 * device's own offset, not a physical address. */
+	if (argc > 1 && argv[1][0] == '@') {
+		dev = argv[1] + 1;
+		argv++;
+		argc--;
+	}
 	if (argc < 4) {
 		usage();
 		flushout();
@@ -332,9 +373,11 @@ int main(int argc, char **argv)
 	off = phys & (PAGE_SIZE - 1);
 	maplen = (len + off + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
 
-	fd = tr_syscall(SYS_open, (long)"/dev/mem", O_RDONLY | O_SYNC, 0, 0, 0, 0);
+	fd = tr_syscall(SYS_open, (long)dev, O_RDONLY | O_SYNC, 0, 0, 0, 0);
 	if (fd < 0) {
-		put("open /dev/mem failed: ");
+		put("open ");
+		put(dev);
+		put(" failed: ");
 		putdec((unsigned long)-fd);
 		put("\n");
 		flushout();
@@ -353,7 +396,8 @@ int main(int argc, char **argv)
 	}
 	m = (const u8 *)r + off;
 
-	put("phys 0x");
+	put(dev);
+	put(" off 0x");
 	puthex(phys, 8);
 	put("  len ");
 	putdec(len);
@@ -363,6 +407,8 @@ int main(int argc, char **argv)
 		cmd_scan(m, len);
 	else if (streq(argv[3], "dump"))
 		cmd_dump(m, len, argc > 4 ? (unsigned long)parse(argv[4]) : 128);
+	else if (streq(argv[3], "words"))
+		cmd_words(m, len, argc > 4 ? (unsigned long)parse(argv[4]) : 16);
 	else if (streq(argv[3], "stats"))
 		cmd_stats(m, len);
 	else if (streq(argv[3], "nonzero"))
