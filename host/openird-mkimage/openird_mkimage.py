@@ -336,6 +336,19 @@ def cmd_unpack_factory(a):
         sys.exit(1)
 
 
+def _hexarg(text, want, what):
+    """16 進文字列を指定バイト数で読む。`~` 前置で原本の値のビット反転（実験用）。"""
+    t = text.replace(" ", "").replace(":", "")
+    try:
+        b = bytes.fromhex(t)
+    except ValueError:
+        sys.exit("✗ %s は 16 進で指定してください: %r" % (what, text))
+    if len(b) != want:
+        sys.exit("✗ %s は %d バイト（16 進 %d 文字）です（得: %d）"
+                 % (what, want, want * 2, len(b)))
+    return b
+
+
 def _board_for_family(family):
     """族タグから boards/*.json を引く（書き込み固定長の検査に使う）。"""
     import glob as _glob
@@ -436,13 +449,22 @@ def cmd_repack_factory(a):
         plain = v1b.pad_to_block(mid)
         note = "ペイロード ZIP から全段を自前で組む（本番と同じ経路）"
 
+    # h20/h30 は既定で原本から複写する（算出式が未解明のため・仕様 §7 U1/U2）。
+    # 明示指定は仕様 §7 U3 の実験用＝「判定に使われているのか」を実機で決めるため。
+    h20 = _hexarg(a.h20, v1b.LEN_H20, "--h20") if a.h20 else hdr["h20"]
+    h30 = _hexarg(a.h30, v1b.LEN_H30, "--h30") if a.h30 else hdr["h30"]
     out = v1b.pack(hdr["family"], tuple(hdr["version_raw"][:3]), plain, key,
-                   h20=hdr["h20"], h30=hdr["h30"])
+                   h20=h20, h30=h30)
 
     print("\n## 組み直し: %s" % note)
     print("  平文 %d B（原本 %d B / 差 %+d）" % (len(plain), len(r["plain"]), len(plain) - len(r["plain"])))
     print("  出力 %d B（原本 %d B / 差 %+d）" % (len(out), len(orig), len(out) - len(orig)))
-    print("  h20/h30 は原本から複写（算出式は未解明・仕様 §7 U1/U2）")
+    if a.h20 or a.h30:
+        print("  ⚠ h20/h30 を原本から変えています（仕様 §7 U3 の実験）")
+        print("     h20: %s → %s" % (hdr["h20"].hex(), h20.hex()))
+        print("     h30: %s → %s" % (hdr["h30"].hex(), h30.hex()))
+    else:
+        print("  h20/h30 は原本から複写（算出式は未解明・仕様 §7 U1/U2）")
 
     identical = out == orig
     if a.rebuild == "none":
@@ -467,8 +489,8 @@ def cmd_repack_factory(a):
         ("生成物の csum が合う", v["csum_ok"]),
         ("族タグ・版数が原本と同じ",
          v["header"]["family"] == hdr["family"] and v["header"]["version"] == hdr["version"]),
-        ("h20/h30 が原本と同じ",
-         v["header"]["h20"] == hdr["h20"] and v["header"]["h30"] == hdr["h30"]),
+        ("h20/h30 が指定どおり" if (a.h20 or a.h30) else "h20/h30 が原本と同じ",
+         v["header"]["h20"] == h20 and v["header"]["h30"] == h30),
         ("エントリの名前と順序が原本と同じ",
          [e["name"] for e in v["entries"]] == [e["name"] for e in r["entries"]]),
         ("差し替えなかった %d 点が原本とバイト一致" % len(untouched),
@@ -579,6 +601,10 @@ def main():
     p.add_argument("--random-salt", action="store_true", help="salt を毎回ランダムにする")
     p.add_argument("--replace", action="append", metavar="NAME=PATH",
                    help="ペイロードの 1 点を差し替える（繰り返し可。--rebuild all のときだけ）")
+    p.add_argument("--h20", metavar="HEX32",
+                   help="0x20 の 16B を明示指定（既定は原本から複写。仕様 §7 U3 の実験用）")
+    p.add_argument("--h30", metavar="HEX8",
+                   help="0x30 の 4B を明示指定（同上）")
     p.add_argument("--key-file", help="AES 鍵ファイル（既定 ~/.openird/v1b/%s）" % secrets.KEY_FILE)
     p.add_argument("--zip-pw-file", help="ZIP パスワードファイル（既定 ~/.openird/v1b/%s）" % secrets.PW_FILE)
     p.set_defaults(fn=cmd_repack_factory)
