@@ -12,12 +12,25 @@
  * alone and its entry in the command stack can be read back unambiguously.
  *
  * Usage:
- *   yb1-ioctl <device> <cmd> [byte ...]
+ *   yb1-ioctl <device> <cmd> [byte ...]      one request, then close
+ *   yb1-ioctl <device> @<script>             several requests on ONE open fd
  *
  *   <device>  e.g. /dev/val_demux
  *   <cmd>     the request as the tracer prints it, e.g. 0x4028c32f
  *   [byte]    payload bytes, most significant first, zero padded to the size
  *             encoded in <cmd>.  Omit for an all-zero argument.
+ *
+ * The script form exists because this driver keeps per-open state.  The vendor
+ * application holds /dev/val_demux open for its whole life; a tool that opens
+ * and closes around every request gets a fresh context each time, so a filter
+ * set up by one call is gone by the next -- every call still returns 0, but
+ * nothing ever flows.  Measured: polling the vendor's own active buffers from
+ * a fresh fd reports offset 0 while the vendor sees them advancing.
+ *
+ * Script lines are whitespace separated and take one of two forms:
+ *   <cmd> [word ...]   issue that request, payload given as 32-bit words
+ *   hold <seconds>     keep the fd open and wait (so the capture can run)
+ * Blank lines and lines starting with '#' are ignored.
  *
  * The argument size, direction and type come out of <cmd> itself (MIPS _IOC
  * encoding: SIZEBITS=13, DIRBITS=3, NONE/READ/WRITE = 1/2/4 -- note that this
@@ -29,11 +42,14 @@
  */
 
 /* MIPS o32 syscall numbers. */
+#define SYS_read	4003
 #define SYS_write	4004
 #define SYS_open	4005
 #define SYS_close	4006
 #define SYS_ioctl	4054
+#define SYS_nanosleep	4166
 
+#define O_RDONLY	0x0000
 #define O_RDWR		0x0002
 
 /* MIPS _IOC encoding (asm-mips/ioctl.h), which is NOT asm-generic's. */
@@ -114,6 +130,13 @@ static void putdec(long v)
 
 /* --- arguments ---------------------------------------------------------- */
 
+static int streq(const char *a, const char *b)
+{
+	while (*a && *a == *b)
+		a++, b++;
+	return *a == *b;
+}
+
 static int parse(const char *s, unsigned long *out)
 {
 	unsigned long v = 0;
@@ -156,14 +179,156 @@ static void dump(const char *label, const u8 *p, unsigned long n)
 	put("\n");
 }
 
+/* --- one request on an already-open fd ---------------------------------- */
+
+static u8 argbuf[MAXARG];
+
+static long do_one(long fd, unsigned long cmd, const unsigned long *w, int nw)
+{
+	unsigned long size, dir, nr;
+	long r;
+	int i;
+
+	dir = (cmd >> IOC_DIRSHIFT) & ((1U << IOC_DIRBITS) - 1);
+	size = (cmd >> IOC_SIZESHIFT) & ((1U << IOC_SIZEBITS) - 1);
+	nr = (cmd >> IOC_NRSHIFT) & 0xff;
+	if (size > MAXARG)
+		size = MAXARG;
+	for (i = 0; i < (int)size; i++)
+		argbuf[i] = 0;
+	for (i = 0; i < nw && (unsigned long)(i * 4 + 4) <= size; i++) {
+		argbuf[i * 4 + 0] = (u8)(w[i] >> 24);
+		argbuf[i * 4 + 1] = (u8)(w[i] >> 16);
+		argbuf[i * 4 + 2] = (u8)(w[i] >> 8);
+		argbuf[i * 4 + 3] = (u8)w[i];
+	}
+	r = tr_syscall(SYS_ioctl, fd, (long)cmd, (long)argbuf, 0, 0, 0);
+
+	put("nr=0x");
+	puthex(nr, 2);
+	put(dir & IOC_READ ? " R " : " W ");
+	put("ret=");
+	putdec(r);
+	put("  buf:");
+	for (i = 0; i < 4 && (unsigned long)(i * 4 + 4) <= size; i++) {
+		put(" ");
+		puthex(((unsigned long)argbuf[i * 4] << 24) |
+		       ((unsigned long)argbuf[i * 4 + 1] << 16) |
+		       ((unsigned long)argbuf[i * 4 + 2] << 8) |
+		       (unsigned long)argbuf[i * 4 + 3], 8);
+	}
+	put("\n");
+	flushout();
+	return r;
+}
+
+/* --- script mode: several requests, one fd ------------------------------ */
+
+static char script[8192];
+
+static int is_space(char c)
+{
+	return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+static int run_script(long fd, const char *path)
+{
+	long sf, n, got = 0;
+	char *p, *end;
+
+	sf = tr_syscall(SYS_open, (long)path, O_RDONLY, 0, 0, 0, 0);
+	if (sf < 0) {
+		put("open script failed: ");
+		putdec(sf);
+		put("\n");
+		return 1;
+	}
+	while (got < (long)sizeof(script) - 1) {
+		n = tr_syscall(SYS_read, sf, (long)(script + got),
+			       (long)(sizeof(script) - 1 - got), 0, 0, 0);
+		if (n <= 0)
+			break;
+		got += n;
+	}
+	script[got] = 0;
+	tr_syscall(SYS_close, sf, 0, 0, 0, 0, 0);
+
+	p = script;
+	end = script + got;
+	while (p < end) {
+		char *line = p;
+		unsigned long w[8], cmd;
+		int nw = 0;
+		char *tok;
+
+		while (p < end && *p != '\n')
+			p++;
+		if (p < end)
+			*p++ = 0;
+		while (is_space(*line))
+			line++;
+		if (!*line || *line == '#')
+			continue;
+
+		/* first token */
+		tok = line;
+		while (*line && !is_space(*line))
+			line++;
+		if (*line)
+			*line++ = 0;
+
+		if (streq(tok, "hold")) {
+			long ts[2];
+
+			while (is_space(*line))
+				line++;
+			if (parse(line, &w[0]))
+				w[0] = 1;
+			ts[0] = (long)w[0];
+			ts[1] = 0;
+			put("hold ");
+			putdec((long)w[0]);
+			put("s\n");
+			flushout();
+			tr_syscall(SYS_nanosleep, (long)ts, 0, 0, 0, 0, 0);
+			continue;
+		}
+		if (parse(tok, &cmd)) {
+			put("bad cmd in script: ");
+			put(tok);
+			put("\n");
+			continue;
+		}
+		while (nw < 8) {
+			char *a;
+
+			while (is_space(*line))
+				line++;
+			if (!*line)
+				break;
+			a = line;
+			while (*line && !is_space(*line))
+				line++;
+			if (*line)
+				*line++ = 0;
+			if (parse(a, &w[nw]))
+				break;
+			nw++;
+		}
+		do_one(fd, cmd, w, nw);
+	}
+	return 0;
+}
+
 static void usage(void)
 {
-	put("yb1-ioctl <device> <cmd> [byte ...]\n"
-	    "  <device>  e.g. /dev/val_demux\n"
+	put("yb1-ioctl <device> <cmd> [byte ...]   one request, then close\n"
+	    "yb1-ioctl <device> @<script>          several on ONE open fd\n"
 	    "  <cmd>     request as the tracer prints it, e.g. 0x4028c32f\n"
 	    "  [byte]    payload, most significant first, zero padded\n"
-	    "Size, direction and type are decoded from <cmd> (MIPS _IOC).\n"
-	    "Issues the request ONCE and prints the buffer before and after.\n");
+	    "Script lines: '<cmd> [word ...]' or 'hold <seconds>'.\n"
+	    "The driver keeps per-open state, so a filter set up by one call is\n"
+	    "gone by the next unless the fd stays open -- hence the script form.\n");
 }
 
 int main(int argc, char **argv)
@@ -177,6 +342,24 @@ int main(int argc, char **argv)
 		usage();
 		flushout();
 		return 1;
+	}
+	if (argv[2][0] == '@') {
+		long r;
+
+		fd = tr_syscall(SYS_open, (long)argv[1], O_RDWR, 0, 0, 0, 0);
+		if (fd < 0) {
+			put("open ");
+			put(argv[1]);
+			put(" failed: ");
+			putdec(fd);
+			put("\n");
+			flushout();
+			return 1;
+		}
+		r = run_script(fd, argv[2] + 1);
+		tr_syscall(SYS_close, fd, 0, 0, 0, 0, 0);
+		flushout();
+		return (int)r;
 	}
 	if (parse(argv[2], &cmd)) {
 		put("bad cmd\n");
