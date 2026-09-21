@@ -280,10 +280,56 @@ static int is_space(char c)
 	return c == ' ' || c == '\t' || c == '\r' || c == '\n';
 }
 
-static int run_script(long fd, const char *path)
+/* The vendor drives TWO nodes at once -- /dev/val_demux and /dev/val_demux1 --
+ * and the driver keeps its state per open, so the script has to hold both fds
+ * open and switch between them.  Re-opening a node would throw its state away,
+ * so paths are opened once and remembered.
+ */
+#define MAXDEV	4
+#define MAXPATH	40
+
+static char dev_path[MAXDEV][MAXPATH];
+static long dev_fd[MAXDEV];
+static int dev_n;
+
+static void copy_path(char *dst, const char *src)
 {
-	long sf, n, got = 0;
+	int i = 0;
+
+	while (src[i] && i < MAXPATH - 1) {
+		dst[i] = src[i];
+		i++;
+	}
+	dst[i] = 0;
+}
+
+static long dev_get(const char *path)
+{
+	int i;
+	long fd;
+
+	for (i = 0; i < dev_n; i++)
+		if (streq(dev_path[i], path))
+			return dev_fd[i];
+	if (dev_n >= MAXDEV)
+		return -1;
+	fd = tr_syscall(SYS_open, (long)path, O_RDWR, 0, 0, 0, 0);
+	if (fd < 0)
+		return fd;
+	copy_path(dev_path[dev_n], path);
+	dev_fd[dev_n] = fd;
+	dev_n++;
+	return fd;
+}
+
+static int run_script(long fd, const char *dev0, const char *path)
+{
+	long sf, n, got = 0, cur = fd;
 	char *p, *end;
+
+	copy_path(dev_path[0], dev0);
+	dev_fd[0] = fd;
+	dev_n = 1;
 
 	sf = tr_syscall(SYS_open, (long)path, O_RDONLY, 0, 0, 0, 0);
 	if (sf < 0) {
@@ -366,6 +412,32 @@ static int run_script(long fd, const char *path)
 			flushout();
 			continue;
 		}
+		if (streq(tok, "dev")) {
+			long d;
+
+			while (is_space(*line))
+				line++;
+			tok = line;
+			while (*line && !is_space(*line))
+				line++;
+			if (*line)
+				*line++ = 0;
+			d = dev_get(tok);
+			if (d < 0) {
+				put("dev ");
+				put(tok);
+				put(": open failed ");
+				putdec(d);
+				put("\n");
+			} else {
+				cur = d;
+				put("-- now on ");
+				put(tok);
+				put("\n");
+			}
+			flushout();
+			continue;
+		}
 		if (streq(tok, "hold")) {
 			long ts[2];
 
@@ -404,7 +476,7 @@ static int run_script(long fd, const char *path)
 				break;
 			nw++;
 		}
-		do_one(fd, cmd, w, nw);
+		do_one(cur, cmd, w, nw);
 	}
 	return 0;
 }
@@ -415,7 +487,8 @@ static void usage(void)
 	    "yb1-ioctl <device> @<script>          several on ONE open fd\n"
 	    "  <cmd>     request as the tracer prints it, e.g. 0x4028c32f\n"
 	    "  [byte]    payload, most significant first, zero padded\n"
-	    "Script lines: '<cmd> [word ...]' or 'hold <seconds>'.\n"
+	    "Script lines: '<cmd> [word ...]', 'load $N <phys>', 'hold <secs>',\n"
+	    "  or 'dev <path>' to switch node (both stay open).\n"
 	    "The driver keeps per-open state, so a filter set up by one call is\n"
 	    "gone by the next unless the fd stays open -- hence the script form.\n");
 }
@@ -445,8 +518,9 @@ int main(int argc, char **argv)
 			flushout();
 			return 1;
 		}
-		r = run_script(fd, argv[2] + 1);
-		tr_syscall(SYS_close, fd, 0, 0, 0, 0, 0);
+		r = run_script(fd, argv[1], argv[2] + 1);
+		for (i = 0; i < dev_n; i++)
+			tr_syscall(SYS_close, dev_fd[i], 0, 0, 0, 0, 0);
 		flushout();
 		return (int)r;
 	}
