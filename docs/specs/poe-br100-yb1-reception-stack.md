@@ -3407,3 +3407,10 @@ nr=0x67 {dev, 0, 0x00000001, 0x00000003, 0x00000000}  -3
 
 **次は 1 と 3 を並行させるのが良い。** 3 は `tools/yb1-mxl` で完結し、
 実機のリグも既にある。
+
+---
+
+**運用の手順は [../poe-br100-yb1-rig.md](../poe-br100-yb1-rig.md) に分けた**
+（リグの切り替え・電源の入れ直し・ファイルの授受・トレースの採り方・実機に置いて
+ある道具）。段階 C の定型列は
+[tools/yb1-ioctl/stage-c-demux.script](../../tools/yb1-ioctl/stage-c-demux.script)。

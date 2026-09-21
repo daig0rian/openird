@@ -1,0 +1,99 @@
+# POE-BR100-YB1 / stage C: bring the demultiplexer up with no vendor application.
+#
+#   yb1-ioctl /dev/val_demux @stage-c-demux.script
+#
+# Everything here except the last three lines returns 0 on a freshly powered
+# board running the openird-noblur rig.  The handles it produces match the
+# vendor's byte for byte:
+#
+#   dev1 0x00010000   dev2 0x02010002   dev3 0x01010001
+#   filt 0x0210006b   0x0208006a   0x00080023   0x00100022
+#   buf  0x00000100   h30 0x00002002
+# (the PID filter lands on 0x00100022 here because the payload filter takes
+#  an index first; the vendor, allocating more of them, reaches 0x00100023.)
+#
+# Specification: docs/specs/poe-br100-yb1-reception-stack.md
+#   §20.6 call table, §32 nr=0x14 (buffer allocate), §33.2 the read cycle,
+#   §34 the three-device / two-node structure.
+# Runbook: docs/poe-br100-yb1-rig.md
+#
+# The AV subsystem keeps its state after the process exits, so this runs ONCE
+# per power cycle (§31.3).  A second run gets -1 / -8 and a second device.
+
+# ---- device 1, input source 3 -------------------------------------------
+0x8028c301 0x00000000
+0x4028c302 0x00000001 0xa9000000
+load $0 0x09000000
+0x8028c305 $0 0x00000003
+0x8028c365 0x00000000 0x00000001
+0x8028c365 0x00000001 0x00000001
+0x8028c364 0x00000000 0x00000001
+0x8028c364 0x00000001 0x00000001
+
+# ---- device 2, input source 3 -------------------------------------------
+0x4028c302 0x00000001 0xa9000000
+load $4 0x09000000
+0x8028c348 $4 0x00000001
+0x8028c305 $4 0x00000003
+
+# device 2's filters live on the OTHER node (state is per open)
+dev /dev/val_demux1
+0x8028c30b 0x00000007 0xa9000040 $4 0xa9000044
+load $6 0x09000044
+0x8028c30b 0x00000006 0xa9000040 $4 0xa9000044
+load $7 0x09000044
+dev /dev/val_demux
+0x8028c30c $6 0x00000000
+0x8028c330 $4 0x00000001 0x00000002 0x00000005 0xa90000e8
+load $3 0x090000e8
+0x8028c332 $6 0x00000001
+0x8028c30d $6 0x00000001
+# nr=0x33 / nr=0x34 need device 2's filters to exist first (§34.4)
+0x8028c333 $3 0x00000000
+0x8028c334 $3 0x00000000
+
+# ---- device 3 is created on the other node, then given source 4 ---------
+dev /dev/val_demux1
+0x4028c302 0x00000001 0xa9000000
+load $5 0x09000000
+dev /dev/val_demux
+0x8028c305 $5 0x00000004
+
+# ---- device 1: the payload filter path ----------------------------------
+0x8028c30b 0x00000006 0xa9000040 $0 0xa9000044
+load $7 0x09000044
+0x8028c319 $7 0xa9000088
+0x8028c326 $7 0xad000000 0x00020000 0xa90000b8
+0x8028c3c9 0x00000007 0x00000001
+0x8028c3c9 0x00000008 0x00000001
+
+# ---- device 1: one PID filter and one buffer ----------------------------
+0x8028c30b 0x00000007 0xa9000040 $0 0xa9000044
+load $1 0x09000044
+0x8028c314 0x00000000 0xa9000054 $0 0x00000000
+load $2 0x09000054
+0x8028c31a $2 0xa900008c
+0x8028c32b $2 0xac000000 0x00003000 0xa90000d0
+
+# ---- the vendor's read cycle (§33.2) ------------------------------------
+# Order matters: start the buffer BEFORE binding and before setting the PID.
+0x8028c315 0xa9000058 $2
+0x8028c32e $2
+0x4028c32f $2
+0x8028c316 $1 $2
+0x8028c30c $1 0x00000000
+0x8028c333 $3 0x00000000
+0x8028c30d $1 0x00000001
+0x8028c36a 0x00000000
+0x8028c36a 0x00000000
+hold 3
+0x4028c32f $2
+hold 5
+0x4028c32f $2
+
+# ---- still unsolved: the three that look like the TS input port ---------
+# These return -3 no matter what (§34.3, §34.4).  Left here so the next
+# attempt starts from the same place.
+0x8028c30a 0x00000000 0xa9000038 $0 0xa900003c
+0x8028c347 $0 0x00000000 0x00006978 0x00000003 0x00000064
+0x8028c367 $0 0x00000000 0x00000001 0x00000003 0x00000000
