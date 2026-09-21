@@ -13,6 +13,7 @@
 """
 import glob
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -28,6 +29,12 @@ sys.path.insert(0, os.path.dirname(HERE))
 import spec_status                   # noqa: E402
 from ird import rdhb, v1b, zipcrypto  # noqa: E402
 from ird.board import h              # noqa: E402
+
+# scripts/extract-mbin.py はハイフン入りの実行スクリプトなので、パス指定で読み込む。
+_mbin_spec = importlib.util.spec_from_file_location(
+    "openird_extract_mbin", os.path.join(ROOT, "scripts", "extract-mbin.py"))
+mbin = importlib.util.module_from_spec(_mbin_spec)
+_mbin_spec.loader.exec_module(mbin)
 
 for _s in (sys.stdout, sys.stderr):
     if hasattr(_s, "reconfigure"):
@@ -360,6 +367,66 @@ def test_rdhb():
     check("name を保持", f["name"] == rdhb.NAME_DEFAULT.encode())
 
 
+
+# --- MBIN（走査と構造・合成コンテナで） -------------------------------------
+
+def _mbin_build(segments, entry=0x40010000, fmt=b"1", hdr_len=16, bad_cs=False):
+    """仕様どおりの MBIN を組む（テスト用。ベンダのデータは使わない）。"""
+    body = b""
+    for addr, data in segments:
+        pad = (-len(data)) % 4
+        body += (b"S" + len(data).to_bytes(3, "big") + addr.to_bytes(4, "big")
+                 + data + b"\x00" * pad)
+    cs = sum(body) & 0xFF
+    if bad_cs:
+        cs ^= 0xFF
+    return (b"M" + fmt + bytes([hdr_len, len(segments)])
+            + entry.to_bytes(4, "big") + len(body).to_bytes(3, "big")
+            + bytes([cs]) + b"\x00" * 4 + body)
+
+
+def test_mbin():
+    print("[mbin] MaxLinear ファーム容器")
+    segs = [(0x3FFE0000, bytes(range(256)) * 4),      # 1024B（4 の倍数）
+            (0x3FFE2900, b"\xa5" * 601),              # 601B（4 の倍数でない）
+            (0x40000010, b"\x5a" * 32)]
+    blob = _mbin_build(segs)
+
+    # 4 バイト整列: 601 は 604 に丸められる。ヘッダ 3 個 + データで image_size が決まる。
+    want = 3 * 8 + 1024 + 604 + 32
+    check("image_size は 4 バイト整列後の合計", int.from_bytes(blob[8:11], "big") == want,
+          "%d != %d" % (int.from_bytes(blob[8:11], "big"), want),
+          spec="mbin-firmware-container#3")
+
+    got = mbin.parse_at(blob, 0)
+    check("妥当な容器を受理する", got is not None, spec="mbin-firmware-container#2")
+    hdr, parsed, out = got
+    check("全長 = 16 + image_size", len(out) == 16 + want, spec="mbin-firmware-container#2")
+    check("entry_address を読む", hdr["entry_address"] == 0x40010000,
+          spec="mbin-firmware-container#2")
+    check("セグメントのアドレスと長さを読む",
+          parsed == [(a, len(d)) for a, d in segs], spec="mbin-firmware-container#3")
+
+    # チェックサムが合わない容器は落ちる＝走査の自己検証が効いている
+    check("チェックサム不一致は弾く", mbin.parse_at(_mbin_build(segs, bad_cs=True), 0) is None,
+          spec="mbin-firmware-container#4")
+    check("fmt_version が '1' でないものは弾く",
+          mbin.parse_at(_mbin_build(segs, fmt=b"2"), 0) is None,
+          spec="mbin-firmware-container#2")
+    check("header_len が 16 でないものは弾く",
+          mbin.parse_at(_mbin_build(segs, hdr_len=20), 0) is None,
+          spec="mbin-firmware-container#2")
+
+    # 走査: 前後にごみを付けても 1 個だけ見つかる。'M1' の空振りも混ぜる。
+    noise = b"M1" + b"\x00" * 64 + b"M1no such header" * 8
+    found = mbin.scan(noise + blob + noise)
+    check("走査で 1 個だけ見つかる", len(found) == 1, "%d 個" % len(found),
+          spec="mbin-firmware-container#5")
+    check("見つけた位置が正しい", found and found[0][0] == len(noise),
+          spec="mbin-firmware-container#5")
+    check("切り出した中身が一致する", found and found[0][3] == blob,
+          spec="mbin-firmware-container#6")
+
 # --- 任意: 純正コンテナに対するオラクル検証 ---------------------------------
 
 def test_samples():
@@ -398,6 +465,7 @@ def main():
     test_repack()
     test_zipcrypto()
     test_rdhb()
+    test_mbin()
     test_samples()
     test_spec_declarations()
     print()
