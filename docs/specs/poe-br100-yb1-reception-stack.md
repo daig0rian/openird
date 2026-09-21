@@ -424,10 +424,17 @@ reg 0x3029 = round(f_center_MHz * 64)        単位 = 1/64 MHz = 15.625 kHz
   Cn(dB):   33   32   31   31   31   30   30   29   28   28
 ```
 
-**換算式は未確定。** 観測できた C/N が 28〜33 dB の狭い範囲なので、対数則
-（`Cn = K − 10log10(raw)`）と直線則が区別できない。実際 `Cn = K − 10log10(raw)` は
-K が 58.2〜60.5 とばらつき、床関数・四捨五入のどちらでも全点を満たす K が無い。
-範囲を広げる（アッテネータを入れる等）まで保留。
+**換算式は未確定。理由も分かった。** アッテネータを入れて範囲を広げようとしたが
+（§5.5）、C/N は 1 dB ほどしか動かず 27〜33 dB のまま（raw 536〜1332）。
+`Cn = K − 10log10(raw)` の K は 58.10〜60.39 と 2.3 dB ばらつく。
+
+ばらつきの正体は **`0x112d` が瞬時値で、`Cn` は平滑された値**であること。同じ
+チャンネルを 2 回測ると raw は 869 → 646、967 → 1089 と大きく動くのに `Cn` は ±1 しか
+動かない。∴ 両者は同時刻の対ではなく、この採り方では式を当てられない。
+
+**段階 C への実務的な結論**: chardev の品質値としては `0x112d` の単調性で足りる
+（値が小さいほど良い）。dB への正確な較正が要るなら、固定条件で raw を多数回
+平均する測定系か、信号発生器が要る。
 
 **★ `SignalStrength` は独立した測定値ではない。** 10 点すべてで
 
@@ -529,7 +536,40 @@ C/N とロック状態）。
 置くと `UPnPError 501 Action Failed` を返す（起動直後・未選局でも同じ）。
 ∴ 観察では「選局 → すぐ読む」を対にする。
 
-### 5.4 この個体はチャンネルスキャン未実施
+### 5.5 現在の設定は ContentDirectory から読める（2026-09-21）
+
+`X_SetTunerSetting` には対になる Get が無いが、**ContentDirectory の
+ObjectID `321`**（`32` = "System Info" の下、`object.item.textItem.tunerInfo`）に
+現在値が出る。∴ 設定を変える実験を**読み戻して確かめ、確実に戻せる**。
+
+```
+Browse(ObjectID=32, BrowseDirectChildren) →
+  320  object.item.textItem.cardInfo     （BCAS カード情報。§0 によりスコープ外）
+  321  object.item.textItem.tunerInfo
+        deviceName / serialNumber(伏字) / fwVersion
+        attenuator  = 0    ← 現在値
+        powerSupply = 1    ← 現在値
+        storageState / storage*(容量) / areaCode ほか
+```
+
+**`X_SetTunerSetting` の綴りは `ON` / `OFF`（大文字）**。実測した挙動:
+
+| 渡した値 | 応答 | 実際 |
+|---|---|---|
+| `false`/`true`, `off`/`on`, `0`/`1`, `disable`/`enable`, `no`/`yes` | **402** Invalid Args | 変化なし |
+| **`OFF`/`ON`** | **501** Action Failed | **適用される** |
+
+- 402（引数が不正）と 501（引数は解釈できたが失敗）の違いが綴りを教えてくれた。
+- **501 を返すのに設定は効く**（`attenuator` 0→1、戻すと 1→0 を ObjectID 321 で確認）。
+  呼び出し側から見ると失敗に見えるので注意。
+- **選局セッションが生きている間でないと効かない**。`X_SetTuning` の直後に投げる
+  必要がある（セッション無しだと 501 を返して何も起きない）。
+- 出力は `0`/`1`、入力は `OFF`/`ON` と**表記が違う**。
+- `PowerSupply` はアンテナ給電。触らないときは読んだ現在値に対応する綴りを渡す。
+
+この機種ではアッテネータを入れても C/N は 1 dB ほどしか動かなかった（§4.3）。
+
+### 5.6 この個体はチャンネルスキャン未実施
 
 `/app/setting/DTVS_ChannelList.data` / `DTVS_ServiceList.data` はいずれも 12 バイトの
 全ゼロ。BS/CS 側も 16 バイトの空。∴ 番組表・サービス ID 経由の経路は使えず、
