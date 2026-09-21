@@ -297,7 +297,61 @@ I2C ゲートの向こうに居る**と分かったので、**`0x60` が復調�
 `0x60` の品種は未確定。素直なレジスタ読みでは中身が出ないので、正しいアクセス
 手順（サブアドレス方式など）が要る。
 
-### 4.2 検討して否定した筋（記録）
+### 4.2 バスを直接ログする（2026-09-21・成立）
+
+`blur` は `/dev/i2c-N` を開かない（§3.1）ので、ユーザランドからはバイト列が採れない。
+そこで **GPL の i2c アルゴリズムドライバ `i2c-algo-emma` を自前でビルドし直し、
+転送ログを足して差し替えた**。ベンダのモジュールには一切触れていない。
+
+成立の条件は 3 つとも満たされている:
+
+- ベンダの `.ko` は **`MODVERSIONS=n`**（`__versions` セクションが無い）＝vermagic が
+  合えば載る。
+- 実機の `.config` が **`/proc/config.gz`** から取れる（`CONFIG_IKCONFIG_PROC=y`）。
+  GPL ドロップに emma3sep の defconfig は無いので、これが無ければ詰んでいた。
+- 自前ビルドの vermagic（`2.6.27.39 preempt mod_unload MIPS32_R2 32BIT`）と
+  **未定義シンボルがベンダ `.ko` と完全一致**することを機械で確認した。
+
+差し替えは**先に load した方が勝つ**性質を使う。`rcS` の OpenIRD ブロック
+（`setup.sh` の直前）で自前の `i2c-algo-emma.ko` を `insmod` しておくと、後から
+`blur` が入れるベンダ版は `EEXIST` で失敗し、ベンダの `i2c-emma.ko` は**自前の
+algo に bind する**。∴ app 区画（mtd4）には手を触れずに済む。
+
+- 手順とビルドは `scripts/build-yb1-kmod.sh`、patch は
+  `br-ext-chip-renesas/board/emma3sep/kernel/patches/`。
+- ログは既定で**無効**（module param `trace=0`）。有効化は
+  `/app/setting/openird-i2ctrace`（永続区画）を置いて再起動、または
+  `/sys/module/i2c_algo_emma/parameters/trace`。
+- カーネルのログバッファは **16KB しかない**（`CONFIG_LOG_BUF_SHIFT=14`）ので、
+  採取中は実機側で `dmesg -c` を 20ms 間隔で回して tmpfs に吸い出す
+  （busybox の `sleep` は小数を取らない。`usleep 20000` を使う）。
+
+### 4.3 MXL683 のレジスタアクセス方式（2026-09-21・実測）
+
+選局 1 回（地上 503MHz・ロックまで）で **826 メッセージ**、すべて `0x60` 宛て。
+内訳は **4 バイト書き 432 回 / 2 バイト読み 394 回**。並びから形が読める:
+
+```
+W addr=0x60 len=4  ff fb a8 0a     ← 読みたいレジスタ番号を 0xfffb に書く
+R addr=0x60 len=2  00 00           ← 値が 2 バイトで返る
+
+W addr=0x60 len=4  30 1e 00 00     ← 書き込みは [reg_hi reg_lo val_hi val_lo]
+W addr=0x60 len=4  30 03 0f 89
+```
+
+∴ **レジスタは 16bit アドレス・16bit 値**。書き込みは 4 バイト 1 トランザクション、
+読み出しは「`0xfffb` に対象レジスタ番号を書く → 2 バイト読む」の 2 トランザクション。
+`0xfffb` は読み出し先を選ぶ特別なレジスタとして働いている。
+
+起動時（選局前）には同じ `0x60` 宛てに **48 バイトの書き込みが連続**する。先頭が
+`e4 02 … 2c` `e5 02 … 2c` `e6 02 … 2c` と 1 ずつ進むブロック列で、
+`MxLWare68x_API_CfgDevFirmwareDownload`（§2.2）＝**チップ内 RAM へのファーム転送**と
+みて整合する。
+
+これで段階 C に必要な「バス上の事実」を採る経路が開いた。残るのは、この列を
+**意味のある手順として仕様化する**こと（どのレジスタが何を決めるか）。
+
+### 4.4 検討して否定した筋（記録）
 
 - **PIIC2 説は否定**。SoC の I2C は 3 本ある（u-boot `emmaregs.h`:
   `PTOP_PIIC0/1/2_BASE_OFS` = `0x7000`/`0x8000`/`0x9000`、`PBRD_BASE=0x10100000`
@@ -427,7 +481,7 @@ AV サブシステム（`csd` / `val_merge` / `CSD_*` 割り込み）はこの�
      と、`fe_common_drv` の `demod_saddr=… tuner_slv=…` printk。`/dev/fe_main` の
      ioctl（名前は `DEMOD_*`・§2.2）から届くはずで、**blur はこの chardev を
      使っていない**＝試しても受信を乱しにくい。ioctl 番号の割り出しが課題。
-   - UPnP 経由でログレベルを上げる筋は否定済み（§4.2）。
+   - UPnP 経由でログレベルを上げる筋は否定済み（§4.4）。
 2. **MXL683 のファーム**。`CfgDevFirmwareDownload` が要求する blob が `blur` の
    どこにあり、どう渡されるか（§2.2）。段階 C の実行時依存になる。
 3. ~~`/dev/fe_main` の ioctl 契約~~ — **解決（否定的に）**。`fe_main` は使われない（§3.1）。

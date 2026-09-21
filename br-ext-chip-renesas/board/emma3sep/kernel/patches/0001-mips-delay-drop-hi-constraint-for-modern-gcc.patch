@@ -1,0 +1,50 @@
+From: OpenIRD contributors
+Subject: [PATCH] mips: delay: spell the HI-register multiply in C so modern gcc builds it
+
+GCC dropped the MIPS "h" (HI register) asm constraint after 4.3, so this
+tree does not build with the pinned gcc 4.9.4: every file that reaches
+udelay() fails with
+
+  include/asm/delay.h:81:3: error: impossible constraint in 'asm'
+     __asm__("multu\t%2, %3"
+
+The asm computes the high word of the 32x32 product.  Say that in C and
+let the compiler choose the instruction -- it still emits multu/mfhi, so
+the arithmetic and therefore the delay are unchanged.  Only the 32-bit
+branch is touched; the 64-bit ones are dead code on this SoC
+(CONFIG_32BIT=y) and are left alone.
+
+Upstream fixed this differently, by moving __udelay out of line into
+arch/mips/lib/delay.c (v2.6.33 era), which also changed the scaling
+constant.  We keep this tree's constant so the timing stays exactly what
+the vendor kernel had.
+
+Origin: gpl-derived
+---
+--- a/include/asm-mips/delay.h
++++ b/include/asm-mips/delay.h
+@@ -77,12 +77,18 @@
+ 	                           0x80000000ULL) >> 32);
+ #endif
+ 
+-	if (sizeof(long) == 4)
+-		__asm__("multu\t%2, %3"
+-		: "=h" (usecs), "=l" (lo)
+-		: "r" (usecs), "r" (lpj)
+-		: GCC_REG_ACCUM);
+-	else if (sizeof(long) == 8 && !R4000_WAR)
++	if (sizeof(long) == 4) {
++		/*
++		 * The high word of the 32x32 product -- exactly what the
++		 * "multu + =h" asm produced.  Spelled in C because gcc
++		 * dropped the MIPS "h" (HI register) constraint after 4.3;
++		 * the compiler still emits multu/mfhi here.
++		 */
++		unsigned long long prod;
++
++		prod = (unsigned long long) usecs * (unsigned long long) lpj;
++		usecs = (unsigned long) (prod >> 32);
++	} else if (sizeof(long) == 8 && !R4000_WAR)
+ 		__asm__("dmultu\t%2, %3"
+ 		: "=h" (usecs), "=l" (lo)
+ 		: "r" (usecs), "r" (lpj)

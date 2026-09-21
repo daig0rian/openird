@@ -1,0 +1,77 @@
+From: OpenIRD contributors
+Subject: [PATCH] i2c-algo-emma: add an optional bus trace
+
+The vendor application on POE-BR100-YB1 drives the MXL683 front end over
+this adapter, but it never opens /dev/i2c-N -- it goes through its own
+/dev/io_controller and the transfers happen inside the kernel.  So the
+byte stream that would tell us how the chip is programmed is invisible to
+a userland tracer.
+
+Log it in the algorithm layer instead, where every message passes exactly
+once.  The trace is a module parameter and defaults to off, so with
+trace=0 the module behaves exactly like the stock one; it can be turned on
+at runtime through /sys/module/i2c_algo_emma/parameters/trace.
+
+Only the byte stream on the wire is recorded -- addresses, direction,
+length and data.  That is observation of the bus, not of the vendor's code.
+
+Origin: gpl-derived
+---
+--- a/drivers/i2c/algos/i2c-algo-emma.c
++++ b/drivers/i2c/algos/i2c-algo-emma.c
+@@ -327,6 +327,46 @@
+ 	return 0;
+ }
+ 
++/*
++ * OpenIRD: optional bus trace for stage-B observation.
++ *
++ * The vendor application drives the demodulator over this adapter but never
++ * opens /dev/i2c-N, so the byte stream is not visible from userland.  Log it
++ * here instead.  Off by default: with trace=0 this module behaves exactly
++ * like the stock one.
++ *
++ *   insmod i2c-algo-emma.ko trace=1
++ *   echo 1 > /sys/module/i2c_algo_emma/parameters/trace
++ */
++static int trace;
++module_param(trace, int, S_IRUGO | S_IWUSR);
++MODULE_PARM_DESC(trace, "log every I2C message: 0 off, 1 on");
++
++#define EMMA_TRACE_MAX 32
++
++static void emma_trace_msg(struct i2c_adapter *i2c_adap, int i, int num,
++			   const struct i2c_msg *m, int ret)
++{
++	char buf[EMMA_TRACE_MAX * 3 + 8];
++	int n = 0, k, lim;
++
++	if (!trace)
++		return;
++
++	lim = (m->len < EMMA_TRACE_MAX) ? m->len : EMMA_TRACE_MAX;
++	if (m->buf)
++		for (k = 0; k < lim; k++)
++			n += sprintf(buf + n, " %02x", m->buf[k]);
++	if (lim < m->len)
++		n += sprintf(buf + n, " ..");
++	buf[n] = 0;
++
++	printk(KERN_INFO "i2c-emma%d: %d/%d %s addr=0x%02x len=%d ret=%d%s\n",
++	       i2c_adap->nr, i + 1, num,
++	       (m->flags & I2C_M_RD) ? "R" : "W",
++	       m->addr, m->len, ret, buf);
++}
++
+ static int emma_xfer(struct i2c_adapter *i2c_adap,
+ 		     struct i2c_msg msgs[], int num)
+ {
+@@ -419,6 +459,8 @@
+ 					     (i + 1 == num));
+ 		}
+ 
++		emma_trace_msg(i2c_adap, i, num, pmsg, ret);
++
+ 		DEB2(printk(KERN_DEBUG "transferred %d bytes of %d -- %s\n",
+ 					ret, pmsg->len, ret != pmsg->len ? "FAIL" : "succeeded"));
+ 	}

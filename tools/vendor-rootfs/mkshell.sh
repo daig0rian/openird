@@ -119,6 +119,14 @@ fakeroot -- bash -euc '
 			echo "if [ -f /app/setting/openird-trace ] ; then"
 			echo "  export LD_PRELOAD=/opt/openird/yb1_trace.so"
 			echo "fi"
+			# Our rebuilt i2c algorithm module has to be in place before the
+			# vendor application loads its own copy: whoever is first wins,
+			# and the vendor bus driver then binds to ours.
+			echo "if [ -f /app/setting/openird-i2ctrace ] ; then"
+			echo "  for m in /opt/openird/*.ko ; do"
+			echo "    [ -f \"\$m\" ] && insmod \"\$m\" trace=1"
+			echo "  done"
+			echo "fi"
 		fi
 		echo "# --- end OpenIRD ---"
 	} > "$W/block"
