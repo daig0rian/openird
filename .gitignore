@@ -69,6 +69,8 @@ tools/fapex-ts/fapex-ts
 tools/fapex-i2c/fapex-i2cd
 # fapex-poke build artifact (source-only in repo)
 tools/fapex-poke/fapex-poke
+# yb1-i2c build artifact (source-only in repo)
+tools/yb1-i2c/yb1-i2c
 
 # Python のバイトコードキャッシュ
 __pycache__/
