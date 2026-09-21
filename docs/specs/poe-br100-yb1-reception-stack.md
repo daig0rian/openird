@@ -569,11 +569,91 @@ Browse(ObjectID=32, BrowseDirectChildren) →
 
 この機種ではアッテネータを入れても C/N は 1 dB ほどしか動かなかった（§4.3）。
 
-### 5.6 この個体はチャンネルスキャン未実施
+### 5.7 純正 PC クライアントのキャプチャから確定した事実（2026-09-21）
 
-`/app/setting/DTVS_ChannelList.data` / `DTVS_ServiceList.data` はいずれも 12 バイトの
-全ゼロ。BS/CS 側も 16 バイトの空。∴ 番組表・サービス ID 経由の経路は使えず、
-**周波数直指定（§5.1）が観察の唯一の入口**。
+初期設定のチャンネルスキャンから NHK 総合の視聴開始までを、PC クライアントと
+実機の間で採ったパケットキャプチャ（`tshark` で解析）。**UPnP 制御は 49152 番の
+平文 HTTP** なので、要求も応答もそのまま読める。
+
+#### `X_StartChannelScan` の実引数
+
+```xml
+<BroadcastWave>tb</BroadcastWave>
+<Range>0</Range>
+<FrequencyList>0</FrequencyList>
+<TransportStreamIDs>0</TransportStreamIDs>   ← SCPD の宣言は TransportStreamIDList
+<ScanType>initial</ScanType>
+<AreaCode>23</AreaCode>
+→ <ReportContainerID>33201</ReportContainerID><ScanID>1</ScanID>
+```
+
+- **引数名が SCPD の宣言と食い違う**（`TransportStreamIDs` vs `TransportStreamIDList`）。
+  それでも通るので、実装は名前ではなく順序で読んでいると見られる。
+- `Range` / `FrequencyList` / `TransportStreamIDs` はいずれも `0`＝全帯域おまかせ。
+- 進捗は `ReportContainerID`（33201）を Browse して読む。DIDL の
+  `object.item.textItem.progressInfo` が流れ、`tunerState` も併せて更新される。
+
+#### `AreaCode` = **23**（東京）
+
+クライアントの画面で「東京」を選んだときの値。スキャン後、実機の
+`tunerInfo`（§5.5）の `areaCode` も **23** になっていることを確認した。
+
+**この符号の全体表は未確定。** `blur` には都道府県名の文字列表があり、並びは
+ARIB の地域順（北海道 7 分割 → 東北 → 関東 …）だが、**その添字では東京は 13/14
+番目**で 23 にならない。∴ 名前表と符号は別物。`blur` には
+`AREA SETTING : areaCode [%d], wideAreaCode [%d]` という出力があり、
+県域符号と広域符号の 2 本立てらしい。他エリアの値が要るときは、同じ要領で
+クライアントの選択を捕まえるのが確実。
+
+#### スキャン結果＝チャンネル一覧（東京・42 件）
+
+`res` の URL に **周波数(整数 MHz)・TSID・サービス ID** がそのまま入る:
+
+```
+http://<ip>:50125/live.TB.<freq_MHz>.<tsid>.<serviceId>.dtcp&quality=AVC-MID-RES
+```
+
+| 局 | freq(MHz) | 物理ch | TSID | 主なサービス ID |
+|---|---|---|---|---|
+| NHK 総合 1・2 | 557 | 27 | `0x7fe0` | `0x0400` / `0x0401` |
+| NHK E テレ 1〜3 | 551 | 26 | `0x7fe1` | `0x0408`〜`0x040a` |
+| 日テレ | 545 | 25 | `0x7fe2` | `0x0410`/`0x0411`/`0x0414` |
+| テレビ朝日 | 539 | 24 | `0x7fe5` | `0x0428`〜`0x042a` |
+| テレ東 | 533 | 23 | `0x7fe6` | `0x0430`〜`0x0432` |
+| TBS | 527 | 22 | `0x7fe3` | `0x0418`/`0x0419` |
+| フジテレビ | 521 | 21 | `0x7fe4` | `0x0420`〜`0x0422` |
+
+§4.3 の周波数レジスタの検証で使った周波数と一致する。
+
+#### 視聴開始＝`.at1` はペアリング済みのヘッダが要る
+
+```
+GET /live.TB.557.7fe0.0400.at1&resolution=1280x720&videoBitrate=6000,6000,5500,5000&dualMono=LL
+  AT-ClientUID: <32 hex>
+  AT-ClientID:  <32 hex>
+→ HTTP/1.1 200 OK
+  Content-Type: video/X-atd1
+  Transfer-Encoding: chunked
+```
+
+- `.at1` は**この 2 つのヘッダが無いと通らない**（ヘッダ無しの素の GET が 405 に
+  なるのはこのため）。値は事前の `X_RequestPairing` → `X_AuthenticatePairing`
+  （128〜150 バイトの hex を往復するチャレンジ/レスポンス）で得る。
+- **中身は生 TS ではない。** `resolution` / `videoBitrate` を取る＝トランスコード
+  済みで、本文は高エントロピー（MPEG-TS の同期バイト列が立たない）＝暗号化されて
+  いる。∴ 「UPnP から生 TS は出ない」（§0 の前提）は変わらない。
+- ペアリングの中身は DRM 隣接なので**解析しない**。OpenIRD は自前の chardev を
+  作る側なので、この経路を再現する必要がそもそも無い。
+
+### 5.6 この個体はチャンネルスキャン未実施（キャプチャ前の状態）
+
+**§5.7 のキャプチャを採る前の状態。** `/app/setting/DTVS_ChannelList.data` /
+`DTVS_ServiceList.data` はいずれも 12 バイトの全ゼロ、BS/CS 側も 16 バイトの空
+だった。∴ 番組表・サービス ID 経由の経路が使えず、**周波数直指定（§5.1）が
+観察の唯一の入口**だった。§4.3 の測定はすべてこの状態で採っている。
+
+その後 §5.7 でスキャンを実施したので、現在はチャンネル一覧が入っている。
+観察を同じ条件で再現したいときは、この違いに注意する。
 
 ## 6. EMMA の裏 CPU ファーム
 
