@@ -1,5 +1,13 @@
 # ベンダファームの起動連鎖と工場モード（SB-TV02-WFPL）
 
+<!-- openird-spec
+Status: reference
+As-of:  実機 SB-TV02-WFPL の起動ログと平文スクリプト
+Impl:   -
+Tests:  -
+Note:   起動連鎖の記述。直接の実装対象ではない
+-->
+
 <!-- Open 層: 所有者の実機ダンプ（mtd6 rootfs / mtd7 slot0 の squashfs）に含まれる
      シェルスクリプトの読み取りと、ELF の文字列抽出（strings）のみ。逆アセ由来の
      内部ロジック・具体アドレスは置かない。シリアルコンソールでの起動観察は所有者

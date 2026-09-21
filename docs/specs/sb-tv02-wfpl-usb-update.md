@@ -1,5 +1,13 @@
 # SB-TV02-WFPL USB 更新機構（end-user factory 経路）
 
+<!-- openird-spec
+Status: specified
+As-of:  実機 SB-TV02-WFPL の平文 dump
+Impl:   -
+Tests:  -
+Note:   外側 .full ラッパ（Updater_decode）が未解明＝HOLD H2/H3。純正 .full 入手待ち
+-->
+
 <!-- Open 層: 実機ダンプ内の平文スクリプト読解（rootfs=mtd6 の /etc/init.d/rcS・/etc/inittab、
      slot0=mtd7 の slot_entry.sh・app/update）と dione_server usage（§8.6）由来。
      逆アセは含まない。PII（MAC/SN/WiFiキー）無し。

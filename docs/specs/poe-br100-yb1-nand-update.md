@@ -1,5 +1,13 @@
 # POE-BR100-YB1 NAND 更新機構（emma3sep・factory 経路の書き込み側）
 
+<!-- openird-spec
+Status: verified
+As-of:  純正 BLUR v2.1.17 の復号平文 / GPL 2.6.27.39 / 実機 POE-BR100-YB1 (2026-09-21)
+Impl:   host/openird-mkimage/boards/poe-br100-yb1.json
+Tests:  tests/mkimage/
+Note:   §3.2 の write.sh 生成（pack-factory）と §5 の 512Mb 機は未実装
+-->
+
 <!-- Open 層: 機器内の平文シェルスクリプト読解（更新・容量別書き込み・後始末の各スクリプト）
      ＋ GPL ソース（nand_emma_ptt_*.h の区画表、ビルド Makefile の squashfs 上限定数、
      u-boot の main_loop）＋ ブートログ実測。逆アセ由来の内部ロジックは書かない。

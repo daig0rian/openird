@@ -23,7 +23,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 MKIMAGE = os.path.join(ROOT, "host", "openird-mkimage")
 sys.path.insert(0, MKIMAGE)
+sys.path.insert(0, os.path.dirname(HERE))
 
+import spec_status                   # noqa: E402
 from ird import rdhb, v1b, zipcrypto  # noqa: E402
 from ird.board import h              # noqa: E402
 
@@ -32,9 +34,16 @@ for _s in (sys.stdout, sys.stderr):
         _s.reconfigure(encoding="utf-8")
 
 _fail = []
+_cited = set()          # テストが引いた仕様の節（"<slug>#<節>"）
 
 
-def check(name, cond, detail=""):
+def check(name, cond, detail="", spec=None):
+    """spec= で docs/specs の節を引く。引用は文字列の解析ではなく構造化された引数。
+
+    ここで集めた実測を、最後の [spec] 段が各仕様の Status 宣言と突き合わせる。
+    """
+    if spec:
+        _cited.add(spec)
     print("  %s %s%s" % ("✓" if cond else "✗", name, ("  — " + detail) if detail and not cond else ""))
     if not cond:
         _fail.append(name)
@@ -57,8 +66,9 @@ def test_boards():
                 gap = "mtd%d offset 0x%x != 0x%x" % (p["mtd"], h(p["offset"]), pos)
                 break
             pos = h(p["offset"]) + h(p["size"])
-        check("区画が隙間なく連なる", gap is None, gap or "")
-        check("区画の総和 = NVM 容量", pos == total, "0x%x != 0x%x" % (pos, total))
+        check("区画が隙間なく連なる", gap is None, gap or "", spec="poe-br100-yb1-nand-update#1")
+        check("区画の総和 = NVM 容量", pos == total, "0x%x != 0x%x" % (pos, total),
+              spec="poe-br100-yb1-nand-update#1")
         check("全区画が消去ブロック境界",
               all(h(p["offset"]) % erase == 0 and h(p["size"]) % erase == 0
                   for p in b["partitions"]))
@@ -77,15 +87,17 @@ def test_boards():
             off, wlen, elen = h(im["write_offset"]), h(im["write_len"]), h(im["erase_len"])
             po, ps = h(p["offset"]), h(p["size"])
             check("%s: 書き込み先が mtd%d の中" % (im["name"], im["mtd"]),
-                  off == po and wlen <= ps, "0x%x/0x%x vs 0x%x/0x%x" % (off, wlen, po, ps))
-            check("%s: 消去長 >= 書き込み長" % im["name"], elen >= wlen)
+                  off == po and wlen <= ps, "0x%x/0x%x vs 0x%x/0x%x" % (off, wlen, po, ps),
+                  spec="poe-br100-yb1-nand-update#2")
+            check("%s: 消去長 >= 書き込み長" % im["name"], elen >= wlen, spec="poe-br100-yb1-nand-update#2")
             check("%s: 消去長が区画を越えない" % im["name"], elen <= ps)
             if prev_end is not None:
                 check("%s: 消去範囲が前区画と連なる" % im["name"], off == prev_end,
                       "0x%x != 0x%x" % (off, prev_end))
             prev_end = off + elen
         check("OpenIRD が書くのは kernel と rootfs のみ",
-              sorted(im["mtd"] for im in fac["images"] if im["openird"]) == [2, 3])
+              sorted(im["mtd"] for im in fac["images"] if im["openird"]) == [2, 3],
+              spec="poe-br100-yb1-nand-update#6")
         check("OpenIRD が書く区画は policy=writable",
               all(parts[im["mtd"]]["policy"] == "writable"
                   for im in fac["images"] if im["openird"]))
@@ -100,10 +112,11 @@ def test_v1b():
     print("[v1b] ヘッダ層")
     body = bytes(range(256)) * 64          # 16384B = 16B 境界
     hdr = v1b.build_header("BLUR", (2, 1, 17), body)
-    check("ヘッダ長 332B", len(hdr) == v1b.HDR_LEN, str(len(hdr)))
+    check("ヘッダ長 332B", len(hdr) == v1b.HDR_LEN, str(len(hdr)), spec="update-v1b-container#2")
 
     p = v1b.parse(hdr + body)
-    check("族タグを復元", p["family"] == "BLUR" and p["tag"] == "BLUR_UPDATE_v1b")
+    check("族タグを復元", p["family"] == "BLUR" and p["tag"] == "BLUR_UPDATE_v1b",
+          spec="update-v1b-container#2")
     check("版数を復元", p["version"] == "2.1.17")
     check("本体長を復元", p["body_len"] == len(body))
     for nm, ok in v1b.checks(p):
@@ -112,7 +125,8 @@ def test_v1b():
     # 本体を 1 バイト壊すと h38 が合わなくなる（＝検算が効いている）
     bad = bytearray(body)
     bad[1234] ^= 0x01
-    check("本体の 1 バイト破損を検出", not v1b.sha1_ok(v1b.parse(hdr + bytes(bad))))
+    check("本体の 1 バイト破損を検出", not v1b.sha1_ok(v1b.parse(hdr + bytes(bad))),
+          spec="update-v1b-container#2")
 
     # 16B 境界でない本体は組めない
     try:
@@ -157,7 +171,8 @@ def test_v1b_crypto():
     check("ECB 復号→暗号化が往復", v1b.encrypt_body(v1b.decrypt_body(plain16, TEST_KEY), TEST_KEY) == plain16)
     check("ECB 暗号化→復号が往復", v1b.decrypt_body(v1b.encrypt_body(plain16, TEST_KEY), TEST_KEY) == plain16)
     check("ECB は位置独立（同じ平文ブロック → 同じ暗号文ブロック）",
-          v1b.encrypt_body(b"A" * 32, TEST_KEY)[:16] == v1b.encrypt_body(b"A" * 32, TEST_KEY)[16:])
+          v1b.encrypt_body(b"A" * 32, TEST_KEY)[:16] == v1b.encrypt_body(b"A" * 32, TEST_KEY)[16:],
+          spec="update-v1b-container#3")
     for bad in (b"\x00" * 15, b"\x00" * 17):
         try:
             v1b.decrypt_body(bad, TEST_KEY)
@@ -184,10 +199,10 @@ def test_v1b_crypto():
     r = v1b.unpack(container, TEST_KEY, TEST_PW)
     check("族と版数を復元", r["header"]["family"] == "BLUR" and r["header"]["version"] == "2.1.17")
     check("ペイロード名を復元", r["payload_name"] == "blur.zip")
-    check("csum が一致", r["csum_ok"])
+    check("csum が一致", r["csum_ok"], spec="update-v1b-container#4")
     check("csum のファイル名が一致", r["csum_name_ok"])
     check("ZIP 末尾の詰め物を検出", r["trailing"] == b"\x00" * pad,
-          "%r" % (r["trailing"],))
+          "%r" % (r["trailing"],), spec="update-v1b-container#6")
     got = [(e["name"], e["data"]) for e in r["entries"]]
     check("ペイロードの全ファイルが往復", got == payload_files)
 
@@ -233,7 +248,7 @@ def test_repack():
     # none: 平文をそのまま再暗号化 → バイト一致でなければならない（ECB は決定的）
     again = v1b.pack(hdr["family"], tuple(hdr["version_raw"][:3]), r["plain"], TEST_KEY,
                      h20=hdr["h20"], h30=hdr["h30"])
-    check("rebuild=none は原本とバイト一致", again == orig)
+    check("rebuild=none は原本とバイト一致", again == orig, spec="update-v1b-container#6")
 
     # zipcrypto: ペイロード ZIP は原本のまま、中間 ZIP から組み直す
     mid = v1b.build_middle_zip(r["payload_name"], r["payload_zip"], TEST_PW,
@@ -274,9 +289,11 @@ def test_repack():
         for i in pz.infolist():
             want = 0o100755 if i.filename.endswith(".sh") else 0o100644
             check("%s のモードが %s" % (i.filename, oct(want)),
-                  (i.external_attr >> 16) == want, oct(i.external_attr >> 16))
+                  (i.external_attr >> 16) == want, oct(i.external_attr >> 16),
+                  spec="update-v1b-container#5")
             check("%s が Unix 作成扱い（でないとモードが無視される）" % i.filename,
-                  i.create_system == 3, "create_system=%d" % i.create_system)
+                  i.create_system == 3, "create_system=%d" % i.create_system,
+                  spec="update-v1b-container#5")
 
     # 純正の形（store + データ記述子 + 時刻由来の check byte）で組めているか
     plain = v1b.decrypt_body(out[v1b.HDR_LEN:], TEST_KEY)
@@ -330,10 +347,10 @@ def test_rdhb():
     print("[rdhb] カーネル容器")
     image = (b"OpenIRD test image " * 1000)[:0x4000]
     img = rdhb.build(image, 0x42E08000, rdhb.NAME_DEFAULT, 0)
-    check("RDHB マジック", img[:4] == rdhb.MAGIC)
-    check("展開して元に戻る", rdhb.inflate(img) == image)
+    check("RDHB マジック", img[:4] == rdhb.MAGIC, spec="rdhb-kernel-container")
+    check("展開して元に戻る", rdhb.inflate(img) == image, spec="rdhb-kernel-container")
     f = rdhb.fields(img)
-    check("load = entry", f["load"] == f["entry"] == 0x42E08000)
+    check("load = entry", f["load"] == f["entry"] == 0x42E08000, spec="rdhb-kernel-container")
     check("展開後長の語が一致", f["uncomp_div4"] * 4 == len(image))
     # 長さは 4 バイト単位の語で入る（端数は切り捨て）。観察した純正像もそうなっている。
     check("総長の語が一致（語単位・端数切り捨て）", f["total_div4"] == len(img) // 4,
@@ -368,6 +385,12 @@ def test_samples():
     print("  族: " + ", ".join("%s=%d" % kv for kv in sorted(fams.items())))
 
 
+def test_spec_declarations():
+    """仕様の Status 宣言と、上の実測（spec= の引用）を突き合わせる。"""
+    print("[spec] docs/specs の宣言を検査")
+    _fail.extend(spec_status.check_specs(ROOT, _cited))
+
+
 def main():
     test_boards()
     test_v1b()
@@ -376,6 +399,7 @@ def main():
     test_zipcrypto()
     test_rdhb()
     test_samples()
+    test_spec_declarations()
     print()
     if _fail:
         print("✗ %d 件失敗: %s" % (len(_fail), "; ".join(_fail)))

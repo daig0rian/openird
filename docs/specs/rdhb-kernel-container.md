@@ -1,5 +1,12 @@
 # RDHB カーネルコンテナ形式（SB-TV02-WFPL / mtd5）
 
+<!-- openird-spec
+Status: verified
+As-of:  実機 SB-TV02-WFPL mtd5 ダンプ (2026-09-13)
+Impl:   host/openird-mkimage/ird/rdhb.py
+Tests:  tests/mkimage/
+-->
+
 <!-- Open 層: 実機ダンプの「データ構造」の静的読み（逆アセではない）。PII 無し。
      実装 (host/openird-mkimage pack-kernel) はこの仕様のみを根拠に書く（clean-room）。 -->
 

@@ -1,5 +1,13 @@
 # FAPex ユーザランド ↔ カーネルの契約（SB-TV02-WFPL / 段階 B の観察）
 
+<!-- openird-spec
+Status: observing
+As-of:  実機 SB-TV02-WFPL / 段階 B の観察 (継続中)
+Impl:   -
+Tests:  -
+Note:   段階 C（ird-tuner-*）の契約になる予定。観察が続いている
+-->
+
 <!-- Open 層: (1) GPL ソース(FAPexK/FAPexU)の読解と (2) 自前クリーン Linux 上で
      ベンダ blob を走らせた strace 観察のみ。逆アセ由来の内部ロジックは置かない。
      個体識別情報は伏字。将来のクリーン実装(ird-tuner-*)はこの仕様だけを根拠に書く。 -->

@@ -1,5 +1,13 @@
 # libooter env（SB-TV02-WFPL / mtd1）
 
+<!-- openird-spec
+Status: specified
+As-of:  実機 SB-TV02-WFPL mtd1 の全ダンプ
+Impl:   -
+Tests:  -
+Note:   cmdline を書き換えるツールは未実装。現状は libooter の setparam/saveparam を手で使う
+-->
+
 <!-- Open 層: 実機ダンプの静的読み（逆アセではない）。個体識別情報は伏字。
      実装（cmdline を書き換えるツール等）はこの仕様のみを根拠に書く（clean-room）。 -->
 

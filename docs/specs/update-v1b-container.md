@@ -1,5 +1,12 @@
 # 更新コンテナ形式 `<FAMILY>_UPDATE_v1b`（emma3sep 系・UPnP factory 経路）
 
+<!-- openird-spec
+Status: verified
+As-of:  BLUR v2.1.17 ほか純正 29 本 / 実機 POE-BR100-YB1 (2026-09-21)
+Impl:   host/openird-mkimage/ird/v1b.py, host/openird-mkimage/ird/zipcrypto.py
+Tests:  tests/mkimage/
+-->
+
 <!-- Open 層: ベンダ更新コンテナ 29 本の「データ構造」の静的読み（バイト統計・ハッシュ検算・
      ブロック反復の計数）＋ 機器内の平文シェルスクリプト読解 ＋ GPL ソース
      （nand_emma_ptt_*.h / ビルド Makefile の上限定数）由来。

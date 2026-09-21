@@ -15,11 +15,61 @@ clean-room のファイアウォール。観察 → 実装の間に挟む「文�
 **形式・機構の仕様**は対象を表す kebab-case 名にする（機種仕様 `spec_<board>.md` と区別）。
 機種を跨ぐ形式は機種名を冠さない。
 
-| ファイル | 対象 | 層 |
-|---|---|---|
-| [rdhb-kernel-container.md](rdhb-kernel-container.md) | SB-TV02-WFPL mtd5 のカーネル容器（RDHB） | 形式 |
-| [update-v1b-container.md](update-v1b-container.md) | emma3sep 系の更新コンテナ（UPnP factory 経路） | 形式 |
-| [sb-tv02-wfpl-usb-update.md](sb-tv02-wfpl-usb-update.md) | SB-TV02-WFPL の USB 更新（end-user factory 経路） | 機構 |
-| [sb-tv02-wfpl-libooter-env.md](sb-tv02-wfpl-libooter-env.md) | SB-TV02-WFPL の libooter env（mtd1・cmdline・MAC の所在） | 機構 |
-| [poe-br100-yb1-nand-update.md](poe-br100-yb1-nand-update.md) | POE-BR100-YB1 の NAND 書き込み（factory の書き込み側） | 機構 |
-| [sb-tv02-wfpl-stage-b-fapex.md](sb-tv02-wfpl-stage-b-fapex.md) | SB-TV02-WFPL の FAPex chardev/ioctl 契約（段階 B の観察） | 契約 |
+| ファイル | 対象 | 層 | Status |
+|---|---|---|---|
+| [rdhb-kernel-container.md](rdhb-kernel-container.md) | SB-TV02-WFPL mtd5 のカーネル容器（RDHB） | 形式 | `verified` |
+| [update-v1b-container.md](update-v1b-container.md) | emma3sep 系の更新コンテナ（UPnP factory 経路） | 形式 | `verified` |
+| [poe-br100-yb1-nand-update.md](poe-br100-yb1-nand-update.md) | POE-BR100-YB1 の NAND 書き込み（factory の書き込み側） | 機構 | `verified` |
+| [sb-tv02-wfpl-usb-update.md](sb-tv02-wfpl-usb-update.md) | SB-TV02-WFPL の USB 更新（end-user factory 経路） | 機構 | `specified` |
+| [sb-tv02-wfpl-libooter-env.md](sb-tv02-wfpl-libooter-env.md) | SB-TV02-WFPL の libooter env（mtd1・cmdline・MAC の所在） | 機構 | `specified` |
+| [sb-tv02-wfpl-vendor-boot.md](sb-tv02-wfpl-vendor-boot.md) | SB-TV02-WFPL の起動連鎖と工場モード | 機構 | `reference` |
+| [sb-tv02-wfpl-stage-b-fapex.md](sb-tv02-wfpl-stage-b-fapex.md) | SB-TV02-WFPL の FAPex chardev/ioctl 契約（段階 B の観察） | 契約 | `observing` |
+
+## 実装状態の宣言（`openird-spec` ヘッダ）
+
+各仕様は H1 の直後に機械可読のヘッダを持つ。**付け忘れはテストが落とす。**
+
+```
+<!-- openird-spec
+Status: verified
+As-of:  BLUR v2.1.17 ほか純正 29 本 / 実機 POE-BR100-YB1 (2026-09-21)
+Impl:   host/openird-mkimage/ird/v1b.py, host/openird-mkimage/ird/zipcrypto.py
+Tests:  tests/mkimage/
+Note:   （任意）節ごとの差など、enum で表せない補足
+-->
+```
+
+| Status | 意味 |
+|---|---|
+| `observing` | 観察中。仕様は未完成 |
+| `specified` | 仕様化済み・**未実装**。clean-room の正常な途中経過 |
+| `implemented` | 実装済み・実機未検証 |
+| `verified` | 実装済み・実機検証済み |
+| `reference` | 実装対象ではない観察記録 |
+| `frozen` | 対象が消えた／保留 |
+
+### 何を縛り、何を縛らないか
+
+**縛るのは片側だけ。** 「仕様が新しく実装が古い」は観察 → 仕様化 → 実装の正常な
+途中経過なので妨げない。仕様だけのコミット（`Origin: observed`）は何も要求されない。
+落とすのは次の 2 方向:
+
+- 実装していないのに `implemented` / `verified` と宣言している（**過大申告**）
+- 実装してテストまで書いたのに `specified` のまま（**宣言の更新漏れ**）
+
+∴ Status は「目安」ではなく**検証される宣言**になる。書き換えを忘れると落ちる。
+
+### テストからの引用
+
+テストは `check(..., spec="<ファイル名>#<節番号>")` で仕様の節を引く。散文の解析では
+なく構造化された引数なので、書式のゆらぎで壊れない。
+
+```python
+check("`.sh` のモードが 0755", cond, spec="update-v1b-container#5")
+```
+
+**節単位の網羅は強制しない**（§0 の鍵の扱いや §7 の未解明点のように、テストの書き
+ようが無い節があるため）。代わりに `make test-mkimage` が節ごとの被引用を報告する
+ので、埋めるべき穴は一覧で見える。
+
+検査の実体は [tests/spec_status.py](../../tests/spec_status.py)。
