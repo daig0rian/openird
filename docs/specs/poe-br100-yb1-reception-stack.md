@@ -845,7 +845,8 @@ AV サブシステム（`csd` / `val_merge` / `CSD_*` 割り込み）はこの�
 | B3 | **スクランブル解除より上流でタップできるか** | §0 の要件。`val_dscram` を通さずに TS を取り出せる必要がある |
 | B4 | `val_merge` を経由せず、自前で TS 入力〜DMA を組めるか | **段階 C の分水嶺**（下記） |
 
-**B4 が段階 C の形を決める。** 2 つの道がある:
+**B4 が段階 C の形を決める。** 2 つの道がある（**→ §11.6 で 2 に確定した**。
+AV ハードのレジスタはメイン CPU から見えないので 1 は道が無い）:
 
 1. **自前で SoC の TS 入力を叩く** — 最も綺麗だが、GPL にも公開資料にも
    レジスタ情報が無く、裏 CPU マイクロコードの領分。観察（バス・メモリ）だけで
@@ -1171,13 +1172,182 @@ AV 予約領域 **`0x09000000`〜`0x0fffffff`（112MB）を 4MB ずつ 28 回**�
 **残る問いは 1 つだけになった**: **SoC の TS 入力／デマルチプレクサのレジスタは
 どこにあり、どう設定するか。**
 
-次に効く手（安い順）:
+> **→ §11 で答えが出た。** 1 番（`.ko` のデータ節）をやったところ、レジスタの
+> アドレスは出てこなかった代わりに**構造が割れた**。**AV ハードのレジスタは
+> メイン CPU からは見えない**（裏 CPU の領分）ので、この問い自体が立たない。
+> 2 番（`0x11000000` を読む）も**やる必要が無くなった**。
+> 段階 C の形は §11.6、残る唯一の未知は §11.7。
 
-1. `val_merge.ko` / `csd.ko` の **データセクションを見る**（`objdump -h,-t,-s`＝
-   clean-room で許される範囲）。レジスタのベースアドレスが定数表にあれば当たる。
-2. `0x11000000` の窓を**用心深く読む**（1 ページずつ、32bit 読み）。未実装番地の
-   読みでバスエラーが出ても死ぬのは自前ツールだけ。ハングしたら電源で戻す。
-3. `val_demux` の ioctl を**自分で発行して**制御ページの差分を取る（ioctl ↔ ハード
-   の対応付け）。ただしこれはベンダモジュール経由なので、仕様化の材料にはなるが
-   実装そのものには使えない。
 
+## 11. AV サブシステムの構造（2026-09-21・モジュールのシンボルから確定）
+
+§10.7.6 の「次に効く手」の 1 番（ベンダ `.ko` のデータ節を見る）をやった。
+**レジスタのベースアドレスは出てこなかったが、代わりに構造そのものが割れた。**
+
+観察手段は clean-room で許された範囲のみ: `objdump -h`（`-ffunction-sections`
+ビルドなので**節名＝関数名**が全部出る）、`nm -g --defined-only`、`strings`、実機の
+`/proc/kallsyms` と `/sys/module/*/parameters`。**逆アセンブルはしていない。**
+
+### 11.1 スタックの段
+
+```
+blur (userland)
+  └─ val_merge.ko   MMAC_* API（エクスポート 669 本）
+       └─ csd.ko    コマンドスタック（= 裏 CPU へのメールボックス）
+            └─ 裏 CPU（AV ファーム。mtd5 から物理 0x00030000 へ・§6）
+                 └─ demux / descrambler / decoder のハードウェア
+```
+
+**∴ メイン CPU は AV ハードのレジスタを直接叩いていない。** 共有メモリ上の
+コマンドスタックに命令を積み、ドアベルを鳴らして裏 CPU にやらせている。
+これで §9.2 の「GPL のレジスタ表に TS / demux / AV が 1 つも無い」も、
+§10.7.3 の「`blur` が map する MMIO が配信で 1bit も動かない」も説明が付く。
+**レジスタは裏 CPU の領分で、メイン CPU からは元々見えない。**
+
+### 11.2 `csd` ＝ Command Stack Driver
+
+`nm -g --defined-only csd.ko`（全 30 シンボル）:
+
+| 種別 | シンボル |
+|---|---|
+| 裏 CPU | `Reset_SubCPU` |
+| コマンドスタック | `init_command_stack` / `Request_CmdStackArea` / `Free_CmdStackArea` |
+| 実行要求 | `Request_ApiExecute` / `Request_SpecialCmdExecute` |
+| 割り込み受け | `read_sw_int_cmdstk` / `read_sw_int_event` / `read_sw_int_fifo` / `read_sw_int_special` / `assert_int` / `set_fifoctrl_flag` |
+| コールバック | `Install_EventCallback` / `Uninstall_EventCallback` / `Install_DebugCallback` |
+| その他 | `Get_CSD_Infomation` / `csd_ioctl` / `csd_mmap` / `CSD_BASE` / `CSD_DEVID` / `CSD_MODE` / `CSD_DEBUG` |
+
+- **`sw_int` は GPL にあるレジスタ名と一致する**。`emma3sep.h` の
+  `EMMA_BHIF_SW_INT` (`0x100001a0`) / `SW_INT_EN` (`0x100001a4`) /
+  `SW_INT_CLR` (`0x100001a8`)。**∴ ドアベルは GPL 定義のレジスタ**で、
+  `blur` が BHIF ページを mmap している理由もこれで説明が付く（§10.7.3）。
+- `CSD_BASE` / `CSD_DEVID` / `CSD_MODE` / `CSD_DEBUG` は **module_param**。実機の
+  `/sys/module/csd/parameters` を読むと `0 / 0 / NORMAL / 0`。
+  **`CSD_BASE` はハードのベースアドレスではなくインスタンス番号**だった。
+- `csd_mmap` は `mknod c 252 0` して offset 0 を map すると **物理 0 番地**が出る
+  （MIPS の例外ベクタのコードが見える）。∴ csd は `/dev/mem` と同じく物理メモリを
+  見せる口で、**コマンドスタックは RAM 上の領域**。
+
+### 11.3 `val_merge` が持つ MMAC ブロック
+
+節名から数えたブロックと関数本数:
+
+| ブロック | 本数 | | ブロック | 本数 |
+|---|---|---|---|---|
+| VIDEO | 85 | | CAPTURE | 15 |
+| **DEMUX** | **71** | | BITBLT | 15 |
+| AUDIO | 63 | | PLAYBACK | 12 |
+| SCALER | 47 | | DMA | 12 |
+| VENC | 44 | | DCNV | 11 |
+| PQC | 32 | | **SCRAM** | **10** |
+| OSD | 31 | | SCARD | 10 |
+| PVR | 27 | | **RECORD** | **10** |
+| **DEMOD** | **22** | | ELU | 10 |
+| PCMCIA | 18 | | **DSCRAM** | **10** |
+| DISP | 16 | | **M2DSC** | **8** |
+
+### 11.4 ★ DEMUX は普通の MPEG-2 デマルチプレクサだった
+
+段階 C に効くものだけ抜き出す（全 71 本）:
+
+| 用途 | 関数 |
+|---|---|
+| **入力源の選択** | `MMAC_DEMUX_SetDeviceInputSource` |
+| **PID フィルタ** | `AllocateGeneralPidFilter` / `AllocateAvPidFilter` / `AllocatePcrPidFilter` / `SetPidValue` / `EnablePidFilter` / `DisablePidFilter` / `FreePidFilter` |
+| **全 PID 素通し** | `ControlHardwarePidFiltering` |
+| **DRAM リング** | `SetPidFilterBuffer` / **`GetPidFilterBufferWritePointerOffset`** / `SetPidFilterBufferWritePointerOffset` / `SetPidFilterBufferNearlyFullPointerOffset` / `ResetPidFilterBuffer` |
+| ペイロード側 | `AllocatePayloadFilter` / `SetPayloadBuffer` / `GetPayloadBufferWritePointerOffset` / … |
+| **TS 出し** | `OpenStreamOutDevice` / `SelectStreamOutGroup` / `StartStreamOut` / `StopStreamOut` |
+| 時刻 | `GetStcValue` / `GetLatchedStcValue` / `GetPcrValue` / `SetStcControlValue` / `ControlStcEvent` |
+| 状態 | `GetCapabilities` / `GetErrorStatus` / `GetPidPts` |
+
+**`SetPidFilterBuffer` ＋ `GetPidFilterBufferWritePointerOffset` は、そのまま
+「PID フィルタの出力を DRAM のリングに書き、書き込みポインタを読む」＝ px4_drv 互換
+chardev のデータ経路そのものである。** ハードウェアにその機能がある、というのが
+今回いちばん大きい。
+
+`MMAC_RECORD_*`（`OpenDevice` / `EnablePIDFilter` / `GetPacketCount` /
+`InstallCallback` / `Start` / `Stop`）も同じ性質の第 2 の経路。
+
+### 11.5 ★ デスクランブラは PID 単位の独立した段
+
+`MMAC_DSCRAM_*` は `MMAC_DEMUX_*` と**完全に別のブロック**で、自前の
+`Initialise` / `SetConfiguration` / `SetPIDFilter` / `EnablePIDFilter` /
+`DisablePIDFilter` / `SetDescrambleKey` / `SetKeyArea` / `SetDesKeyType` を持つ。
+
+**∴ デスクランブルは「その PID をデスクランブラの PID フィルタに入れたとき」だけ
+かかる。入れなければ素通しする。**
+
+これで §10.4 と §10.7.5 が繋がる:
+
+- ベンダは A/V の PID を `DSCRAM` に登録し、出力を `StreamOut` でトランスコーダへ
+  流している。だから**生 TS が DRAM に出る局面が無い**（§10.7.5）。
+- OpenIRD は `DSCRAM` を**一度も初期化しない**で、`DEMUX` の汎用 PID フィルタ
+  （あるいは `ControlHardwarePidFiltering` による全 PID 素通し）を DRAM リングに
+  向けるだけでよい。**出てくるのはスクランブルされたままの TS。**
+
+**∴ D4 は構造上「成立する」と言える。** CAS の鍵にも手順にも一切触れずに
+chardev の契約を満たせる。§0 のスコープと矛盾しない。
+
+なお `MMAC_SCRAM_*`（スクランブラ）は録画時に自機の鍵で掛け直すための段と見られる。
+**OpenIRD はどちらの段も使わない。**
+
+### 11.6 段階 C の形が決まった
+
+§9.2 の B4（自前で TS 入力を叩く / 裏 CPU を使ってその口だけ自前で叩く）は、
+**後者しか無い**と確定した。前者は「AV ハードのレジスタはメイン CPU から見えない」
+（§11.1）ので、そもそも道が無い。
+
+∴ 段階 C の `ird-tuner-poe-br100-yb1` はこうなる:
+
+1. **裏 CPU のファームは所有者の機器上のものを実行時に使う**（§1-5 と整合。
+   SB-TV02 の Dione ファームと同じ扱い）。
+2. **`csd` 相当のコマンドスタック層をクリーン実装する**。ドアベルは GPL 定義の
+   `BHIF_SW_INT`、領域は共有メモリ。
+3. **`MMAC_DEMUX` のうち §11.4 の 10 数本ぶんだけをクリーン実装する**
+   （入力源 → 汎用 PID フィルタ → DRAM リング → 書き込みポインタ）。
+   VIDEO/AUDIO/SCALER/OSD/… の 400 本超は**要らない**。
+4. **`MMAC_DSCRAM` / `MMAC_SCRAM` / `MMAC_SCARD` / `MMAC_M2DSC` は実装しない**
+   （§0）。
+
+### 11.7 残る唯一の未知＝コマンドの線上表現
+
+構造は割れたが、**コマンドスタックに積む語の並び（コマンド ID と引数のレイアウト）
+はまだ分かっていない**。これが最後の壁。
+
+観察の道筋はある。`val_*` の ioctl は 1 デバイス 1 type バイトで整理されていて
+（`0xc3`=`val_demux`、`0xc4`=`val_disp`、`0xcb`=`val_scaler`、`0xcd`=`val_videnc`、
+`0xdb`=`val_m2dsc`、`0xae`=`h57fmb`、`0xb3`=`io_controller`）、引数は 40B 固定。
+**ioctl を 1 本発行するたびに共有メモリを差分すれば、ioctl ↔ コマンド語の対応が
+取れる。** `tools/yb1-trace` と `tools/yb1-mem` は揃っているので、着手できる。
+
+### 11.8 観察できた ioctl の全景（起動〜選局〜配信 1 回ぶん・130,464 行）
+
+`tools/yb1-trace` のログを `cmd` で数えた（上位のみ。全 61 種）:
+
+| 回数 | デバイス | cmd | type/nr | size |
+|---|---|---|---|---|
+| 55,743 | `io_controller` | `0x8004b303` | b3/03 W | 4 |
+| 48,032 | `val_demux` | `0x4028c32f` | c3/2f R | 40 |
+| 20,171 | `io_controller` | `0xc004b302` | b3/02 WR | 4 |
+| 16,732 | `io_controller` | `0xc004b304` | b3/04 WR | 4 |
+| 4,486 | `val_dcnv` | `0x4028d506` | d5/06 R | 40 |
+| 2,314 | `h57fmb0` | `0xc00cae1a` | ae/1a WR | 12 |
+| 484 | `val_demux` | `0x8028c322` / `0x4028c321` | c3/22 W・c3/21 R | 40 |
+| 5 | `h57fmb0` | `0x8010ae1d` | ae/1d W | 16 |
+
+読み取れること:
+
+- **1 デバイス＝ 1 type バイト**で整理されている:
+  `0xc3`=`val_demux`(と `val_demux1`)、`0xc4`=`val_disp`、`0xcb`=`val_scaler`、
+  `0xcd`=`val_videnc`、`0xd5`=`val_dcnv`、`0xdb`=`val_m2dsc`、`0xae`=`h57fmb`、
+  `0xb3`=`io_controller`。
+- **`val_*` の引数は例外なく 40 バイト固定**。可変長構造を持たない＝
+  「コマンド語 ＋ 引数の配列」を素直に詰めた形と見てよい。
+- `val_demux` で実際に使われた nr は
+  `05 0b 0c 0d 0e 10 14 15 16 17 19 1a 21 22 24 26 29 2a 2b 2e 2f 30 32 33 34 64 65 6a c9`
+  の 29 種だけ。**§11.4 の DEMUX 関数 71 本のうち、実際に動いているのはこの範囲。**
+- `c3/2f`(R) が 48,032 回＝**ポーリング**。`c3/21`(R) と `c3/22`(W) が同数 484 回＝
+  **読んで書き戻す対**（§10.7.1 の STC）。
+- `b3/03`(W, 4B) が 55,743 回＝`io_controller` への書き込みポーリング。
+  `io_controller_drv.ko` には `_emma_reg_rw` という関数がある（節名から）。
