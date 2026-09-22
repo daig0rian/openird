@@ -237,7 +237,7 @@ static long do_one(long fd, unsigned long cmd, const unsigned long *w, int nw)
 
 /* --- script mode: several requests, one fd ------------------------------ */
 
-static char script[8192];
+static char script[65536];
 static unsigned long var[8];
 
 /* One 32-bit word of physical memory, through /dev/mem.  Used to pick up a
@@ -285,7 +285,7 @@ static int is_space(char c)
  * open and switch between them.  Re-opening a node would throw its state away,
  * so paths are opened once and remembered.
  */
-#define MAXDEV	4
+#define MAXDEV	16
 #define MAXPATH	40
 
 static char dev_path[MAXDEV][MAXPATH];

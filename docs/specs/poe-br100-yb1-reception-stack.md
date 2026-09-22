@@ -3575,6 +3575,115 @@ nr=0x0a の試行     : 30 回
 引数に §10.2 の TS リング `0x0acea000` が入る）と `nr=0x08`、`mem2` の `nr=0x00`、
 `io_controller` の最初の数本が候補。
 
+## 38. 起動初期の非 demux 呼び出しを洗い出し、丸ごと再生した（2026-09-22）
+
+「差は demux ioctl として現れない SoC 側の物理的な有効化で、それは選局・配信より
+前の起動初期に済んでいる」という見立てに沿って、**ベンダ全起動トレースを
+『各 (ノード, nr) が初めて出た瞬間』に畳み**、`val_demux` を除いて差分した。
+
+### 38.1 ゲート候補＝15 個
+
+`nr=0x0a` が成功する `t=12.76` より前に、非 demux ノードへ初めて出る呼び出し:
+
+```
+t=5.274   h57fmb0   nr=0x1d {0, 0x003ac000, 0xaacea000, 0x2abd6000}  ×3
+t=5.275   h57fmb0   nr=0x08 (R) {0x06b8, 0x102d, 3}
+t=11.245  val_prcg  nr=0x01      t=11.310  val_osd    nr=0x01
+t=11.317  val_jpeg  nr=0x01      t=11.326  val_videnc nr=0x0f / nr=0x1d
+t=11.328  val_disp  nr=0x03 / nr=0x05 / nr=0x07
+t=11.514  val_m2dsc nr=0x04 / nr=0x06        （デスクランブラ・スコープ外）
+t=12.175  io_controller nr=0x01 {1}
+t=12.661  mem2      nr=0x00 (R) {0xa6400000}
+t=12.700  io_controller nr=0x03 {0x0c}
+```
+
+### 38.2 起動を丸ごと再生した
+
+`t<=12.77` のベンダ呼び出し **329 本**を、そのまま流せるスクリプトに起こした
+（我々の確保順はベンダと同じでハンドルの値も一致するので、引数は literal で書ける
+・§34.2）。道具も広げた: `yb1-ioctl` の `dev` は**最大 16 ノード**、スクリプト
+バッファは **64KB**。
+
+**結果: `nr=0x0a`/`0x47`/`0x67` は変わらず `-3`。** 415 行のうち 105 本が非ゼロで、
+内訳は「我々の状態では出せない呼び出し」だった:
+
+| 失敗 | 数 | 理由 |
+|---|---|---|
+| `h57fmb0` の 4 本 | 4 | **ノードが開けない**（`-19` ENODEV）。§38.3 |
+| `val_videnc` / `val_disp` / `val_osd` / `val_jpeg` / `val_prcg` | 12 | 表示・符号化系。`val_merge` 側の初期化が足りない |
+| `io_controller` `nr=0x01` | 55 | |
+| `mem2` `nr=0x00` | 1 | `-14`（EFAULT） |
+
+### 38.3 ★ `/dev/h57fmb0` が開けない理由＝Dione は USB デバイスで、消える
+
+`dmesg` にそのまま出ていた:
+
+```
+usbcore: registered new interface driver h57fmb
+usb 1-1: new high speed USB device using emma-ehci and address 2
+h57fmb:  vendor : 0x06b8     device : 0x102d     speed : 0x3
+h57fmb: 248:USB fmb device now attached to h57fmb   major 180  minor 248
+usb 1-1: USB disconnect, address 2                  ← ★
+h57fmb: 248:USB fmb device now detached
+```
+
+∴ **`/dev/h57fmb0` は USB キャラクタデバイス**（major 180）で、**Dione が
+繋がっている間しか開けない**。トレースの `pid 967` は blur（`pid 1080`）ではなく、
+`setup.sh` の
+
+```sh
+insmod /app/bin/drivers/h57fmb.ko
+/app/bin/dione_transcode -w -P $DIONE_SEL_PWR_CTRL     # LITE は 1
+```
+
+の **`dione_transcode`** だった。SPI-ROM を書いて終わると Dione が切れるので、
+その後に開こうとしても `ENODEV` になる。∴ **これは「我々に欠けているゲート」では
+なく、再生の時機が違うだけ**。
+
+`nr=0x1d` ×3 が Dione に渡す DMA 領域に **§10.2 の TS リング `0x0acea000`** が
+入っていることも、これで筋が通る（§36.3 の「あのリングはトランスコーダの持ち物」
+の裏づけ）。
+
+### 38.4 ★ 新しい手がかり＝`dione_transcode` は TS 入力ピンを扱う
+
+同じ実行ファイルの usage に:
+
+```
+-t  send input data by TS Input pin
+-d  send input data by DMA (USB Bulk Transfer)
+-p <count>   repeat dione power on/off
+-P <selPwrCtrl>
+-w           Write firmware to SPI-ROM
+```
+
+**`-t` が「TS 入力ピンで入力を送る」**と明言している。∴ **SoC の TS 入力ブロックを
+触る実行ファイルが、`val_demux` の外に、起動初期に走っている**。
+「差は demux ioctl として現れない」という見立てと合う。
+
+### 38.5 観測の盲点（道具の限界）
+
+**いまのトレーサは `ioctl` と `open`/`close` しか見ていない。**
+
+- `write()` / `read()` は既定で記録しない（`openird-trace-rw` で有効化できる。
+  起動だけなら量は問題にならない）。
+- **`/dev/mem` を mmap して直接レジスタを叩く経路は、原理的に見えない。**
+  `pid 967` は `/dev/mem` を 2 回開いてから Dione を触っており、blur も
+  `t=3.24` / `t=11.21` / `t=11.49` / `t=12.68` に開いている。**ここで SoC の
+  TS 入力ブロックのクロック／電源を叩いていても、トレースには何も出ない。**
+
+∴ 盲点を埋める道具として、**ベンダ起動後と noblur 起動後で SoC のレジスタ窓を
+そのまま突き合わせる**のが要る（`yb1-mem <phys> <len> words`）。ベンダが map する
+窓は BHIF `0x10000000` / XDMA `0x10009000` / timer `0x10110000`（`tools/yb1-mem`
+の由来コメント）。**差分が出た窓が、そのまま有効化ビットの在り処になる。**
+
+### 38.6 次
+
+1. **`dione_transcode` 自身をトレースする。** 別プロセスなので `LD_PRELOAD` を
+   効かせれば `ioctl`＋`open` は採れる。`openird-trace-rw` も併せて立てる。
+   **`-t`（TS 入力ピン）で何をするかが本命。**
+2. **レジスタ窓の差分**（§38.5）。トレーサに映らない経路を捕まえる唯一の手。
+   これは **`-3` の謎を迂回して答えに届く可能性がある**。
+
 ---
 
 **運用の手順は [../poe-br100-yb1-rig.md](../poe-br100-yb1-rig.md) に分けた**
