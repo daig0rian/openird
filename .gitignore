@@ -83,3 +83,6 @@ tools/yb1-ioctl/yb1-ioctl
 
 # yb1-mxl build artifact (source-only in repo)
 tools/yb1-mxl/yb1-mxl
+
+# yb1-poke build artifact (source-only in repo)
+tools/yb1-poke/yb1-poke
