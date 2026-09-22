@@ -194,7 +194,14 @@ static void dump(const char *label, const u8 *p, unsigned long n)
 
 /* --- one request on an already-open fd ---------------------------------- */
 
-static u8 argbuf[MAXARG];
+/* The _IOC size we pass is small (40 for the val_* nodes), but a driver that
+ * writes back more than that would smash whatever follows in BSS -- and one
+ * does: probing val_demux nr=0x10 killed the process with SIGSEGV because
+ * the overflow clobbered the output buffer's length.  Give the ioctl the
+ * largest buffer _IOC can describe so an over-long write stays inside.
+ */
+#define ARGBUF_ROOM	8192
+static u8 argbuf[ARGBUF_ROOM];
 
 static long do_one(long fd, unsigned long cmd, const unsigned long *w, int nw)
 {
@@ -495,7 +502,7 @@ static void usage(void)
 
 int main(int argc, char **argv)
 {
-	static u8 buf[MAXARG];
+	static u8 buf[ARGBUF_ROOM];   /* same reason as argbuf */
 	unsigned long cmd, size, dir, type, nr, v;
 	long fd, r;
 	int i;
