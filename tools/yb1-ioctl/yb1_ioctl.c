@@ -230,7 +230,7 @@ static long do_one(long fd, unsigned long cmd, const unsigned long *w, int nw)
 	put("ret=");
 	putdec(r);
 	put("  buf:");
-	for (i = 0; i < 4 && (unsigned long)(i * 4 + 4) <= size; i++) {
+	for (i = 0; i < 10 && (unsigned long)(i * 4 + 4) <= size; i++) {
 		put(" ");
 		puthex(((unsigned long)argbuf[i * 4] << 24) |
 		       ((unsigned long)argbuf[i * 4 + 1] << 16) |
