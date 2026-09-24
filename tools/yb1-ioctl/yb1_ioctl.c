@@ -272,11 +272,23 @@ static int read_phys(unsigned long phys, unsigned long *out)
 	return 0;
 }
 
-/* Like parse(), but "$N" yields the stored value. */
+/* Some drivers take a POINTER inside the argument rather than the value
+ * itself -- /dev/h57fmb0 does, for the transcoder's parameter space.  "$B"
+ * resolves to the address of this buffer so a script can hand one over,
+ * "fill" puts bytes into it and "show" prints them back.
+ */
+#define IOBUF_SIZE	4096
+static u8 iobuf[IOBUF_SIZE];
+
+/* Like parse(), but "$N" yields the stored value and "$B" the I/O buffer. */
 static int parse_arg(const char *s, unsigned long *out)
 {
 	if (s[0] == '$' && s[1] >= '0' && s[1] <= '7' && s[2] == 0) {
 		*out = var[s[1] - '0'];
+		return 0;
+	}
+	if (s[0] == '$' && (s[1] == 'B' || s[1] == 'b') && s[2] == 0) {
+		*out = (unsigned long)iobuf;
 		return 0;
 	}
 	return parse(s, out);
@@ -445,6 +457,58 @@ static int run_script(long fd, const char *dev0, const char *path)
 			flushout();
 			continue;
 		}
+		if (streq(tok, "fill") || streq(tok, "show")) {
+			int isfill = streq(tok, "fill");
+			unsigned long off = 0, v, n = 16;
+			char *a;
+
+			while (is_space(*line))
+				line++;
+			a = line;
+			while (*line && !is_space(*line))
+				line++;
+			if (*line)
+				*line++ = 0;
+			if (parse_arg(a, &off) || off >= IOBUF_SIZE) {
+				put("bad offset\n");
+				flushout();
+				continue;
+			}
+			if (isfill) {
+				while (off < IOBUF_SIZE) {
+					while (is_space(*line))
+						line++;
+					if (!*line)
+						break;
+					a = line;
+					while (*line && !is_space(*line))
+						line++;
+					if (*line)
+						*line++ = 0;
+					if (parse_arg(a, &v))
+						break;
+					iobuf[off++] = (u8)v;
+				}
+				put("fill ok\n");
+			} else {
+				while (is_space(*line))
+					line++;
+				if (*line)
+					parse_arg(line, &n);
+				if (off + n > IOBUF_SIZE)
+					n = IOBUF_SIZE - off;
+				put("buf+0x");
+				puthex(off, 3);
+				put(":");
+				for (v = 0; v < n; v++) {
+					put(" ");
+					puthex(iobuf[off + v], 2);
+				}
+				put("\n");
+			}
+			flushout();
+			continue;
+		}
 		if (streq(tok, "hold")) {
 			long ts[2];
 
@@ -495,6 +559,8 @@ static void usage(void)
 	    "  <cmd>     request as the tracer prints it, e.g. 0x4028c32f\n"
 	    "  [byte]    payload, most significant first, zero padded\n"
 	    "Script lines: '<cmd> [word ...]', 'load $N <phys>', 'hold <secs>',\n"
+	    "  'fill <off> <byte>...' / 'show <off> [n]' use the I/O buffer,\n"
+	    "  whose address is '$B' (drivers that take a pointer in the arg),\n"
 	    "  or 'dev <path>' to switch node (both stay open).\n"
 	    "The driver keeps per-open state, so a filter set up by one call is\n"
 	    "gone by the next unless the fd stays open -- hence the script form.\n");

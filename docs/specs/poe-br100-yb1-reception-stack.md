@@ -5279,3 +5279,95 @@ ioctl の面は尽きた。**残るのは、`val_merge` を通さずに裏 CPU �
 `{種別 7 のハンドル, 番地, 大きさ}` で掃けば当たる可能性がある**。
 ただし**これは裏 CPU の API を総当たりする行為**で、§18.4 の「総当たりは実機を
 落とす」がそのまま当てはまる。**着手するかどうかは判断が要る。**
+
+## 57. トランスコーダのパラメータ空間を手に入れた（2026-09-24）
+
+「同系統のトランスコーダには MPEG-2 スルーのモードがあり、そこに入れると生 TS が
+出る。`blur` に `StartThroughTsOut` が、`SetTranscodeMode` に `VideoTSOut(2)Mode`
+がある」という指摘を追った。**モード欄の在り処までは届いたが、掃いた結果を
+判定できない**ところで止まっている。
+
+### 57.1 文字列から見える構造（`strings` のみ）
+
+```
+blur:            HAVPF_PD_Player_StartTsOut / StartThroughTsOut /
+                 StartBlackScreenTsOut / SetPidTsOut / SetAesKeyTsOut /
+                 SendTTSData / GetTTSDataFreeBuf / GetNotificationTsOut
+                 HAVPF_PD_Dione_SetTranscodeSetting / StartStreaming / …
+dione_transcode: SetTranscodeMode / GetTranscodeMode / SetTsOutPacketSize /
+                 SetAccumulationMode / SetClosedGOPMode / SetTranscodePIDFilter
+                 usVideoTSOut2Mode = %u
+                 FMB_API_{SET,GET}_LSI_REG / LOAD_FIRM / GET_USB_INFO / …
+                 /app/bin/mb86h57_h58_aac_idle.bin   ← 2 つのファーム
+                 /app/bin/mb86h57_h58_aac_trc.bin
+```
+
+**`StartThroughTsOut` は Dione ではなく Player（＝SoC 側の TS 出し）の API** で
+あることに注意。`SendTTSData` / `GetTTSDataFreeBuf` があるので、**ベンダは
+ユーザランドから TS（TTS）を AV へ流し込んでいる**とみられる。
+
+### 57.2 ★ `/dev/h57fmb0` の転送の意味が分かった
+
+`nr=0x02`/`nr=0x03` の引数は `{1, アドレス, ユーザ番地}` で、**16 ビット 1 語**を
+読み書きする。値は**ポインタの先**にあるのでトレースには映らない。
+そこで `yb1-ioctl` に**自前の I/O バッファ**を足した（`$B` がその番地、
+`fill` で詰め、`show` で見る）。これで**我々の側から読み書きできる**:
+
+```
+nr=0x02 {1, 0x1000, $B} → 00 00      nr=0x02 {1, 0x1a52, $B} → 00 08
+nr=0x02 {1, 0x1a6e, $B} → 80 00
+```
+
+`dione_transcode` が起動時に `0x1000`〜`0x1a6e` を **2 バイト刻みで全部書き、
+1 語ごとに読み返している**のは、この空間の設定だった。
+
+### 57.3 ★ パラメータ空間の地図（`trc` ファーム・設定直後）
+
+`0x1000`〜`0x1a70`（1,337 語）を読むと、**非ゼロは 76 語**で、塊がはっきり分かれる:
+
+| 範囲 | 中身 |
+|---|---|
+| `0x1002`〜`0x101c` | 系の設定（`0x1004=0x8903` `0x100c=0x4500` `0x101c=0x020f` ほか） |
+| **`0x1028`〜`0x1038`** | **`0x8010 0x8011 0x8012 0x8014 0x8023 0x8024 0x8025 0x8028 0x8029`** ＝ 上位ビット `0x8000` 付きの **PID 表**（NIT/SDT/EIT/TDT と ARIB の表）＝**素通しさせる PID の一覧** |
+| **`0x1100` と `0x1240`** | **同じ形の 2 つの塊**（間隔 `0x140`）。先頭が **`0x1102 = 2` / `0x1242 = 2`**、続いて `0xffff`、`0x0e10`(3600)、`0x00e0`(224)、`0x00c0`(192) … |
+| `0x1500` と `0x1600` | **映像エンコーダ 2 系統**。`0x162c=0x0500`(1280) `0x162e=0x02d0`(720)＝**変換後の解像度**、`0x1c20`(7200)/`0x1770`(6000)/`0x0e10`(3600)＝ビットレート |
+| `0x1a04`〜`0x1a6e` | 末尾（`0x1a52=8` `0x1a56=0x4000` `0x1a64`〜`0x1a6e` が `0x8000` ×6） |
+
+∴ **`usVideoTSOutMode` / `usVideoTSOut2Mode` は `0x1102` / `0x1242`** と見るのが
+自然である（**2 系統の同じ位置に同じ値**、`%u` で出る小さい数）。
+
+### 57.4 掃いた。しかし**判定できない**
+
+`0x1102` と `0x1242` に `0`〜`7` を書き（読み返しで一致を確認）、そのたびに
+`nr=0x01` の状態コマンドを打って `nr=0x1a` を試した:
+
+```
+mode = 0 … 7    どの値でも   nr=0x1a → -145 (ETIMEDOUT)
+                             DRAM の 3 バッファとも TS 0 hits
+```
+
+**既定値（`2`）でも `-145` である。** ∴ これは「モードの値が違う」のではなく、
+**§53.4 のまま＝Dione の TS 入力に何も来ていない**ためで、**判定器が死んでいる。**
+
+**モード欄を掃く作業自体は、入力が通るようになるまで意味を持たない。**
+
+### 57.5 ∴ 壁は動いていない＝「SoC の TS 出し」
+
+- `dione_transcode -t` は `/dev/tsout_demux` を開こうとして死ぬ。この
+  ノードは**どのモジュールも作らず、この製品には無い**（§52.5・§53.1）。
+- ベンダはそこを使わず、**`blur` が `HAVPF_PD_Player_StartTsOut` /
+  `SendTTSData` で AV へ TS を流し込んでいる**とみられる（§57.1）。
+- ∴ **`StartThroughTsOut` は Dione のモードではなく SoC 側の経路**で、
+  そこが開かない限り Dione は入力待ちのままである。
+
+### 57.6 次
+
+1. **`dione_transcode -e <秒>`** は TS 入力エラーを `/tmp/dione_ts_err.dat` に
+   出す。**入力が本当に来ていないことの独立な確認**になる。
+2. `blur` の `Player TsOut` 族が **どの `val_demux` の nr に落ちるか**。
+   ベンダが使う 33 個のうち意味が未確定なのは `0x0a` `0x19` `0x32` `0x33`
+   `0x34` `0x47` `0x64` `0x65` `0x67` `0x6a` `0xc9`。**`SendTTSData` は
+   `MMAC_DEMUX_CpuInputPlay` に当たるはずで、`nr=0x06`（実機が落ちる）が
+   その位置にある**（§49.5 の番号規則から）。
+3. パラメータ空間はもう我々のものなので、**入力が通った瞬間に §57.4 の掃きを
+   やり直せば答えが出る**。
