@@ -1,0 +1,1 @@
+cmd_/mnt/c/Users/user/OpenIRD/tools/yb1-bhifwatch/bhifwatch.ko := /mnt/c/Users/user/OpenIRD/dl/toolchain/gcc-4.9.4-nolibc/mips-linux/bin/mips-linux-ld -r -m elf32btsmip --build-id -o /mnt/c/Users/user/OpenIRD/tools/yb1-bhifwatch/bhifwatch.ko /mnt/c/Users/user/OpenIRD/tools/yb1-bhifwatch/bhifwatch.o /mnt/c/Users/user/OpenIRD/tools/yb1-bhifwatch/bhifwatch.mod.o
