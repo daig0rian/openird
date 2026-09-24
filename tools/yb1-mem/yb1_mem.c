@@ -38,6 +38,7 @@
 #define SYS_munmap	4091
 #define SYS__llseek	4140
 #define SYS_nanosleep	4166
+#define SYS_gettimeofday 4078
 
 #define O_RDONLY	0x0000
 #define O_SYNC		0x0010		/* MIPS: O_DSYNC, enough for /dev/mem */
@@ -328,7 +329,7 @@ static void cmd_words(const u8 *m, unsigned long len, unsigned long n)
  * are the ones that change while something is happening.  Snapshot, wait, read
  * again, and report only what moved -- the output stays small enough to sweep
  * a lot of windows over a slow link. */
-#define CHURN_MAX	4096		/* words held in the snapshot buffer */
+#define CHURN_MAX	16384		/* words held in the snapshot buffer */
 
 static unsigned int snap[CHURN_MAX];
 
@@ -360,7 +361,7 @@ static void cmd_churn(const u8 *m, unsigned long len, unsigned long n,
 		if (now == snap[i])
 			continue;
 		changed++;
-		if (shown < 16) {
+		if (shown < 512) {
 			shown++;
 			put("  +0x");
 			puthex(i * 4, 5);
@@ -378,6 +379,88 @@ static void cmd_churn(const u8 *m, unsigned long len, unsigned long n,
 	put(" words in ");
 	putdec(ms);
 	put(" ms\n");
+}
+
+/* Watch n words in a tight loop and record EVERY change, in order.
+ *
+ * churn only compares the first and last sample, so a word that goes
+ * 0 -> 1 -> 0 inside the window is invisible to it -- and a shared-memory
+ * command queue is full of exactly that kind of word.  This loop reads the
+ * words as fast as it can and appends (word, new value) whenever one moves,
+ * which is the only way to see the order the other CPU works in.
+ *
+ * Single CPU, so this only runs while the process that issues the command is
+ * asleep waiting for its answer -- which is precisely the interval of
+ * interest.  The mapping is uncached (O_SYNC), so every read is a real one. */
+#define SPIN_WORDS	64
+#define SPIN_EVENTS	3000
+
+static unsigned int spin_last[SPIN_WORDS];
+static unsigned short spin_ev_idx[SPIN_EVENTS];
+static unsigned int spin_ev_val[SPIN_EVENTS];
+static unsigned int spin_ev_us[SPIN_EVENTS];
+
+static unsigned long now_us(void)
+{
+	unsigned long tv[2];
+
+	tr_syscall(SYS_gettimeofday, (long)tv, 0, 0, 0, 0, 0);
+	return tv[0] * 1000000ul + tv[1];
+}
+
+static void cmd_spin(const u8 *m, unsigned long len, unsigned long n,
+		     unsigned long ms)
+{
+	const volatile unsigned int *w = (const volatile unsigned int *)m;
+	unsigned long i, ev = 0, passes = 0, t0, deadline;
+
+	if (((unsigned long)m & 3) != 0) {
+		put("address is not 4-byte aligned\n");
+		return;
+	}
+	if (n > len / 4)
+		n = len / 4;
+	if (n > SPIN_WORDS)
+		n = SPIN_WORDS;
+	for (i = 0; i < n; i++)
+		spin_last[i] = w[i];
+
+	t0 = now_us();
+	deadline = t0 + ms * 1000ul;
+	while (ev < SPIN_EVENTS) {
+		for (i = 0; i < n; i++) {
+			unsigned int v = w[i];
+
+			if (v == spin_last[i])
+				continue;
+			spin_last[i] = v;
+			spin_ev_idx[ev] = (unsigned short)i;
+			spin_ev_val[ev] = v;
+			spin_ev_us[ev] = (unsigned int)(now_us() - t0);
+			if (++ev >= SPIN_EVENTS)
+				break;
+		}
+		passes++;
+		if ((passes & 0xff) == 0 && now_us() >= deadline)
+			break;
+	}
+
+	put("spin ");
+	putdec(passes);
+	put(" passes over ");
+	putdec(n);
+	put(" words, ");
+	putdec(ev);
+	put(" changes\n");
+	for (i = 0; i < ev; i++) {
+		put("  ");
+		putdec(spin_ev_us[i]);
+		put(" us  +0x");
+		puthex((unsigned long)spin_ev_idx[i] * 4, 4);
+		put(" = ");
+		puthex(spin_ev_val[i], 8);
+		put("\n");
+	}
 }
 
 static void cmd_nonzero(const u8 *m, unsigned long len)
@@ -493,6 +576,7 @@ static void usage(void)
 	    "  dump    : hex dump the first n bytes (default 128)\n"
 	    "  words   : dump n 32-bit words -- use this for SoC registers\n"
 	    "  churn   : which of n words change over ms milliseconds (default 64, 500)\n"
+	    "  spin    : tight loop over n words for ms, log EVERY change in order\n"
 	    "  nonzero : how much of the region is not zero\n"
 	    "0x prefix for hex.  Reads only; nothing is written.\n");
 }
@@ -575,6 +659,9 @@ int main(int argc, char **argv)
 	else if (streq(argv[3], "churn"))
 		cmd_churn(m, len, argc > 4 ? parse_or(argv[4], 64) : 64,
 			  argc > 5 ? parse_or(argv[5], 500) : 500);
+	else if (streq(argv[3], "spin"))
+		cmd_spin(m, len, argc > 4 ? parse_or(argv[4], 8) : 8,
+			 argc > 5 ? parse_or(argv[5], 500) : 500);
 	else if (streq(argv[3], "stats"))
 		cmd_stats(m, len);
 	else if (streq(argv[3], "nonzero"))
