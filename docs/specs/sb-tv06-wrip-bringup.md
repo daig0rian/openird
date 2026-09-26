@@ -317,13 +317,23 @@ fwup flash <device-ip> temp/wrip-factory-telnet.bin --serve-ip <PC IP> --confirm
 
 1. **I2C 地形の同定＝完了**（§5.3）: frontend は GPL emma i2c ではなく **プロプラ ei2c_ofdm の
    GPIO bitbang**（zpio `0x10110d00`）と判明。`/dev/i2c-1` は空、bus 0 は走査しない。
-2. **GPIO bitbang トランスポートの同定＋再実装（`wrip-ei2c`）**: ei2c が使う SCL/SDA ピンを
-   観察で当てる（demod アクセス中の GPIO 変化）→ クリーンな GPIO bitbang I2C master を書く。
-   道具は `yb1-poke`（GPIO/mem 読み書き）、必要なら GPIO トレース。zpio は GPL。
-3. **`wrip-fe`**: ②の上に mainline `tc90522.c`（T/S 2 コア・ゲート付き I2C リピータ）＋ MxL601 の
+2. **SCL/SDA ピン＝同定済み（2026-09-26・観察）**: ei2c は **zpio_data[0]（GPIO0-31）** を bitbang
+   していると実機で確認。同定手順（再現可）: UPnP `X_SetTuning`(tb) で選局→lindberg が復調器を
+   連続ポーリング→`yb1-mem 0x10110d00 0x38 spin` で `zpio_data[0]` の全変化を記録→ビット反転数を集計。
+   結果（tune 後の 2s・3000 変化）: **GPIO29=2248 反転(≈50%H・クロック)＝SCL、GPIO0=1445(≈48%H)＝SDA**
+   が主バス（地上/OFDM 復調器）。**GPIO1=550・GPIO9=448（常時 H 寄り）＝活動の少ない第2バス**
+   （衛星/PSK 復調器の可能性）。SCL/SDA の割当は「反転数が多い＝SCL」の定石＝`wrip-ei2c` の
+   アドレス ACK 試験で最終確認する（2 通り試せば確定）。**⚠ 復調器 I2C の観察には選局が要る**
+   （idle では I2C が流れない＝churn 0）。捕捉は foreground `spin`（background だと SIGHUP や
+   即終了で取れない）。
+3. **`wrip-ei2c`（GPIO bitbang I2C master）**: GPL `drivers/i2c/busses/i2c-gpio.c` を土台に、
+   SCL=GPIO29 / SDA=GPIO0 で zpio を叩く（GPL `emma-gpio.c` の zpio_data/mask/dir。base 0x10110d00・
+   data +0x00 / mask +0x18 / dir +0x30）。`Origin: gpl-derived`。まず TC90522 のアドレス scan で
+   SCL/SDA 割当と復調器アドレスを確定。
+4. **`wrip-fe`**: ③の上に mainline `tc90522.c`（T/S 2 コア・ゲート付き I2C リピータ）＋ MxL601 の
    意味論で選局→ロック→C/N をクリーン実装（`Origin: gpl-derived` ＋ `Spec-Ref`）。ロック判定は
    TC90522 の CN/ロックレジスタ（mainline にロジックあり）。
-4. **demux → StreamOut → tsout_demux**: §5.1 の 76 本 demux ＋ StreamOut で生 TS を
+5. **demux → StreamOut → tsout_demux**: §5.1 の 76 本 demux ＋ StreamOut で生 TS を
    `tsout_demux`(major 210) に落とせるか（§6-1）。§49–§72 転用。
 
 ## 8. GPL 参照ツリーの土台（長期作業の前提・コンテクストで失いやすいので明記）
@@ -363,3 +373,67 @@ fwup flash <device-ip> temp/wrip-factory-telnet.bin --serve-ip <PC IP> --confirm
   3. その上に**後代 mainline の `tc90522.c`**（2.6.27 には未収録＝別途 kernel.org から参照）＋
      `mxl301rf`/`mxl5007t` 系の意味論で TC90532/MxL601 を選局（`Origin: gpl-derived` ＋ `Spec-Ref`）。
   ＝ **観察に依存するのは「2 本のピン番号」だけ**に縮小できた。
+
+## 9. 受信・TS パイプラインの観察（視聴・録画・2026-09-26）
+
+`LD_PRELOAD` ioctl トレーサ（`yb1_trace.so`）＋ `/dev/mem` の TS 走査（`yb1-mem scan/stats`）で、
+ベンダ `lindberg` の視聴・録画中の**経路**を観察した。**復号の鍵・手順には触れない**（存在と
+パイプライン上の位置だけ）。ioctl の分解は uapi `_IOC`、TS 走査は 0x47 同期の統計＝観察のみ。
+
+### 9.1 選局（frontend）— `/dev/fe_main`（type=0xb0）
+
+実チャンネルをアプリで選局したときの `fe_main` の write コマンド:
+
+| nr | 意味（観察） | 地上波 | BS |
+|---|---|---|---|
+| 0x03 | 波/モード選択 | `0x01`（地上） | `0x02`（BS） |
+| 0x08 | **周波数（MHz・16bit）** | `0x022d`=**557**（NHK総合＝物理27ch=557MHz） | `0x0526`=1318 |
+| 0x0a | **BS 固有**（TSID/トランスポンダ選択の可能性） | 無し | `0x40f1` |
+| 0x04 | ステータス polling（`00 01 fc e0`→64B 構造体） | ○ | ○ |
+| 0x05/0x06/0x07 | CN/lock/BER 読み（`nr=0x07`=BER・`0x0001869f`=99999 で未ロック） | ○ | ○ |
+
+- ★ **周波数エンコードは MHz**（アプリは 557 を渡す）。UPnP `X_SetTuning` に kHz(557143) を渡すと
+  16bit 切り詰め（`0x88057`→`0x8057`）で化けて未ロックになる＝**MHz で渡すべき**。
+- ロック判定は `nr=0x07`(BER) 等。**ロックには実在チャンネルの周波数が要る**（当てずっぽうは SignalStrength=0）。
+
+### 9.2 復号はインライン、生 TS バッファは平文のみ
+
+DRAM 全域（256MB）を `stats` で走査（視聴中・地上波と BS の両方）:
+
+- **クリーンな 188B 整列 TS バッファは `0x0a000000` と `0x0b000000` の2つだけ、いずれも
+  `scrambling_control=none`＝平文**（復号後）。
+- `0x00000000`–`0x09000000` にスクランブル片（even/odd）は散在するが**すべて desync 数万＝
+  整列した持続バッファではない**（作業領域中の断片）。**クリーンなスクランブル TS バッファは
+  DRAM に存在しない。**
+- ∴ **`demod → demux → 復号(`val_dcnv`/`val_m2dsc`) → 平文 DRAM` はハード/インライン**。ベンダは
+  トランスコード配信/録画のため常に復号する。**★重要（訂正）: 日本の地上波もスクランブルされて
+  おり B-CAS が要る**＝平文バッファは「復号済み」を意味する（当初「地上波は無スクランブル」と
+  書いたのは誤り）。
+- **∴「暗号化状態の TS」の捕捉設計**: 受動的に読めるスクランブル TS バッファは無い。OpenIRD は
+  **demux（§72 クリーン制御）で PID フィルタ後の TS を DRAM に書かせる際、復号ステージを
+  バイパス**する → その出力にスクランブル TS が落ちる。**scope 準拠**（復号は下流＝正規 B-CAS＋
+  PC/SC）。demux 制御は §5.1 の 76 本 ABI＋YB1 §49–§72 の転用。
+
+### 9.3 視聴（place-shift）の経路
+
+`fe_main`(選局) → `val_demux`(PID フィルタ・nr=0x0c=PID/0x0d=有効化/0x2f=書込ポインタ poll、
+YB1 ABI と一致) → `val_dcnv`/`val_m2dsc`(復号) → **`h57fmb0`/Dione(トランスコード)** → ネット配信。
+**`tsout_demux`/StreamOut/`val_record` は視聴では 0 回**＝place-shift は生 TS 出口を使わず H.264 化して配信。
+
+### 9.4 HDD 録画の経路
+
+USB HDD（`/dev/sda1`・約1TB・**非 FAT 独自フォーマット**・マウントせず raw ブロック）。録画中に
+lindberg が open しているのは **`/dev/val_record`（録画TS経路）＋`/dev/val_pvr_trick`（PVR制御）＋
+`/dev/sda`**。**`tsout_demux` は録画でも未使用**。書込みは ~95KB/write × ~25回/秒 ＝ **約19Mbps**
+（BS HD 相当）。
+
+- ∴ **R グレードの録画も「生 TS 出口(tsout_demux/StreamOut)」を使わず `val_record`→sda**。
+  YB1 §71（tsout_demux 未使用）と一致。生 TS の chardev 化は **demux 出力の自前確保（§72）が本線**で変わらない。
+- 録画ファイルは復号後にローカル鍵で再暗号化（機器紐付け）の公算＝平文 TS ではない見込み。
+  **録画内容そのものは読まない**（コピー保護＋scope 外）。
+
+### 9.5 観察の運用メモ
+
+- **録画中はトレースが猛烈に増える**（demux polling で 32MB/数分）＝ /tmp(51.9M・tmpfs) を溢れさせ
+  録画に影響する恐れ。**低負荷のモニタは `/sys/block/sda/stat` の sectors_written**（内容非依存）。
+- `LD_PRELOAD` トレースは `/app/setting/openird-trace` フラグ＋再起動で入切。ログは `/tmp/yb1-trace.log`。
