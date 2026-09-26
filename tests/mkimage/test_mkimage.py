@@ -82,6 +82,13 @@ def test_boards():
         check("policy は writable/preserve のみ",
               all(p["policy"] in ("writable", "preserve") for p in b["partitions"]))
 
+        if name == "sb-tv06-wrip":
+            # WRIP 実機 /proc/mtd と一致する 11 区画・1Gb 体系（bring-up 仕様 §2）
+            check("sb-tv06-wrip: 11 区画・1Gb(128MB) 体系",
+                  len(b["partitions"]) == 11 and total == h("0x8000000"),
+                  "%d 区画 / 0x%x" % (len(b["partitions"]), total),
+                  spec="sb-tv06-wrip-bringup#2")
+
         fac = b.get("factory")
         if not fac:
             continue
@@ -105,6 +112,11 @@ def test_boards():
         check("OpenIRD が書くのは kernel と rootfs のみ",
               sorted(im["mtd"] for im in fac["images"] if im["openird"]) == [2, 3],
               spec="poe-br100-yb1-nand-update#6")
+        if name == "sb-tv06-wrip":
+            # WRIP の factory 族タグは LINDBERG（bring-up 仕様 §3・probe-factory で実証）
+            check("sb-tv06-wrip: factory 族タグ = LINDBERG",
+                  fac.get("family_tag") == "LINDBERG", fac.get("family_tag", ""),
+                  spec="sb-tv06-wrip-bringup#3")
         check("OpenIRD が書く区画は policy=writable",
               all(parts[im["mtd"]]["policy"] == "writable"
                   for im in fac["images"] if im["openird"]))

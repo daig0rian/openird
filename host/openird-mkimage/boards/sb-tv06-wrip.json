@@ -1,0 +1,66 @@
+{
+  "board": "sb-tv06-wrip",
+  "defconfig": "emma3sep_softbank_sb-tv06-wrip",
+  "model": "POE-BR310L-SB1",
+  "retail_model": "SB-TV06-WRIP (SoftBank SELECTION エリアフリーTV Plus)",
+  "soc": "Renesas EMMA3SEP (uPD61425 / D61425F1)",
+  "board_rev": "TVB3000 REVB",
+  "arch": "mips", "cpu": "mips32r2", "endian": "big",
+  "kernel_version": "2.6.27.39",
+  "bootloader": "u-boot 2014.2.25.00-emma3sep-01-svnRev.16",
+  "product_fwids": "PIX_AIRTUNER_BR310L",
+  "nvm": {
+    "type": "nand", "part": "Toshiba TC58DVG02D5TA00",
+    "size": "0x8000000", "erasesize": "0x20000", "pagesize": "0x800", "oobsize": "0x40",
+    "_note": "1Gb(128MB) SLC。YB1 と同一部品。実機 U-Boot ログで 'NAND: 128 MiB' を確認（2026-09-26）。write.sh の総容量判定 >=262144 で write1Gb.sh 分岐に入る。"
+  },
+
+  "_provenance": "区画表・factory 書き込み表: 純正コンテナ POE-BR310L-SB1_v1.0.2 の payload/write1Gb.sh から直接読み取り（temp/br310l/payload/、2026-09-26）。区画名: vmlinux.img を伸長したベンダカーネルに埋まる区画名文字列（[ 0]Boot loader … [10]）と一致。offset 体系は YB1（GPL nand_emma_ptt_1Gb.h）と一致を確認。uImage 契約: 実機 U-Boot ブートログの実測（load 82280000 / entry 822841b0）。族タグ: probe-factory = LINDBERG_UPDATE_v1b v1.0.2、h38=SHA-1(body) 検証済み。",
+
+  "factory": {
+    "container": "v1b",
+    "family_tag": "LINDBERG",
+    "nand_generation": "1Gb",
+    "_note": "族タグはコンテナの族であって実モデル名ではない（update-v1b-container.md §2.1）。LINDBERG=SB-TV06-WRIP。retail の pix_br310l/w（族 BR310L）とは別族。書き込み offset・write_len・erase_len は write1Gb.sh の nand write/erase 実引数そのまま＝YB1(BLUR) と全数一致。",
+    "images": [
+      {"name": "vmlinux.img",      "mtd": 2, "write_offset": "0x600000",  "write_len": "0x300000",  "erase_len": "0x480000",  "openird": true,
+       "_note": "write1Gb.sh: nand erase 600000 480000; nand write 83000000 600000 300000。書き込み長は固定。超過分は黙って切り捨て。"},
+      {"name": "rootfs.img",       "mtd": 3, "write_offset": "0xa80000",  "write_len": "0x680000",  "erase_len": "0x900000",  "openird": true,
+       "_note": "write1Gb.sh: nand erase a80000 900000; nand write 83000000 a80000 680000。"},
+      {"name": "app_bin.img",      "mtd": 4, "write_offset": "0x1380000", "write_len": "0x1900000", "erase_len": "0x1b80000", "openird": false,
+       "_note": "ベンダ受信部品 lindberg（TC90522/90532 + MxL601/135 + Dione H58）。段階 B の観察対象＝OpenIRD factory には同梱しない＝温存。"},
+      {"name": "emma_fw.img",      "mtd": 5, "write_offset": "0x2f00000", "write_len": "0x180000",  "erase_len": "0x400000",  "openird": false,
+       "_note": "SoC 裏 CPU FW（emma3sep_driver_std_op0）。温存。"},
+      {"name": "init_setting.img", "mtd": 6, "write_offset": "0x3300000", "write_len": "0x80000",   "erase_len": "0x300000",  "openird": false,
+       "_note": "個体の初期設定。v1.0.2 コンテナには同梱されない（payload に init_setting.img 無し）＝この枠は発火しない。温存。"}
+    ]
+  },
+
+  "uimage": {
+    "os": 5, "arch": 5, "type": 2, "comp": 1,
+    "name": "emma3se",
+    "load": "0x82280000", "entry": "0x822841b0",
+    "_note": "実機 U-Boot ログの実測（2026-09-26）。os=linux arch=mips type=kernel comp=gzip。RAM base 0x80000000・256MB。YB1 と同値。"
+  },
+
+  "squashfs": {
+    "vendor_format": {"major": 3, "minor": 1, "endian": "be"},
+    "compressors": ["gzip"], "xattrs": false, "comp_options": false,
+    "_note": "ベンダ squashfs は patch 版 3.1BE（mtd3/4/5 とも BE マジック 'sqsh'）。unsquashfs は output/host/squashfs3（squashfs-tools 3.4）で読める（app_bin.img を展開して setup.sh 確認済み・2026-09-26）。OpenIRD 側が 3.1BE を作るか 4.0LE を backport するかは YB1 と共通の未決（NOTES V3b）。"
+  },
+
+  "_partitions_note": "区画名: ベンダカーネルに埋まる文字列。offset: write1Gb.sh の実引数 + YB1 GPL nand_emma_ptt_1Gb.h の累積と一致。size は不良ブロック用余裕込み（write_len と一致しない）。",
+  "partitions": [
+    {"mtd":0,  "name":"u-boot",         "offset":"0x0000000", "size":"0x0300000", "policy":"preserve",  "note":"[ 0]Boot loader(u-boot)。復旧の最後の安全網＝絶対に書かない"},
+    {"mtd":1,  "name":"u-boot_env_mac", "offset":"0x0300000", "size":"0x0300000", "policy":"preserve",  "note":"[ 1]u-boot environment for update and MAC。更新機構が env 先頭(0x300000,len 0x800)に FWUP マーカーを書く（回避不能）。MAC は最終ブロックにあり届かない。実機ログ 'using ethaddr wrriten at last block on mtd1'"},
+    {"mtd":2,  "name":"kernel",         "offset":"0x0600000", "size":"0x0480000", "policy":"writable",  "image":"uimage",   "note":"[ 2]Kernel(vmlinux)。factory 対象。uImage(gzip)"},
+    {"mtd":3,  "name":"rootfs",         "offset":"0x0A80000", "size":"0x0900000", "policy":"writable",  "image":"squashfs", "note":"[ 3]FileSystem(SQUASHFS)。/ にマウント。factory 対象"},
+    {"mtd":4,  "name":"app_binary",     "offset":"0x1380000", "size":"0x1B80000", "policy":"preserve",  "image":"squashfs", "note":"[ 4]App_binary(SQUASHFS)。/app/bin にマウント。ベンダ app＝温存"},
+    {"mtd":5,  "name":"emma_fw",        "offset":"0x2F00000", "size":"0x0400000", "policy":"preserve",  "image":"squashfs", "note":"[ 5]EMMA_FW(SQUASHFS)。裏 CPU FW＝温存"},
+    {"mtd":6,  "name":"init_setting",   "offset":"0x3300000", "size":"0x0300000", "policy":"preserve",  "note":"[ 6]Initial setting。個体の初期設定＝温存"},
+    {"mtd":7,  "name":"flight_rec_log", "offset":"0x3600000", "size":"0x0300000", "policy":"preserve",  "image":"yaffs2",   "note":"[ 7]Flight Record Log(YAFFS2)。delete.sh が更新後に消去し得る（OpenIRD は delete.sh を同梱しない）"},
+    {"mtd":8,  "name":"app_setting",    "offset":"0x3900000", "size":"0x0400000", "policy":"preserve",  "image":"yaffs2",   "note":"[ 8]Application Setting data(YAFFS2)。/app/setting にマウント（fstab: /dev/mtdblock8）。devel_mode.txt の置き場。factory が書かない＝telnet 解錠フラグは更新を跨いで残る"},
+    {"mtd":9,  "name":"massstorage",    "offset":"0x3D00000", "size":"0x4000000", "policy":"preserve",  "image":"yaffs2",   "note":"[ 9]MassStorage(YAFFS2)。/app/flashDev にマウント。write1Gb.sh の ymount 3d00000 7d00000 と一致。更新ファイルの置き場でもある"},
+    {"mtd":10, "name":"bbt",            "offset":"0x7D00000", "size":"0x0300000", "policy":"preserve",  "note":"[10]Bad block table。不良ブロックテーブル"}
+  ]
+}
