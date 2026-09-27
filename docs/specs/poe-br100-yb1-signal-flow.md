@@ -5,8 +5,7 @@ Status: observing
 As-of:  実機 POE-BR100-YB1 / ベンダ FW 2.1.17 r3 (2026-09-27)
 Impl:   -
 Tests:  -
-Note:   受信スタックの物理/論理構成の俯瞰図。詳細と根拠は
-        poe-br100-yb1-reception-stack.md（§番号で相互参照）。
+Note:   受信スタックの物理/論理構成の俯瞰図。詳細と根拠は poe-br100-yb1-reception-stack.md（§番号で相互参照）
 -->
 
 <!-- Open 層のみ: チップのシルク（現物・写真）、GPL カーネルのヘッダ、
