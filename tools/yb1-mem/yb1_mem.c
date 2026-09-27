@@ -25,6 +25,8 @@
  *   yb1-mem <phys> <len> find <lo> <hi>        words holding an address in
  *                                    [lo, hi] (KSEG bits folded away)
  *   yb1-mem <phys> <len> raw         the region as raw bytes, for snapshots
+ *   yb1-mem @<file> 0 <len> hashes   per packet: PID, cc, CRC-32 (compare two
+ *                                    captures without moving the payload)
  *   yb1-mem 0x10030000 0x10000 fifo [ms]   the TS input FIFOs in the AV SRAM:
  *                                    arrival times and TS headers only
  *
@@ -311,6 +313,52 @@ static void cmd_stats(const u8 *m, unsigned long len)
 		put("  lost ");
 		putdec(pid_miss[k]);
 		put(pid_scr[k] ? "  scr\n" : "\n");
+	}
+}
+
+/* One line per TS packet: PID, continuity_counter and the CRC-32 of the whole
+ * 188 bytes (the zlib/IEEE CRC-32, so a host can compute the same thing with
+ * zlib.crc32).  For checking a capture against another receiver's capture of
+ * the same broadcast packet by packet, without the payload leaving either
+ * machine: only the hashes travel. */
+static unsigned int crc_table[256];
+
+static unsigned int crc32_ieee(const u8 *p, unsigned long n)
+{
+	unsigned int c = 0xffffffffu;
+
+	while (n--)
+		c = crc_table[(c ^ *p++) & 0xff] ^ (c >> 8);
+	return c ^ 0xffffffffu;
+}
+
+static void cmd_hashes(const u8 *m, unsigned long len)
+{
+	unsigned long i;
+	unsigned int k, j;
+
+	for (k = 0; k < 256; k++) {
+		unsigned int c = k;
+
+		for (j = 0; j < 8; j++)
+			c = (c & 1) ? 0xedb88320u ^ (c >> 1) : c >> 1;
+		crc_table[k] = c;
+	}
+	for (i = 0; i + TS_LEN <= len; i += TS_LEN) {
+		const u8 *p = m + i;
+
+		if (p[0] != 0x47) {
+			put("desync at +0x");
+			puthex(i, 8);
+			put("\n");
+			break;
+		}
+		puthex(((p[1] & 0x1f) << 8) | p[2], 4);
+		put(" ");
+		puthex(p[3] & 15, 1);
+		put(" ");
+		puthex(crc32_ieee(p, TS_LEN), 8);
+		put("\n");
 	}
 }
 
@@ -961,6 +1009,7 @@ static void usage(void)
 	    "            [stride] [us]  (default 4, 0; us = pause before each load)\n"
 	    "  find    : words whose value & 0x1fffffff is in [lo, hi]  <lo> <hi>\n"
 	    "  raw     : the region as raw bytes on stdout (32-bit loads)\n"
+	    "  hashes  : per TS packet 'pid cc crc32' (zlib CRC-32 of 188 bytes)\n"
 	    "  fifo    : AV SRAM TS-input FIFOs (0x10030000 0x10000) [ms] [dump]:\n"
 	    "            headers and arrival times only; ms > 0 watches and counts,\n"
 	    "            'dump' lists every packet seen as 'fifo time header'\n"
@@ -1029,7 +1078,14 @@ int main(int argc, char **argv)
 	}
 	m = (const u8 *)r + off;
 
-	/* raw writes nothing but the bytes, so no banner. */
+	/* hashes and raw write nothing but their data, so no banner. */
+	if (streq(argv[3], "hashes")) {
+		cmd_hashes(m, len);
+		flushout();
+		tr_syscall(SYS_munmap, r, (long)maplen, 0, 0, 0, 0);
+		tr_syscall(SYS_close, fd, 0, 0, 0, 0, 0);
+		return 0;
+	}
 	if (streq(argv[3], "raw")) {
 		cmd_raw(m, len);
 		tr_syscall(SYS_munmap, r, (long)maplen, 0, 0, 0, 0);
