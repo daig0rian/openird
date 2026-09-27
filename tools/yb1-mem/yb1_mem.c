@@ -54,6 +54,7 @@
 #define O_SYNC		0x0010		/* MIPS: O_DSYNC, enough for /dev/mem */
 #define PROT_READ	0x1
 #define MAP_SHARED	0x001
+#define MAP_PRIVATE	0x002
 #define PAGE_SHIFT	12
 #define PAGE_SIZE	(1UL << PAGE_SHIFT)
 
@@ -490,6 +491,246 @@ static unsigned long now_us(void)
 
 	tr_syscall(SYS_gettimeofday, (long)tv, 0, 0, 0, 0, 0);
 	return tv[0] * 1000000ul + tv[1];
+}
+
+/*
+ * Where did a region's content come from?  Search files for it by exact match
+ * and print POSITIONS only -- never the bytes: the region may hold vendor code
+ * (docs/clean-room.md).  First the whole region, then each 512-byte block on
+ * its own, so that a region put together from pieces, or patched in places,
+ * still shows where its pieces come from.  A block of one repeated byte is
+ * only counted, not searched.
+ */
+#define LOC_MAX		0x10000
+#define LOC_BLK		512
+
+static u8 loc_buf[LOC_MAX];
+
+static long loc_find(const u8 *h, unsigned long hn, const u8 *n,
+		     unsigned long nn)
+{
+	unsigned long i, j;
+
+	for (i = 0; i + nn <= hn; i++) {
+		if (h[i] != n[0])
+			continue;
+		for (j = 1; j < nn && h[i + j] == n[j]; j++)
+			;
+		if (j == nn)
+			return (long)i;
+	}
+	return -1;
+}
+
+static int loc_uniform(const u8 *b, unsigned long n)
+{
+	unsigned long i;
+
+	for (i = 1; i < n; i++)
+		if (b[i] != b[0])
+			return 0;
+	return 1;
+}
+
+#define LOC_PIECE	16
+
+static void loc_span(const u8 *h, unsigned long hn, unsigned long s,
+		     unsigned long e)
+{
+	unsigned long o, found = 0, shown = 0, total = 0, base = 0;
+	int base_ok = 1;
+	long r = loc_find(h, hn, loc_buf + s, e - s);
+
+	put("  content span ");
+	if (r >= 0) {
+		put("at file offset 0x");
+		puthex((unsigned long)r, 8);
+		put("\n");
+		return;
+	}
+	put("not found; its 16-byte pieces (filler skipped):");
+	for (o = s; o < e; o += LOC_PIECE) {
+		unsigned long q = o + LOC_PIECE <= e ? o : e - LOC_PIECE;
+		long p;
+
+		if (e - s < LOC_PIECE)
+			q = s;		/* too short to cut: take it whole */
+		if (loc_uniform(loc_buf + q, e - s < LOC_PIECE ? e - s : LOC_PIECE))
+			continue;
+		total++;
+		p = loc_find(h, hn, loc_buf + q,
+			     e - s < LOC_PIECE ? e - s : LOC_PIECE);
+		if (p < 0)
+			continue;
+		if (!found)
+			base = (unsigned long)p - q;
+		else if ((unsigned long)p - q != base)
+			base_ok = 0;
+		found++;
+		if (shown++ < 24) {
+			put(" +0x");
+			puthex(q, 4);
+			put("@0x");
+			puthex((unsigned long)p, 8);
+		}
+	}
+	put("\n  pieces found ");
+	putdec(found);
+	put(" of ");
+	putdec(total);
+	put(" with content\n");
+	if (found && found == total && base_ok) {
+		/* Every piece sits at the same distance: compare word by word,
+		 * printing where the region has content and whether the file
+		 * has the same word there -- still positions only. */
+		unsigned long w, same = 0, diff = 0, notcopied = 0;
+
+		put("  all at file offset = region offset + 0x");
+		puthex(base, 8);
+		put("; non-zero words:");
+		for (w = s & ~3ul; w + 4 <= e; w += 4) {
+			const u8 *a = loc_buf + w, *c;
+			int nz = a[0] | a[1] | a[2] | a[3], eq;
+
+			if (base + w + 4 > hn)
+				break;
+			c = h + base + w;
+			eq = a[0] == c[0] && a[1] == c[1] && a[2] == c[2] &&
+			     a[3] == c[3];
+			if (!nz) {
+				if (c[0] | c[1] | c[2] | c[3])
+					notcopied++;
+				continue;
+			}
+			put(" +0x");
+			puthex(w, 4);
+			put(eq ? "=" : "!");
+			if (eq)
+				same++;
+			else
+				diff++;
+		}
+		put("\n  words equal to the file ");
+		putdec(same);
+		put(", different ");
+		putdec(diff);
+		put("; zero here but not in the file ");
+		putdec(notcopied);
+		put("\n");
+	}
+}
+
+static void cmd_locate(const u8 *m, unsigned long len, int nf, char **files)
+{
+	unsigned long i, b, nblk, s, e, uniform = 0;
+	int f, fill = -1;
+
+	if (len > LOC_MAX)
+		len = LOC_MAX;
+	for (i = 0; i < len; i++)	/* one pass over the (uncached) window */
+		loc_buf[i] = m[i];
+	nblk = (len + LOC_BLK - 1) / LOC_BLK;
+	/* The shape, once: which blocks are filler, and where the rest is. */
+	for (b = 0; b < nblk; b++) {
+		unsigned long o = b * LOC_BLK;
+		unsigned long n = len - o < LOC_BLK ? len - o : LOC_BLK;
+
+		if (loc_uniform(loc_buf + o, n)) {
+			uniform++;
+			if (fill < 0)
+				fill = loc_buf[o];
+		}
+	}
+	s = 0;
+	e = len;
+	if (fill >= 0) {
+		while (s < len && loc_buf[s] == fill)
+			s++;
+		while (e > s && loc_buf[e - 1] == fill)
+			e--;
+	}
+	put("blocks ");
+	putdec(nblk);
+	put(", uniform ");
+	putdec(uniform);
+	if (fill >= 0) {
+		put(" (fill 0x");
+		puthex((unsigned long)fill, 2);
+		put(")");
+	}
+	put("; content span +0x");
+	puthex(s, 4);
+	put("..+0x");
+	puthex(e, 4);
+	put(" (");
+	putdec(e - s);
+	put(" bytes)\n");
+	flushout();
+	for (f = 0; f < nf; f++) {
+		long fd, r;
+		long long size = 0;
+		const u8 *h;
+		unsigned long found = 0;
+
+		put(files[f]);
+		fd = tr_syscall(SYS_open, (long)files[f], O_RDONLY, 0, 0, 0, 0);
+		if (fd < 0) {
+			put(": open failed\n");
+			continue;
+		}
+		r = tr_syscall(SYS__llseek, fd, 0, 0, (long)&size, 2 /* SEEK_END */, 0);
+		if (r < 0 || size <= 0) {
+			put(": empty\n");
+			tr_syscall(SYS_close, fd, 0, 0, 0, 0, 0);
+			continue;
+		}
+		r = tr_syscall(SYS_mmap2, 0, (long)size, PROT_READ, MAP_PRIVATE,
+			       fd, 0);
+		if (r < 0 && r > -4096) {
+			put(": mmap failed\n");
+			tr_syscall(SYS_close, fd, 0, 0, 0, 0, 0);
+			continue;
+		}
+		h = (const u8 *)r;
+		put(": ");
+		putdec((unsigned long)size);
+		put(" bytes; whole region ");
+		r = loc_find(h, (unsigned long)size, loc_buf, len);
+		if (r >= 0) {
+			put("at file offset 0x");
+			puthex((unsigned long)r, 8);
+			put("\n");
+		} else {
+			put("not found\n");
+			for (b = 0; b < nblk; b++) {
+				unsigned long o = b * LOC_BLK;
+				unsigned long n = len - o < LOC_BLK ? len - o : LOC_BLK;
+				long p;
+
+				if (loc_uniform(loc_buf + o, n))
+					continue;
+				p = loc_find(h, (unsigned long)size, loc_buf + o, n);
+				if (p < 0)
+					continue;
+				found++;
+				put("  block +0x");
+				puthex(o, 4);
+				put(" at file offset 0x");
+				puthex((unsigned long)p, 8);
+				put("\n");
+			}
+			put("  blocks found ");
+			putdec(found);
+			put(" of ");
+			putdec(nblk - uniform);
+			put("\n");
+			if (e > s)
+				loc_span(h, (unsigned long)size, s, e);
+		}
+		tr_syscall(SYS_munmap, (long)h, (long)size, 0, 0, 0, 0);
+		tr_syscall(SYS_close, fd, 0, 0, 0, 0, 0);
+		flushout();
+	}
 }
 
 /*
@@ -1021,7 +1262,7 @@ static void cmd_kread(const char *dev, unsigned long addr, unsigned long len)
 
 static void usage(void)
 {
-	put("yb1-mem [@dev] <addr> <len> scan|stats|dump|words|churn|spin|burn|kread|nonzero|range|find|raw [n] [ms]\n"
+	put("yb1-mem [@dev] <addr> <len> scan|stats|dump|words|churn|spin|burn|locate|kread|nonzero|range|find|raw [n] [ms]\n"
 	    "  @dev    : map this device instead of /dev/mem (offset is its own)\n"
 	    "  kread   : <addr> is a KERNEL VIRTUAL address, read via /dev/kmem\n"
 	    "            (the only way to reach a module's variables; see kallsyms)\n"
@@ -1033,6 +1274,8 @@ static void usage(void)
 	    "  spin    : tight loop over n words for ms, log EVERY change in order\n"
 	    "  burn    : [ms] count passes of a CPU-only loop (addr/len ignored):\n"
 	    "            what a load leaves for others, IRQ time included\n"
+	    "  locate  : <file>... where the region (or each 512-byte block of it)\n"
+	    "            occurs in the files: positions only, never the bytes\n"
 	    "  nonzero : how much of the region is not zero\n"
 	    "  range   : one word per line, address flushed BEFORE the load\n"
 	    "            [stride] [us]  (default 4, 0; us = pause before each load)\n"
@@ -1160,6 +1403,8 @@ int main(int argc, char **argv)
 			 argc > 5 ? parse_or(argv[5], 500) : 500);
 	else if (streq(argv[3], "stats"))
 		cmd_stats(m, len);
+	else if (streq(argv[3], "locate"))
+		cmd_locate(m, len, argc - 4, argv + 4);
 	else if (streq(argv[3], "nonzero"))
 		cmd_nonzero(m, len);
 	else
