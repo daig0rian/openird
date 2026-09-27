@@ -49,6 +49,7 @@ sync
 | `openird-trace` | ベンダアプリに `LD_PRELOAD` の ioctl トレーサを被せる → `/tmp/yb1-trace.log` |
 | `openird-i2ctrace` | `rcS` が `/opt/openird/*.ko` を `trace=1` で load する |
 | `openird-csddebug` | `csd.ko` を `CSD_DEBUG=<中身>` で load する（`0` で静か） |
+| `openird-nocsd-once` | 次の 1 回だけ `csd` と `val_merge` を load しない（裏 CPU は止まったまま起動する）。読んだ時点でフックが消す。csd の load 前後を観察するため（2026-09-27 に実機のフックへ追加） |
 
 ---
 
@@ -67,6 +68,18 @@ uv run switchbot.py off ; Start-Sleep -Seconds 8 ; uv run switchbot.py on
 ```
 
 起動は約 50 秒（段階 C は `blur` が無いぶん少し速い）。
+
+**段階 C なら、電源の代わりに csd の入れ直しで済む**（2026-09-27・2 回成立）:
+
+```sh
+sh /app/setting/av-restart.sh     # rmmod val_merge csd → FW を dd → insmod csd → insmod val_merge
+```
+
+これで `val_demux nr=0x01` がまた `0` を返し、ハンドルは電源投入直後と同じ値になる。
+MXL683 の選局は残るので、やり直すのはデマルチプレクサの列だけ。
+`back CPU did NOT answer` が出たら電源を入れ直す。仕組みと実測は
+[裏 CPU 制御仕様 §5.2](specs/poe-br100-yb1-subcpu-control.md)、スクリプトは
+`tools/vendor-rootfs/av-restart.sh`。`CSD_MODE=FORCE` は起動をやり直さないので使わない。
 
 ---
 
