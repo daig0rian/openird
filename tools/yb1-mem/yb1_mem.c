@@ -230,8 +230,8 @@ static void cmd_stats(const u8 *m, unsigned long len)
 {
 	unsigned long i, start = 0, pkts = 0, bad = 0;
 	unsigned long scram[4] = { 0, 0, 0, 0 };
-	unsigned pid_seen[24], pid_scr[24], npid = 0, k;
-	unsigned pid_cnt[24], pid_cc[24], pid_ccerr[24], pid_miss[24];
+	unsigned pid_seen[64], pid_scr[64], npid = 0, k;
+	unsigned pid_cnt[64], pid_cc[64], pid_ccerr[64], pid_miss[64];
 	int found = 0;
 
 	for (i = 0; i + 3 * TS_LEN < len; i++) {
@@ -261,7 +261,7 @@ static void cmd_stats(const u8 *m, unsigned long len)
 		for (k = 0; k < npid; k++)
 			if (pid_seen[k] == pid)
 				break;
-		if (k == npid && npid < 24) {
+		if (k == npid && npid < 64) {
 			pid_seen[npid] = pid;
 			pid_scr[npid] = 0;
 			pid_cnt[npid] = 0;
@@ -270,7 +270,7 @@ static void cmd_stats(const u8 *m, unsigned long len)
 			pid_miss[npid] = 0;
 			npid++;
 		}
-		if (k >= 24)
+		if (k >= 64)
 			continue;
 		if (sc)
 			pid_scr[k] |= 1u << sc;
