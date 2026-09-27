@@ -19,6 +19,14 @@
  *   yb1-mem <phys> <len> words [n]   dump n 32-bit words (for device registers)
  *   yb1-mem <phys> <len> churn [n] [ms]   which words move over ms
  *   yb1-mem <phys> <len> nonzero     report where the region is not all zero
+ *   yb1-mem <phys> <len> range [stride] [us]   one word per line, for windows
+ *                                    that may hang the bus (address goes out
+ *                                    before the load)
+ *   yb1-mem <phys> <len> find <lo> <hi>        words holding an address in
+ *                                    [lo, hi] (KSEG bits folded away)
+ *   yb1-mem <phys> <len> raw         the region as raw bytes, for snapshots
+ *   yb1-mem 0x10030000 0x10000 fifo [ms]   the TS input FIFOs in the AV SRAM:
+ *                                    arrival times and TS headers only
  *
  * "words" exists because the SoC register windows the vendor application maps
  * (BHIF at 0x10000000, XDMA at 0x10009000, timer at 0x10110000) are peripheral
@@ -221,6 +229,7 @@ static void cmd_stats(const u8 *m, unsigned long len)
 	unsigned long i, start = 0, pkts = 0, bad = 0;
 	unsigned long scram[4] = { 0, 0, 0, 0 };
 	unsigned pid_seen[24], pid_scr[24], npid = 0, k;
+	unsigned pid_cnt[24], pid_cc[24], pid_ccerr[24], pid_miss[24];
 	int found = 0;
 
 	for (i = 0; i + 3 * TS_LEN < len; i++) {
@@ -253,10 +262,30 @@ static void cmd_stats(const u8 *m, unsigned long len)
 		if (k == npid && npid < 24) {
 			pid_seen[npid] = pid;
 			pid_scr[npid] = 0;
+			pid_cnt[npid] = 0;
+			pid_cc[npid] = 16;		/* none seen yet */
+			pid_ccerr[npid] = 0;
+			pid_miss[npid] = 0;
 			npid++;
 		}
-		if (k < 24 && sc)
+		if (k >= 24)
+			continue;
+		if (sc)
 			pid_scr[k] |= 1u << sc;
+		pid_cnt[k]++;
+		/* continuity_counter: steps by one per packet that carries a
+		 * payload (adaptation_field_control bit 0).  A repeat of the last
+		 * value is an allowed duplicate; anything else is a gap. */
+		if (p[3] & 0x10) {
+			unsigned cc = p[3] & 15;
+
+			if (pid_cc[k] < 16 && cc != ((pid_cc[k] + 1) & 15) &&
+			    cc != pid_cc[k]) {
+				pid_ccerr[k]++;
+				pid_miss[k] += (cc - pid_cc[k] - 1) & 15;
+			}
+			pid_cc[k] = cc;
+		}
 	}
 	put("packets ");
 	putdec(pkts);
@@ -270,10 +299,17 @@ static void cmd_stats(const u8 *m, unsigned long len)
 	putdec(scram[2]);
 	put(" odd=");
 	putdec(scram[3]);
-	put("\nPIDs (scr = scrambled seen):\n");
+	put("\nPIDs (scr = scrambled seen; cc gaps = continuity breaks,"
+	    " lost = packets they skip):\n");
 	for (k = 0; k < npid; k++) {
 		put("  0x");
 		puthex(pid_seen[k], 4);
+		put("  packets ");
+		putdec(pid_cnt[k]);
+		put("  cc gaps ");
+		putdec(pid_ccerr[k]);
+		put("  lost ");
+		putdec(pid_miss[k]);
 		put(pid_scr[k] ? "  scr\n" : "\n");
 	}
 }
@@ -463,6 +499,349 @@ static void cmd_spin(const u8 *m, unsigned long len, unsigned long n,
 	}
 }
 
+/* Walk an unknown register window one word at a time, one line per word.
+ *
+ * Some windows stop the board when read (0x11000000 does, spec §54.1), and
+ * the only useful record of such a read is the address it died on.  So the
+ * address goes out -- written, not buffered -- BEFORE the load is issued, and
+ * the value follows on the same line.  A line with an address and no value is
+ * the one that hung.  With us > 0 the tool also sleeps between printing the
+ * address and loading it, which lets telnetd push the line onto the wire
+ * first; without that the last lines can still be sitting in the pty when the
+ * bus locks up. */
+static void sleep_us(unsigned long us)
+{
+	long ts[2];
+
+	ts[0] = (long)(us / 1000000ul);
+	ts[1] = (long)((us % 1000000ul) * 1000ul);
+	tr_syscall(SYS_nanosleep, (long)ts, 0, 0, 0, 0, 0);
+}
+
+static void cmd_range(const u8 *m, unsigned long phys, unsigned long len,
+		      unsigned long stride, unsigned long us)
+{
+	unsigned long i;
+
+	if (((unsigned long)m & 3) != 0 || (stride & 3) != 0 || stride == 0) {
+		put("address and stride must be multiples of 4\n");
+		return;
+	}
+	for (i = 0; i + 4 <= len; i += stride) {
+		put("0x");
+		puthex(phys + i, 8);
+		put(" ");
+		flushout();
+		if (us)
+			sleep_us(us);
+		puthex(*(const volatile unsigned int *)(m + i), 8);
+		put("\n");
+		flushout();
+	}
+}
+
+/* Report every word whose value, with the KSEG bits folded away, lies in
+ * [lo, hi].  The AV side hands out KSEG1 (0xa.......) and physical forms of
+ * the same address interchangeably, so both must match one query. */
+static void cmd_find(const u8 *m, unsigned long phys, unsigned long len,
+		     unsigned long lo, unsigned long hi)
+{
+	const volatile unsigned int *w = (const volatile unsigned int *)m;
+	unsigned long i, n = len / 4, hits = 0;
+
+	if (((unsigned long)m & 3) != 0) {
+		put("address is not 4-byte aligned\n");
+		return;
+	}
+	for (i = 0; i < n; i++) {
+		unsigned int v = w[i];
+		unsigned long p = v & 0x1ffffffful;
+
+		if (p < lo || p > hi)
+			continue;
+		if (hits++ < 256) {
+			put("  0x");
+			puthex(phys + i * 4, 8);
+			put(" = ");
+			puthex(v, 8);
+			put("\n");
+		}
+	}
+	put("find [0x");
+	puthex(lo, 8);
+	put(", 0x");
+	puthex(hi, 8);
+	put("] : ");
+	putdec(hits);
+	put(" hits in ");
+	putdec(n);
+	put(" words\n");
+}
+
+/* The region as raw big-endian bytes on stdout, read with 32-bit loads (the
+ * register windows want word accesses).  For snapshots: redirect to a file in
+ * tmpfs, compress, and diff on the host. */
+static unsigned int rawbuf[1024];
+
+static void cmd_raw(const u8 *m, unsigned long len)
+{
+	const volatile unsigned int *w = (const volatile unsigned int *)m;
+	unsigned long i, n = len / 4, k = 0;
+
+	for (i = 0; i < n; i++) {
+		rawbuf[k++] = w[i];
+		if (k == sizeof(rawbuf) / sizeof(rawbuf[0]) || i + 1 == n) {
+			tr_syscall(SYS_write, STDOUT, (long)rawbuf, (long)(k * 4),
+				   0, 0, 0);
+			k = 0;
+		}
+	}
+}
+
+/* The TS input FIFOs in the AV data SRAM (spec §73.6).
+ *
+ * Three control blocks, 0x80 apart from SRAM offset 0xec00; words 5..11 of
+ * each hold the SRAM offsets of its 7 slots.  A slot carries a 27 MHz arrival
+ * time at +0x0c and a whole 188-byte TS packet from +0x10.
+ *
+ * Only the arrival time and the 4-byte TS header are ever read here -- never
+ * the payload.  Packets of scrambled services may pass through these slots,
+ * and the question asked of them is only the header's
+ * transport_scrambling_control, the same treatment as the "stats" command.
+ *
+ * ms == 0 prints the slots once.  ms > 0 watches all slots in a tight loop,
+ * logs every new packet (a slot whose arrival time changed), then reports per
+ * FIFO and PID: packets seen, the scrambling_control histogram, and the rate.
+ * The loop can miss packets when the CPU is taken away, so the rate is given
+ * twice: from the packets seen, and from the continuity_counter steps between
+ * them (which also counts the ones that were overwritten before we looked). */
+#define FIFO_CTL	0xec00
+#define FIFO_N		3
+#define FIFO_SLOTS	7
+#define FIFO_EVENTS	20000
+#define TICKS_PER_MS	27000u		/* measured: 27.000 MHz, spec §73.6 */
+
+static unsigned int fev_ats[FIFO_EVENTS];
+static unsigned int fev_hdr[FIFO_EVENTS];
+static unsigned char fev_fifo[FIFO_EVENTS];
+
+static void put_hdr_word(unsigned int h)
+{
+	put(" pid=0x");
+	puthex((h >> 8) & 0x1fff, 4);
+	put(" pusi=");
+	putdec((h >> 22) & 1);
+	put(" scr=");
+	putdec((h >> 6) & 3);
+	put(" afc=");
+	putdec((h >> 4) & 3);
+	put(" cc=");
+	putdec(h & 15);
+}
+
+static void cmd_fifo(const u8 *m, unsigned long phys, unsigned long len,
+		     unsigned long ms, int dump)
+{
+	const volatile unsigned int *w = (const volatile unsigned int *)m;
+	unsigned int slot[FIFO_N][FIFO_SLOTS], last[FIFO_N][FIFO_SLOTS];
+	unsigned long f, k, i, j, ev = 0, passes = 0, t0, deadline, r;
+
+	if (phys != 0x10030000ul || len < 0x10000ul) {
+		put("fifo wants the AV SRAM window: 0x10030000 0x10000\n");
+		return;
+	}
+	/* The 7-word list is a queue the other CPU rotates while we read it, so
+	 * one read can show a slot twice and miss another.  Read it many times
+	 * and keep the union. */
+	for (f = 0; f < FIFO_N; f++)
+		for (k = 0; k < FIFO_SLOTS; k++)
+			slot[f][k] = 0;
+	for (r = 0; r < 2000; r++)
+		for (f = 0; f < FIFO_N; f++)
+			for (k = 0; k < FIFO_SLOTS; k++) {
+				unsigned int o = w[(FIFO_CTL + f * 0x80 + 0x14) / 4 + k];
+				unsigned long q;
+
+				if (o >= 0x10000 - 0x10 - 4 || (o & 3) != 0 || o == 0)
+					continue;
+				for (q = 0; q < FIFO_SLOTS && slot[f][q] && slot[f][q] != o; q++)
+					;
+				if (q < FIFO_SLOTS && !slot[f][q])
+					slot[f][q] = o;
+			}
+	for (f = 0; f < FIFO_N; f++)
+		for (k = 0; k < FIFO_SLOTS; k++)
+			last[f][k] = slot[f][k] ? w[(slot[f][k] + 0x0c) / 4] : 0;
+
+	if (ms == 0) {
+		for (f = 0; f < FIFO_N; f++)
+			for (k = 0; k < FIFO_SLOTS; k++) {
+				put("fifo ");
+				putdec(f);
+				put(" slot +0x");
+				puthex(slot[f][k], 4);
+				if (!slot[f][k]) {
+					put(" (not set up)\n");
+					continue;
+				}
+				put(" t=");
+				puthex(w[(slot[f][k] + 0x0c) / 4], 8);
+				put(" hdr=");
+				puthex(w[(slot[f][k] + 0x10) / 4], 8);
+				put_hdr_word(w[(slot[f][k] + 0x10) / 4]);
+				put("\n");
+			}
+		return;
+	}
+
+	t0 = now_us();
+	deadline = t0 + ms * 1000ul;
+	while (ev < FIFO_EVENTS) {
+		for (f = 0; f < FIFO_N; f++)
+			for (k = 0; k < FIFO_SLOTS; k++) {
+				unsigned int a, h, a2;
+
+				if (!slot[f][k])
+					continue;
+				a = w[(slot[f][k] + 0x0c) / 4];
+				if (a == last[f][k])
+					continue;
+				h = w[(slot[f][k] + 0x10) / 4];
+				a2 = w[(slot[f][k] + 0x0c) / 4];
+				last[f][k] = a2;
+				if (a2 != a || ev >= FIFO_EVENTS)
+					continue;	/* rewritten under us */
+				fev_ats[ev] = a;
+				fev_hdr[ev] = h;
+				fev_fifo[ev] = (unsigned char)f;
+				ev++;
+			}
+		passes++;
+		if ((passes & 0xff) == 0 && now_us() >= deadline)
+			break;
+	}
+
+	put("fifo watch ");
+	putdec(now_us() - t0);
+	put(" us, ");
+	putdec(passes);
+	put(" passes, ");
+	putdec(ev);
+	put(" new packets\n");
+
+	/* Arrival order: detection order is nearly sorted already, so an
+	 * insertion sort on the arrival time (relative to the first) is cheap. */
+	for (i = 1; i < ev; i++) {
+		unsigned int a = fev_ats[i], h = fev_hdr[i];
+		unsigned char ff = fev_fifo[i];
+
+		for (j = i; j > 0 &&
+		     (int)(fev_ats[j - 1] - fev_ats[0]) > (int)(a - fev_ats[0]); j--) {
+			fev_ats[j] = fev_ats[j - 1];
+			fev_hdr[j] = fev_hdr[j - 1];
+			fev_fifo[j] = fev_fifo[j - 1];
+		}
+		fev_ats[j] = a;
+		fev_hdr[j] = h;
+		fev_fifo[j] = ff;
+	}
+
+	/* "dump": every event as "fifo time header" -- header only, no payload --
+	 * for analysis on the host. */
+	for (i = 0; i < ev && (dump || i < 24); i++) {
+		if (dump) {
+			putdec(fev_fifo[i]);
+			put(" ");
+			puthex(fev_ats[i], 8);
+			put(" ");
+			puthex(fev_hdr[i], 8);
+			put("\n");
+			continue;
+		}
+		put("  fifo ");
+		putdec(fev_fifo[i]);
+		put(" t=");
+		puthex(fev_ats[i], 8);
+		put_hdr_word(fev_hdr[i]);
+		put("\n");
+	}
+
+	/* One summary line per (fifo, pid), in order of first appearance. */
+	{
+	unsigned int key[32], first_ix[32];
+	unsigned long nk = 0, q;
+
+	for (i = 0; i < ev; i++) {
+		unsigned int kv = ((unsigned int)fev_fifo[i] << 16) |
+				  ((fev_hdr[i] >> 8) & 0x1fff);
+
+		for (q = 0; q < nk; q++)
+			if (key[q] == kv)
+				break;
+		if (q == nk && nk < 32) {
+			key[nk] = kv;
+			first_ix[nk] = i;
+			nk++;
+		}
+	}
+	for (q = 0; q < nk; q++) {
+		unsigned int pid = key[q] & 0x1fff, f0 = key[q] >> 16;
+		unsigned long seen = 0, steps = 0, zero = 0, span, spanms;
+		unsigned long scr[4] = { 0, 0, 0, 0 };
+		unsigned int first, lastt, cc = 16;
+
+		i = first_ix[q];
+		first = lastt = fev_ats[i];
+		for (j = i; j < ev; j++) {
+			unsigned int h = fev_hdr[j];
+
+			if (fev_fifo[j] != f0 || ((h >> 8) & 0x1fff) != pid)
+				continue;
+			seen++;
+			scr[(h >> 6) & 3]++;
+			lastt = fev_ats[j];
+			if (cc < 16) {
+				unsigned int d = ((h & 15) - cc) & 15;
+
+				if (d == 0)
+					zero++;
+				steps += d;
+			}
+			cc = h & 15;
+		}
+		span = lastt - first;
+		spanms = span / TICKS_PER_MS;
+		put("fifo ");
+		putdec(f0);
+		put(" pid 0x");
+		puthex(pid, 4);
+		put(" : seen ");
+		putdec(seen);
+		put("  scr none/rsv/even/odd = ");
+		putdec(scr[0]);
+		put("/");
+		putdec(scr[1]);
+		put("/");
+		putdec(scr[2]);
+		put("/");
+		putdec(scr[3]);
+		put("  span ");
+		putdec(spanms);
+		put(" ms");
+		if (spanms) {
+			put("  seen-rate ");
+			putdec(seen * 1000ul / spanms);
+			put("/s  cc-rate ");
+			putdec(steps * 1000ul / spanms);
+			put("/s (cc 0-steps ");
+			putdec(zero);
+			put(")");
+		}
+		put("\n");
+	}
+	}
+}
+
 static void cmd_nonzero(const u8 *m, unsigned long len)
 {
 	unsigned long i, nz = 0, firstnz = 0;
@@ -567,7 +946,7 @@ static void cmd_kread(const char *dev, unsigned long addr, unsigned long len)
 
 static void usage(void)
 {
-	put("yb1-mem [@dev] <addr> <len> scan|stats|dump|words|churn|kread|nonzero [n] [ms]\n"
+	put("yb1-mem [@dev] <addr> <len> scan|stats|dump|words|churn|spin|kread|nonzero|range|find|raw [n] [ms]\n"
 	    "  @dev    : map this device instead of /dev/mem (offset is its own)\n"
 	    "  kread   : <addr> is a KERNEL VIRTUAL address, read via /dev/kmem\n"
 	    "            (the only way to reach a module's variables; see kallsyms)\n"
@@ -578,6 +957,13 @@ static void usage(void)
 	    "  churn   : which of n words change over ms milliseconds (default 64, 500)\n"
 	    "  spin    : tight loop over n words for ms, log EVERY change in order\n"
 	    "  nonzero : how much of the region is not zero\n"
+	    "  range   : one word per line, address flushed BEFORE the load\n"
+	    "            [stride] [us]  (default 4, 0; us = pause before each load)\n"
+	    "  find    : words whose value & 0x1fffffff is in [lo, hi]  <lo> <hi>\n"
+	    "  raw     : the region as raw bytes on stdout (32-bit loads)\n"
+	    "  fifo    : AV SRAM TS-input FIFOs (0x10030000 0x10000) [ms] [dump]:\n"
+	    "            headers and arrival times only; ms > 0 watches and counts,\n"
+	    "            'dump' lists every packet seen as 'fifo time header'\n"
 	    "0x prefix for hex.  Reads only; nothing is written.\n");
 }
 
@@ -643,14 +1029,32 @@ int main(int argc, char **argv)
 	}
 	m = (const u8 *)r + off;
 
+	/* raw writes nothing but the bytes, so no banner. */
+	if (streq(argv[3], "raw")) {
+		cmd_raw(m, len);
+		tr_syscall(SYS_munmap, r, (long)maplen, 0, 0, 0, 0);
+		tr_syscall(SYS_close, fd, 0, 0, 0, 0, 0);
+		return 0;
+	}
+
 	put(dev);
 	put(" off 0x");
 	puthex(phys, 8);
 	put("  len ");
 	putdec(len);
 	put("\n");
+	flushout();
 
-	if (streq(argv[3], "scan"))
+	if (streq(argv[3], "range"))
+		cmd_range(m, phys, len, argc > 4 ? parse_or(argv[4], 4) : 4,
+			  argc > 5 ? parse_or(argv[5], 0) : 0);
+	else if (streq(argv[3], "find"))
+		cmd_find(m, phys, len, argc > 4 ? parse_or(argv[4], 0) : 0,
+			 argc > 5 ? parse_or(argv[5], 0) : 0);
+	else if (streq(argv[3], "fifo"))
+		cmd_fifo(m, phys, len, argc > 4 ? parse_or(argv[4], 0) : 0,
+			 argc > 5 && streq(argv[5], "dump"));
+	else if (streq(argv[3], "scan"))
 		cmd_scan(m, len);
 	else if (streq(argv[3], "dump"))
 		cmd_dump(m, len, argc > 4 ? parse_or(argv[4], 128) : 128);
