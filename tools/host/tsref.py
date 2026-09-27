@@ -19,6 +19,10 @@ import zlib
 
 TS = 188
 PCR_WRAP = (1 << 33) * 300
+# Descriptors that name a CA stream's PID: the conditional access descriptor
+# (0x09) and ARIB's access control descriptor (0xF6, ARIB TR-B14 Vol.4 5.2 /
+# 30.2.2.2: same layout; EMM when in the CAT, ECM when in the PMT).
+CA_TAGS = (0x09, 0xF6)
 
 
 def packets(buf):
@@ -170,10 +174,10 @@ def main():
         pcr = ((s[8] & 0x1f) << 8) | s[9]
         pil = ((s[10] & 0x0f) << 8) | s[11]
         cas = ['CA_PID 0x%04x' % (((d[2] & 0x1f) << 8) | d[3])
-               for t, d in descriptors(s[12:12 + pil]) if t == 0x09 and len(d) >= 4]
+               for t, d in descriptors(s[12:12 + pil]) if t in CA_TAGS and len(d) >= 4]
         announced.setdefault(0x1fff, 'null')
         for t, d in descriptors(s[12:12 + pil]):
-            if t == 0x09 and len(d) >= 4:
+            if t in CA_TAGS and len(d) >= 4:
                 announced.setdefault(((d[2] & 0x1f) << 8) | d[3], 'CA %04x' % prog)
         if pcr != 0x1fff:
             announced.setdefault(pcr, 'PCR %04x' % prog)
@@ -184,7 +188,7 @@ def main():
             es.append('0x%04x(type %02x)' % (epid, stype))
             announced.setdefault(epid, 'ES %04x t%02x' % (prog, stype))
             for t, d in descriptors(s[i + 5:i + 5 + eil]):
-                if t == 0x09 and len(d) >= 4:
+                if t in CA_TAGS and len(d) >= 4:
                     announced.setdefault(((d[2] & 0x1f) << 8) | d[3], 'CA %04x' % prog)
             i += 5 + eil
         print('PMT 0x%04x on 0x%04x: PCR 0x%04x  %s  %s' % (prog, pmt_pid, pcr, ' '.join(es), ' '.join(cas)))
@@ -196,20 +200,30 @@ def main():
         if s[0] == 1:
             cat_seen += 1
             ok = crc_ok(s)
-            pids = [((d[2] & 0x1f) << 8) | d[3] for t, d in descriptors(s[8:-4]) if t == 0x09 and len(d) >= 4]
+            pids = [((d[2] & 0x1f) << 8) | d[3] for t, d in descriptors(s[8:-4]) if t in CA_TAGS and len(d) >= 4]
             print('CAT section: crc %s, CA_PID %s' % ('ok' if ok else 'BAD', ' '.join('0x%04x' % x for x in pids) or '-'))
             for x in pids:
                 announced.setdefault(x, 'CA (CAT)')
     if not cat_seen:
         print('CAT: no section reassembled (%d packets on PID 1)' % st['cnt'][1])
     tids = {pid: sorted({s[0] for s in secs[pid].out if crc_ok(s)}) for pid in range(0x10, 0x30) if secs[pid].out}
+    # PIDs nothing announces: which kind of sections do they carry?  The
+    # table_id says (ARIB STD-B10 Table 5-2: 0x3a-0x3f DSM-CC, 0x82-0x83 ECM,
+    # 0x84-0x85 EMM ...).  Only the table_id is read, never the contents.
+    stray = {pid for pid in st['cnt'] if pid not in announced and pid not in tids}
+    if stray:
+        _, ssecs = scan(buf, stray)
+        for pid in stray:
+            if ssecs[pid].out:
+                tids[pid] = sorted({s[0] for s in ssecs[pid].out})
 
     print('\n  PID     packets  pkt/s   scrambled(even/odd)  cc_gaps  tei  role')
     for pid, c in sorted(st['cnt'].items()):
         role = announced.get(pid)
         if role is None:
-            role = ('SI table_id ' + ','.join('%02x' % t for t in tids[pid])) if pid in tids else \
-                   ('null' if pid == 0x1fff else '-- NOT ANNOUNCED --')
+            kind = 'SI' if 0x10 <= pid < 0x30 else 'NOT ANNOUNCED'
+            role = ('%s, table_id %s' % (kind, ','.join('%02x' % t for t in tids[pid]))) \
+                if pid in tids else ('null' if pid == 0x1fff else '-- NOT ANNOUNCED --')
         sc = st['scr'][pid]
         print('  0x%04x %8d %7.1f   %7d/%-7d      %5d  %4d  %s' % (
             pid, c, c / dur if dur else 0, sc[2], sc[3], st['gap'][pid], st['tei'][pid], role))
