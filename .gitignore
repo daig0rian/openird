@@ -95,3 +95,10 @@ tools/yb1-mmac/.*.cmd
 tools/yb1-mmac/.tmp_versions/
 tools/yb1-bhifwatch/.*.cmd
 tools/yb1-bhifwatch/.tmp_versions/
+tools/yb1-fifodrain/*.ko
+tools/yb1-fifodrain/*.o
+tools/yb1-fifodrain/*.mod.c
+tools/yb1-fifodrain/Module.*
+tools/yb1-fifodrain/modules.order
+tools/yb1-fifodrain/.*.cmd
+tools/yb1-fifodrain/.tmp_versions/
