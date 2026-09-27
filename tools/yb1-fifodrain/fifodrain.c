@@ -4,16 +4,17 @@
  * into a ring the main CPU owns, from a high-resolution timer, and hand the
  * packets to userland through a character device.
  *
- * What it reads (docs/specs/poe-br100-yb1-reception-stack.md §73.6, §73.9)
- * -----------------------------------------------------------------------
+ * What it reads (docs/specs/poe-br100-yb1-reception-stack.md §73, §77)
+ * -------------------------------------------------------------------
  * The AV sub-CPU's data SRAM is visible to the main CPU at 0x10030000..
  * 0x1003ffff.  Three FIFO control blocks sit at SRAM offset 0xec00 + 0x80*n;
- * words 5..11 of each list the SRAM offsets of its seven 220-byte slots.  A
- * slot holds a 27 MHz arrival time at +0x0c and one whole 188-byte TS packet
- * at +0x10.  The TS input hardware fills them with the packets of every PID
- * the demultiplexer's PID table holds, scrambled or not, going round the
- * slots in address order, and the sub-CPU recycles them: with one video PID
- * a slot is rewritten about every 0.8 ms.
+ * words 5..11 of each are a queue of the FIFO's free 220-byte slots.  A slot
+ * holds a 27 MHz arrival time at +0x0c and one whole 188-byte TS packet at
+ * +0x10.  The TS input hardware fills them with the packets of every PID the
+ * demultiplexer's PID table holds for that FIFO's device (36 filters per
+ * device), scrambled or not; the sub-CPU hands each slot back when it is done
+ * with it.  FIFO 0 has 7 slots, FIFO 1 6, FIFO 2 8, and with many PIDs they
+ * are NOT filled in address order.
  *
  * Userland cannot keep up with that (spec §73.10: 99.7 % with the CPU pinned,
  * lost in the 7-8 ms it is preempted).  An hrtimer callback in hard-IRQ
@@ -21,45 +22,40 @@
  *
  * How a packet is taken
  * ---------------------
- * A slot has a new packet when its arrival time differs from the one we last
- * took from it.  Normally only the slot the hardware writes next is read
- * (and the ones after it while they are new); every 64th tick all seven are
- * read, to notice if the order is ever not the expected one.  The new ones
- * are taken oldest first.  All but the newest are complete, because a later
- * packet has already arrived behind them; the newest may still be being
- * written (the arrival time precedes the packet in the slot), so it is taken
- * only when the next tick sees the same arrival time.
+ * Every tick reads every slot's arrival time; a slot whose time differs from
+ * the one we last took from it holds a new packet.  The new ones are taken
+ * oldest first.  All but the newest are complete, because a later packet has
+ * already arrived behind them; the newest may still be being written (the
+ * arrival time precedes the packet in the slot), so it is taken only when the
+ * next tick sees the same arrival time.
  *
  * How the bytes are moved
  * -----------------------
  * The SRAM answers every 32-bit read in ~0.23 us, cached or not (sramspeed.ko),
- * so a CPU copy costs ~15.6 us a packet (spec §74.3).  By default the SoC's
- * memory DMA does it (XDMA channel 2, see the XDMA section): each tick starts
- * ONE transfer that copies the ready slots, as they lie in the SRAM, straight
- * into the ring, and the next tick checks them.  The ring is physically
- * contiguous and each element is one 220-byte slot image (arrival time,
- * packet, padding), so the CPU never touches the packet bytes in interrupt
- * context; read() takes the 188 bytes out.  use_xdma=0 keeps the CPU copy.
- *
- * A packet is kept only if its arrival time, both in the copy and in the
- * SRAM when the copy is checked, is the one it was chosen by: then the slot
- * was not rewritten between being chosen and being checked.
+ * so a CPU copy costs ~15.6 us a packet (spec §74.3).  One FIFO (xdma_fifo) is
+ * copied by the SoC's memory DMA instead (XDMA channel 2, see the XDMA
+ * section): each tick starts one transfer over the address range holding the
+ * ready slots into a staging buffer, and the next tick checks each copy and
+ * puts the packets into the ring in arrival order.  The other enabled FIFOs
+ * -- meant for the light PIDs -- are copied by the CPU in the same tick.
+ * use_xdma=0 copies everything with the CPU.
  *
  * The module only ever reads the SRAM.  It never writes to it, never talks to
  * the sub-CPU, and does not touch the descrambler.  The only register it
  * writes is its own XDMA channel.  Which PIDs arrive is set up beforehand
- * with the demultiplexer ioctls (spec §43, §73.9).
+ * with the demultiplexer ioctls (spec §43, §73.9, §77).
  *
  * Interfaces
  * ----------
- *   /dev/<misc "yb1fifo">  read(): whole 188-byte packets in arrival order.
- *                          open() starts from "now" (the backlog is dropped).
+ *   /dev/<misc "yb1fifo">  read(): whole 188-byte packets; within a PID in
+ *                          arrival order.  open() starts from "now".
  *   /proc/yb1fifo          counters: packets, torn, overrun, continuity gaps
  *                          per PID, and the time the timer callback costs.
  *
  * Parameters: period_us (default 100), fifos (bit mask, default 1 = FIFO 0),
  * wake_pkts (wake the reader when this many wait, or every 10 ms; 64),
- * use_xdma (1 = XDMA channel 2 straight into the ring, default; 0 = CPU copy).
+ * use_xdma (1 = XDMA for one FIFO, default; 0 = CPU copy only),
+ * xdma_fifo (the FIFO the XDMA copies; default the highest enabled).
  *
  * Load it after the demultiplexer has been configured: the slot list is read
  * once, at load time, and loading fails if the chosen FIFOs are not set up.
@@ -87,7 +83,7 @@
 #define SRAM_LEN	0x10000ul
 #define FIFO_CTL	0xec00
 #define FIFO_N		3
-#define FIFO_SLOTS	7
+#define SLOTS_MAX	16		/* measured: 7, 6 and 8 slots (spec §77) */
 #define SLOT_ATS	0x0c
 #define SLOT_PKT	0x10
 #define SLOT_STRIDE	0xdc		/* 220: slots are this far apart */
@@ -113,10 +109,11 @@ MODULE_PARM_DESC(use_xdma, "1 = XDMA channel 2 into the ring (default), "
 
 static void __iomem *sram;
 /* per FIFO, slots in address order = the order the hardware fills them */
-static u32 slot_off[FIFO_N][FIFO_SLOTS];
-static u32 done_ats[FIFO_N][FIFO_SLOTS];	/* arrival time last taken */
-static u32 pend_ats[FIFO_N][FIFO_SLOTS];	/* newest, seen once */
-static u8 pend_ok[FIFO_N][FIFO_SLOTS];
+static u32 slot_off[FIFO_N][SLOTS_MAX];
+static int nslots[FIFO_N];
+static u32 done_ats[FIFO_N][SLOTS_MAX];	/* arrival time last taken */
+static u32 pend_ats[FIFO_N][SLOTS_MAX];	/* newest, seen once */
+static u8 pend_ok[FIFO_N][SLOTS_MAX];
 static u32 ref_ats[FIFO_N];			/* newest arrival taken */
 static int next_slot[FIFO_N];			/* written next, we expect */
 
@@ -233,39 +230,33 @@ static inline u32 slot_ats(int f, int k)
  * held back). */
 static int ready_slots(int f, int *rdy, u32 *rdy_ats, int *seen)
 {
-	int cand[FIFO_SLOTS], n = 0, i, j, r = 0;
-	u32 ats[FIFO_SLOTS];
+	int cand[SLOTS_MAX], n = 0, i, j, r = 0, ns = nslots[f];
+	u32 ats[SLOTS_MAX];
 
-	if (st_ticks % 64) {
-		/* the next slot to be written, and on while they are new */
-		for (i = next_slot[f]; n < FIFO_SLOTS; i = (i + 1) % FIFO_SLOTS) {
-			ats[i] = slot_ats(f, i);
-			if (ats[i] == done_ats[f][i])
-				break;
+	/* Every slot, every tick, oldest first by arrival time.  The slots are
+	 * NOT filled in address order in general: the list in the control
+	 * block is a queue of free slots, the hardware takes the head and the
+	 * sub-CPU puts a slot back when it is done with it, so with many PIDs
+	 * the order drifts (spec §77; assuming address order lost packets).
+	 * `resync' still counts where it differed from address order. */
+	for (i = 0; i < ns; i++) {
+		ats[i] = slot_ats(f, i);
+		if (ats[i] != done_ats[f][i])
 			cand[n++] = i;
-		}
-	} else {
-		cur_flags |= F_FULL;
-		/* all seven, oldest first by arrival time */
-		for (i = 0; i < FIFO_SLOTS; i++) {
-			ats[i] = slot_ats(f, i);
-			if (ats[i] != done_ats[f][i])
-				cand[n++] = i;
-		}
-		for (i = 1; i < n; i++) {
-			int c = cand[i];
-
-			for (j = i; j > 0 && (s32)(ats[cand[j - 1]] - ref_ats[f]) >
-					      (s32)(ats[c] - ref_ats[f]); j--)
-				cand[j] = cand[j - 1];
-			cand[j] = c;
-		}
-		if (n && cand[0] != next_slot[f])
-			st_resync++;		/* not where we expected */
-		for (i = 1; i < n; i++)
-			if (cand[i] != (cand[i - 1] + 1) % FIFO_SLOTS)
-				st_resync++;
 	}
+	for (i = 1; i < n; i++) {
+		int c = cand[i];
+
+		for (j = i; j > 0 && (s32)(ats[cand[j - 1]] - ref_ats[f]) >
+				      (s32)(ats[c] - ref_ats[f]); j--)
+			cand[j] = cand[j - 1];
+		cand[j] = c;
+	}
+	if (n && cand[0] != next_slot[f])
+		st_resync++;
+	for (i = 1; i < n; i++)
+		if (cand[i] != (cand[i - 1] + 1) % ns)
+			st_resync++;
 	for (i = 0; i < n; i++) {
 		int k = cand[i];
 
@@ -280,7 +271,7 @@ static int ready_slots(int f, int *rdy, u32 *rdy_ats, int *seen)
 	}
 	if (n > cur_seen)
 		cur_seen = n;
-	if (n == FIFO_SLOTS)
+	if (n == ns)
 		cur_flags |= F_ALL7;
 	*seen = n;
 	return r;
@@ -290,7 +281,7 @@ static void mark_taken(int f, int k, u32 ats)
 {
 	done_ats[f][k] = ats;
 	pend_ok[f][k] = 0;
-	next_slot[f] = (k + 1) % FIFO_SLOTS;
+	next_slot[f] = (k + 1) % nslots[f];
 }
 
 /* A checked packet: count it; returns 1. */
@@ -306,16 +297,22 @@ static int got(int f, u32 ats, const u32 *pkt)
 
 static u32 scratch[ELEM / 4];
 
+/*
+ * Ring positions.  [tail, head) is published to the reader; [head, wr) has
+ * been filled during the current tick and is published at its end.
+ */
+static u32 wr;
+
 static int drain_cpu(int f)
 {
-	int rdy[FIFO_SLOTS], n, i, j, took = 0, seen;
-	u32 rdy_ats[FIFO_SLOTS];
+	int rdy[SLOTS_MAX], n, i, j, took = 0, seen;
+	u32 rdy_ats[SLOTS_MAX];
 
 	n = ready_slots(f, rdy, rdy_ats, &seen);
 	for (i = 0; i < n; i++) {
 		void __iomem *slot = sram + slot_off[f][rdy[i]];
-		int full = head - tail >= ring_n;
-		u32 *e = full ? scratch : (u32 *)(ring + (head % ring_n) * ELEM);
+		int full = wr - tail >= ring_n;
+		u32 *e = full ? scratch : (u32 *)(ring + (wr % ring_n) * ELEM);
 
 		mark_taken(f, rdy[i], rdy_ats[i]);
 		e[0] = rdy_ats[i];
@@ -331,9 +328,8 @@ static int drain_cpu(int f)
 			st_overrun++;		/* the reader's loss, not ours */
 			continue;
 		}
-		valid[head % ring_n] = 1;
-		barrier();
-		head++;
+		valid[wr % ring_n] = 1;
+		wr++;
 	}
 	return took;
 }
@@ -358,13 +354,13 @@ static int drain_cpu(int f)
 #define XCH		2
 #define X_LIST(n)	(0x100 + 0x20 * XCH + 4 * (n))
 #define X_SETUP		((1u << 29) | (1u << 28) | (1u << 27))
-#define STAGE_LEN	(FIFO_SLOTS * ELEM)
+#define STAGE_LEN	(SLOTS_MAX * ELEM)
 
 static void __iomem *xdma;
 static u8 *stage;		/* where a batch goes when the ring is full */
-static int dma_busy, batch_f, batch_n, batch_k[FIFO_SLOTS], batch_to_ring;
-static u8 batch_safe[FIFO_SLOTS];
-static u32 batch_ats[FIFO_SLOTS], batch_len;
+static int dma_busy, batch_f, batch_n, batch_k[SLOTS_MAX];
+static u8 batch_safe[SLOTS_MAX];
+static u32 batch_ats[SLOTS_MAX], batch_len;
 static u32 st_dma, st_dma_slow, st_split, st_reused_after;
 
 /*
@@ -373,32 +369,42 @@ static u32 st_dma, st_dma_slow, st_split, st_reused_after;
  * The transfer reads each slot from its arrival time on, so the arrival time
  * in the copy says the slot still held our packet when the DMA got there.
  * What it cannot say is whether the hardware began rewriting the slot while
- * the DMA was still reading its 188 bytes.  That needs the slot to come round
- * again, i.e. 7 more packets after ours, and packets arrive no closer than
+ * the DMA was still reading its 188 bytes.  For that the slot must first be
+ * freed and come to the head of the free queue again: at least N - 1 more
+ * packets (N = the FIFO's slot count), and packets arrive no closer than
  * 32 us apart (measured: 863..865 ticks of 27 MHz is the smallest spacing,
  * spec §75).  With m packets already behind ours when the transfer starts,
  * and allowing one more to slip in before it does, the rewrite cannot begin
- * sooner than (7 - m - 2) * 32 us after the start -- 64 us for m = 3 --
- * while the DMA has finished reading the i-th slot of the batch by about
- * 2 + 13 * (i + 1) us (programming, then ~12.5 us per 188 bytes, measured).
- * Safe, then, when (7 - m - 2) * 32 > 2 + 13 * (i + 1).
+ * sooner than (N - 1 - m - 2) * 32 us after the start, while the DMA has
+ * finished reading the slot at position p of the span by about
+ * 2 + 13 * (p + 1) us (programming, then ~12.5 us per slot, measured).
  *
  * For a safe slot the SRAM is not read again at collection time: by then,
  * one tick later, the slot may well have been reused legitimately, and
  * reading it would throw away a good copy.  An unsafe one (we are behind) is
  * still checked against the SRAM and dropped if it moved.
  */
-static int copy_is_safe(int m, int i)
+static int copy_is_safe(int ns, int m, int p)
 {
-	int left = 7 - m - 2;
+	int left = ns - 1 - m - 2;
 
-	return left > 0 && left * 32 > 2 + 13 * (i + 1);
+	return left > 0 && left * 32 > 2 + 13 * (p + 1);
 }
+
+/*
+ * One transfer per tick copies the address range that holds this tick's
+ * ready slots -- from the lowest to the highest, taking along any slot in
+ * between (it is not used) -- into a staging buffer.  The next tick checks
+ * each ready slot's copy and copies its packet into the ring in ARRIVAL
+ * order, which is not address order (spec §77), so that packets of one PID
+ * stay in sequence.  That second copy is from DRAM and cheap next to the
+ * SRAM.
+ */
+static int batch_lo;				/* lowest slot of the span */
 
 static int harvest(void)
 {
-	u8 *base;
-	int i, took = 0;
+	int i, j, took = 0;
 
 	if (!dma_busy)
 		return 0;
@@ -408,11 +414,11 @@ static int harvest(void)
 		return -1;
 	}
 	dma_busy = 0;
-	base = batch_to_ring ? ring + (head % ring_n) * ELEM : stage;
-	dma_cache_inv((unsigned long)base, batch_len);
+	dma_cache_inv((unsigned long)stage, batch_len);
 	for (i = 0; i < batch_n; i++) {
-		const u32 *e = (const u32 *)(base + i * ELEM);
-		int ok = e[0] == batch_ats[i];
+		const u32 *c = (const u32 *)(stage + (batch_k[i] - batch_lo) * ELEM);
+		int ok = c[0] == batch_ats[i], full;
+		u32 *e;
 
 		if (ok) {
 			int moved = slot_ats(batch_f, batch_k[i]) != batch_ats[i];
@@ -422,20 +428,22 @@ static int harvest(void)
 			else if (moved)
 				ok = 0;
 		}
-		if (ok)
-			took += got(batch_f, batch_ats[i], e + 1);
-		else {
+		if (!ok) {
 			cur_flags |= F_TORN;
 			st_torn++;
+			continue;
 		}
-		if (batch_to_ring)
-			valid[(head + i) % ring_n] = ok;
-		else
-			st_overrun++;		/* copied and checked, not kept */
-	}
-	if (batch_to_ring) {
-		barrier();
-		head += batch_n;
+		full = wr - tail >= ring_n;
+		e = full ? scratch : (u32 *)(ring + (wr % ring_n) * ELEM);
+		for (j = 0; j < 1 + TS_WORDS; j++)
+			e[j] = c[j];
+		took += got(batch_f, batch_ats[i], e + 1);
+		if (full) {
+			st_overrun++;		/* the reader's loss, not ours */
+			continue;
+		}
+		valid[wr % ring_n] = 1;
+		wr++;
 	}
 	return took;
 }
@@ -443,34 +451,30 @@ static int harvest(void)
 static void start_batch(int f, const int *rdy, const u32 *rdy_ats, int n,
 			int seen)
 {
-	u32 room, e0, dst;
-	int i;
+	int i, lo = rdy[0], hi = rdy[0];
 
-	e0 = head % ring_n;
-	room = ring_n - e0;			/* up to the end of the ring */
-	batch_to_ring = head + 1 - tail <= ring_n;
+	for (i = 1; i < n; i++) {
+		if (rdy[i] < lo)
+			lo = rdy[i];
+		if (rdy[i] > hi)
+			hi = rdy[i];
+	}
+	if (hi - lo > 0)
+		cur_flags |= F_SPLIT;		/* more than one slot: a span */
 	batch_f = f;
-	batch_n = 0;
+	batch_lo = lo;
+	batch_n = n;
 	for (i = 0; i < n; i++) {
-		if (i && rdy[i] != rdy[i - 1] + 1) {
-			cur_flags |= F_SPLIT;
-			st_split++;		/* slots wrap: rest next tick */
-			break;
-		}
-		if (batch_to_ring && (i >= room || head + i + 1 - tail > ring_n)) {
-			cur_flags |= F_SPLIT;
-			break;
-		}			/* ring end or full: next tick */
-		batch_k[batch_n] = rdy[i];
-		batch_ats[batch_n] = rdy_ats[i];
+		batch_k[i] = rdy[i];
+		batch_ats[i] = rdy_ats[i];
 		/* rdy[] is oldest first, so seen - 1 - i packets are behind it */
-		batch_safe[batch_n++] = copy_is_safe(seen - 1 - i, i);
+		batch_safe[i] = copy_is_safe(nslots[f], seen - 1 - i, rdy[i] - lo);
 		mark_taken(f, rdy[i], rdy_ats[i]);
 	}
-	batch_len = (batch_n - 1) * ELEM + 4 + TS_BYTES;
-	dst = batch_to_ring ? virt_to_phys(ring) + e0 * ELEM : virt_to_phys(stage);
-	__raw_writel(SRAM_PHYS + slot_off[f][batch_k[0]] + SLOT_ATS, xdma + X_LIST(0));
-	__raw_writel(dst, xdma + X_LIST(1));
+	batch_len = (hi - lo) * ELEM + 4 + TS_BYTES;
+	st_split += hi - lo + 1 - n;		/* slots copied for nothing */
+	__raw_writel(SRAM_PHYS + slot_off[f][lo] + SLOT_ATS, xdma + X_LIST(0));
+	__raw_writel(virt_to_phys(stage), xdma + X_LIST(1));
 	__raw_writel(batch_len, xdma + X_LIST(2));
 	__raw_writel(X_SETUP, xdma + X_LIST(3));
 	__raw_writel(0, xdma + X_LIST(4));
@@ -479,27 +483,25 @@ static void start_batch(int f, const int *rdy, const u32 *rdy_ats, int n,
 	st_dma++;
 }
 
+/* The FIFO the XDMA channel serves; the others are copied by the CPU in the
+ * same tick (meant for the light PIDs: the device's PID table holds 36 per
+ * FIFO, spec §77, so a full multiplex needs two). */
+static int xdma_fifo = -1;
+module_param(xdma_fifo, int, 0444);
+MODULE_PARM_DESC(xdma_fifo, "FIFO copied by XDMA (default: the highest "
+		 "enabled); the other enabled FIFOs are copied by the CPU");
+
 static int drain_xdma(void)
 {
-	static int rr;
-	int took, i;
+	int took, n, seen, rdy[SLOTS_MAX];
+	u32 rdy_ats[SLOTS_MAX];
 
 	took = harvest();
 	if (took < 0)
-		return 0;
-	for (i = 0; i < FIFO_N; i++) {
-		int f = (rr + i) % FIFO_N, rdy[FIFO_SLOTS], n, seen;
-		u32 rdy_ats[FIFO_SLOTS];
-
-		if (!(fifos & (1u << f)))
-			continue;
-		n = ready_slots(f, rdy, rdy_ats, &seen);
-		if (!n)
-			continue;
-		start_batch(f, rdy, rdy_ats, n, seen);
-		rr = f + 1;
-		break;
-	}
+		return 0;		/* still running: it owns its slots' copies */
+	n = ready_slots(xdma_fifo, rdy, rdy_ats, &seen);
+	if (n)
+		start_batch(xdma_fifo, rdy, rdy_ats, n, seen);
 	return took;
 }
 
@@ -526,10 +528,12 @@ static enum hrtimer_restart tick(struct hrtimer *t)
 	cur_seen = 0;
 	if (use_xdma)
 		took = drain_xdma();
-	else
-		for (f = 0; f < FIFO_N; f++)
-			if (fifos & (1u << f))
-				took += drain_cpu(f);
+	for (f = 0; f < FIFO_N; f++)
+		if ((fifos & (1u << f)) && !(use_xdma && f == xdma_fifo))
+			took += drain_cpu(f);
+	/* publish what is filled */
+	barrier();
+	head = wr;
 	/* Waking the reader for every packet would cost a context switch per
 	 * tick; batch it, but never hold packets back for more than 10 ms. */
 	if (head != tail && (head - tail >= wake_pkts ||
@@ -565,6 +569,7 @@ static ssize_t fd_read(struct file *file, char __user *buf, size_t count,
 
 	if (!want)
 		return -EINVAL;
+again:
 	r = wait_event_interruptible(fd_waitq, head != tail);
 	if (r)
 		return r;
@@ -581,6 +586,8 @@ static ssize_t fd_read(struct file *file, char __user *buf, size_t count,
 		barrier();
 		tail++;
 	}
+	if (!done)
+		goto again;	/* only dropped elements: 0 would read as EOF */
 	return done * TS_BYTES;
 }
 
@@ -612,8 +619,8 @@ static int proc_read(char *page, char **start, off_t off, int count,
 	for (f = 0; f < FIFO_N; f++) {
 		if (!(fifos & (1u << f)))
 			continue;
-		len += sprintf(page + len, "fifo %d slots", f);
-		for (k = 0; k < FIFO_SLOTS; k++)
+		len += sprintf(page + len, "fifo %d: %d slots", f, nslots[f]);
+		for (k = 0; k < nslots[f]; k++)
 			len += sprintf(page + len, " %04x", slot_off[f][k]);
 		len += sprintf(page + len, "  packets %u\n", st_pkts[f]);
 	}
@@ -631,8 +638,9 @@ static int proc_read(char *page, char **start, off_t off, int count,
 	len += sprintf(page + len, "ring head %u tail %u\n", head, tail);
 	len += sprintf(page + len, "copy %s", use_xdma ? "xdma" : "cpu");
 	if (use_xdma)
-		len += sprintf(page + len, " ch%d transfers %u still_running %u "
-			       "split %u reused_after_copy %u", XCH, st_dma,
+		len += sprintf(page + len, " ch%d for FIFO %d (others by cpu) "
+			       "transfers %u still_running %u idle_slots_copied %u "
+			       "reused_after_copy %u", XCH, xdma_fifo, st_dma,
 			       st_dma_slow, st_split, st_reused_after);
 	len += sprintf(page + len, "\n");
 	for (i = 0; i < ngaplog; i++)
@@ -658,16 +666,20 @@ static int proc_read(char *page, char **start, off_t off, int count,
 
 /* --- load / unload -------------------------------------------------------- */
 
-static void add_slot(int f, u32 o)
+/* Returns 1 if o is a slot of FIFO f we had not seen yet. */
+static int add_slot(int f, u32 o)
 {
 	int q;
 
 	if (!o || (o & 3) || o > SRAM_LEN - SLOT_PKT - TS_BYTES)
-		return;
-	for (q = 0; q < FIFO_SLOTS && slot_off[f][q] && slot_off[f][q] != o; q++)
-		;
-	if (q < FIFO_SLOTS && !slot_off[f][q])
-		slot_off[f][q] = o;
+		return 0;
+	for (q = 0; q < nslots[f]; q++)
+		if (slot_off[f][q] == o)
+			return 0;
+	if (nslots[f] >= SLOTS_MAX)
+		return 0;
+	slot_off[f][nslots[f]++] = o;
+	return 1;
 }
 
 /* A transfer still in flight must land before its buffer goes back. */
@@ -701,44 +713,58 @@ static int __init fifodrain_init(void)
 		return -ENOMEM;
 
 	/* The seven-word slot list is a queue the sub-CPU rotates while we
-	 * read it; a slot it is holding at the moment is missing from it.
-	 * Read it repeatedly, keep the union, and give it up to 200 ms to show
-	 * all seven (spec §73.9). */
-	for (r = 0; r < 100; r++) {
-		int all = 1;
+	 * read it; whatever slot is being filled or handled at the moment is
+	 * missing from it -- and a FIFO can have more slots than the list has
+	 * words (FIFO 0 has 7, FIFO 1 6, FIFO 2 8: spec §77).  Read it for at
+	 * least 100 ms and until nothing new has turned up for 50 ms (1 s at
+	 * most), keep the union, then check the slots are evenly spaced. */
+	for (r = 0, q = 0; r < 500; r++) {
+		int fresh = 0, w;
 
-		for (q = 0; q < 200; q++)
+		for (w = 0; w < 200; w++)
 			for (f = 0; f < FIFO_N; f++)
-				for (k = 0; k < FIFO_SLOTS; k++)
-					add_slot(f, __raw_readl(sram + FIFO_CTL +
-								f * 0x80 + 0x14 + 4 * k));
-		for (f = 0; f < FIFO_N; f++)
-			if ((fifos & (1u << f)) && !slot_off[f][FIFO_SLOTS - 1])
-				all = 0;
-		if (all)
+				for (k = 0; k < 7; k++)
+					fresh |= add_slot(f, __raw_readl(sram + FIFO_CTL +
+							  f * 0x80 + 0x14 + 4 * k));
+		q = fresh ? 0 : q + 1;		/* rounds with nothing new */
+		if (r >= 50 && q >= 25)
 			break;
 		msleep(2);
 	}
 	for (f = 0; f < FIFO_N; f++) {
 		if (!(fifos & (1u << f)))
 			continue;
-		for (k = 0; k < FIFO_SLOTS; k++)
-			if (!slot_off[f][k])
-				break;
-		if (k < FIFO_SLOTS) {
-			printk(KERN_ERR "yb1fifo: FIFO %d has %d of %d slots set "
-			       "up -- configure the demultiplexer first\n",
-			       f, k, FIFO_SLOTS);
+		if (nslots[f] < 2) {
+			printk(KERN_ERR "yb1fifo: FIFO %d has %d slots set up -- "
+			       "configure the demultiplexer first\n", f, nslots[f]);
 			err = -ENODEV;
 			goto fail_map;
 		}
 		/* address order is the order they are filled in */
-		for (k = 1; k < FIFO_SLOTS; k++) {
+		for (k = 1; k < nslots[f]; k++) {
 			u32 o = slot_off[f][k];
 
 			for (q = k; q > 0 && slot_off[f][q - 1] > o; q--)
 				slot_off[f][q] = slot_off[f][q - 1];
 			slot_off[f][q] = o;
+		}
+		for (k = 1; k < nslots[f]; k++)
+			if (slot_off[f][k] - slot_off[f][k - 1] != SLOT_STRIDE) {
+				printk(KERN_ERR "yb1fifo: FIFO %d slots %04x %04x are "
+				       "not %u apart -- one not seen?\n", f,
+				       slot_off[f][k - 1], slot_off[f][k], SLOT_STRIDE);
+				err = -ENODEV;
+				goto fail_map;
+			}
+	}
+	if (use_xdma) {
+		if (xdma_fifo < 0)
+			for (f = 0; f < FIFO_N; f++)
+				if (fifos & (1u << f))
+					xdma_fifo = f;	/* the highest enabled */
+		if (xdma_fifo >= FIFO_N || !(fifos & (1u << xdma_fifo))) {
+			err = -EINVAL;
+			goto fail_map;
 		}
 	}
 
@@ -802,11 +828,11 @@ static int __init fifodrain_init(void)
 	for (f = 0; f < FIFO_N; f++) {
 		if (!(fifos & (1u << f)))
 			continue;
-		for (k = 0; k < FIFO_SLOTS; k++) {
+		for (k = 0; k < nslots[f]; k++) {
 			done_ats[f][k] = slot_ats(f, k);
 			if (k == 0 || (s32)(done_ats[f][k] - ref_ats[f]) > 0) {
 				ref_ats[f] = done_ats[f][k];
-				next_slot[f] = (k + 1) % FIFO_SLOTS;
+				next_slot[f] = (k + 1) % nslots[f];
 			}
 		}
 	}
