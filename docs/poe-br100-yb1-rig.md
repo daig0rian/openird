@@ -24,7 +24,9 @@
 | **段階 C**（自前） | 段階 C 版＋`openird-noblur` | **動かない** | telnet（**フックが静的 IP を振る**） |
 
 **段階 C で IP を振らないとシリアルだけになる**（`udhcpc` を起動するのは
-ベンダアプリなので）。段階 C 版のフックは `ifconfig eth0 192.168.11.17` を自分で行う。
+ベンダアプリなので）。段階 C 版のフックは `ifconfig eth0 192.168.11.217` を自分で行う
+（2026-09-27 に `.17` から変更。LAN の DHCP が `.17` を別の機器に配っていて、
+telnet が別機器に繋がって拒否された。変えたのは `/app/setting/openird-pre{,-noblur,-csd}.sh`）。
 `telnetd` は `rcS` のフックが起動するのでどちらのモードでも上がっている。
 
 切り替え（実機上で）:
@@ -70,7 +72,9 @@ uv run switchbot.py off ; Start-Sleep -Seconds 8 ; uv run switchbot.py on
 
 ## 3. 実機に入る・ファイルをやり取りする
 
-- telnet `192.168.11.17:23`、root はパスワード空。
+- telnet `192.168.11.217:23`（段階 C。段階 B は DHCP）、root はパスワード空。
+  **繋がらないときは、まずシリアルで `ifconfig eth0` の MAC を見て、Windows の
+  `arp -a` がその番地に同じ MAC を出しているか突き合わせる**（番地の衝突を一度踏んだ）。
 - シリアルは COM3 / 機器側 `ttyS1`（`host/openird-serial`）。段階 C で IP を
   振り損ねたときの唯一の口。
 
