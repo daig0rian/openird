@@ -492,6 +492,33 @@ static unsigned long now_us(void)
 	return tv[0] * 1000000ul + tv[1];
 }
 
+/*
+ * How much CPU is left for others: count passes of a loop that touches
+ * nothing but the stack for ms milliseconds.  Run it with and without the
+ * load under test; the ratio is what the load took, interrupt time included.
+ * (2.6.27 samples CPU time on the scheduler tick, which cannot see time spent
+ * in hard-IRQ context and aliases with work woken by a timer.)
+ */
+static void cmd_burn(unsigned long ms)
+{
+	unsigned long t0 = now_us(), t1, deadline = t0 + ms * 1000ul, n = 0;
+	volatile unsigned int x = 0;
+	unsigned int i;
+
+	do {
+		for (i = 0; i < 4096; i++)
+			x += i;
+		n++;
+	} while ((t1 = now_us()) < deadline);
+	put("burn ");
+	putdec(n);
+	put(" passes in ");
+	putdec((t1 - t0) / 1000);
+	put(" ms = ");
+	putdec(n * 1000 / ((t1 - t0) / 1000));
+	put(" per second\n");
+}
+
 static void cmd_spin(const u8 *m, unsigned long len, unsigned long n,
 		     unsigned long ms)
 {
@@ -994,7 +1021,7 @@ static void cmd_kread(const char *dev, unsigned long addr, unsigned long len)
 
 static void usage(void)
 {
-	put("yb1-mem [@dev] <addr> <len> scan|stats|dump|words|churn|spin|kread|nonzero|range|find|raw [n] [ms]\n"
+	put("yb1-mem [@dev] <addr> <len> scan|stats|dump|words|churn|spin|burn|kread|nonzero|range|find|raw [n] [ms]\n"
 	    "  @dev    : map this device instead of /dev/mem (offset is its own)\n"
 	    "  kread   : <addr> is a KERNEL VIRTUAL address, read via /dev/kmem\n"
 	    "            (the only way to reach a module's variables; see kallsyms)\n"
@@ -1004,6 +1031,8 @@ static void usage(void)
 	    "  words   : dump n 32-bit words -- use this for SoC registers\n"
 	    "  churn   : which of n words change over ms milliseconds (default 64, 500)\n"
 	    "  spin    : tight loop over n words for ms, log EVERY change in order\n"
+	    "  burn    : [ms] count passes of a CPU-only loop (addr/len ignored):\n"
+	    "            what a load leaves for others, IRQ time included\n"
 	    "  nonzero : how much of the region is not zero\n"
 	    "  range   : one word per line, address flushed BEFORE the load\n"
 	    "            [stride] [us]  (default 4, 0; us = pause before each load)\n"
@@ -1047,6 +1076,13 @@ int main(int argc, char **argv)
 			  dev[3] == 'v' && dev[4] == '/' && dev[5] == 'm' &&
 			  dev[6] == 'e' && dev[7] == 'm' && dev[8] == 0
 			  ? "/dev/kmem" : dev, phys, len);
+		flushout();
+		return 0;
+	}
+
+	/* burn maps nothing: <addr> <len> are ignored. */
+	if (streq(argv[3], "burn")) {
+		cmd_burn(argc > 4 ? parse_or(argv[4], 10000) : 10000);
 		flushout();
 		return 0;
 	}
