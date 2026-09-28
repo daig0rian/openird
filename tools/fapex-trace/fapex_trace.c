@@ -188,6 +188,23 @@ static void put_bytes(struct line *l, const char *label, const unsigned char *p,
 		put(l, "..");
 }
 
+/* h57fmb0 register access (nr 0x01-0x03, 12-byte argument) is
+ * {u32 flag; u32 addr; u32 *val}: the value sits behind the pointer, so the
+ * argument dump alone never shows what was written or read. */
+static int h57_is_reg(unsigned nr, unsigned size)
+{
+	return size == 12 && nr >= 0x01 && nr <= 0x03;
+}
+
+static void put_h57_val(struct line *l, const void *arg)
+{
+	const unsigned long *a = arg;
+
+	if (!arg || !readable(arg, 12))
+		return;
+	put_bytes(l, "val", (const unsigned char *)a[2], 4);
+}
+
 /* A pointer is only safe to dereference if it is mapped.  The app hands the
  * driver real user pointers, so a plain read is fine; but guard the length so
  * a bogus value cannot make us walk off the end. */
@@ -659,6 +676,8 @@ int ioctl(int fd, unsigned long cmd, ...)
 			put_dec(&l, size);
 			if ((dir & IOC_WRITE) && arg && size)
 				put_bytes(&l, "in", arg, size);
+			if ((dir & IOC_WRITE) && h57_is_reg(nr, size))
+				put_h57_val(&l, arg);
 			r = tr_syscall(SYS_ioctl, fd, cmd, (long)arg, 0, 0, 0);
 			if ((r == -71 || r == -19) && retry_enabled()) {
 				int tries = 0;
@@ -700,6 +719,8 @@ int ioctl(int fd, unsigned long cmd, ...)
 			}
 			if (r >= 0 && (dir & IOC_READ) && arg && size)
 				put_bytes(&l, "out", arg, size);
+			if (r >= 0 && (dir & IOC_READ) && h57_is_reg(nr, size))
+				put_h57_val(&l, arg);
 			put(&l, " = ");
 			put_dec(&l, r < 0 ? r : (long)(int)r);
 			if (!h57_quiet())

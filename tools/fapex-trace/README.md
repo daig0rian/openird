@@ -18,7 +18,12 @@
   （ハングしても復調器 init のレジスタ列が残る）。
 - **h57fmb0（Dione の USB char dev, type=`0xae`）の ioctl も黒箱ログ**（h57fmb は GPL 非収録＝
   proprietary。struct 未知なので `_IOC_SIZE` 分をダンプ）。ファーム転送・GET_INFO/GET_FACTOR 等。
+- `h57fmb0` のレジスタ操作（`nr=0x01`〜`0x03`、引数 `{u32 flag; u32 addr; u32 *val}`）は、ポインタの
+  先の値も `val=[4]:…` として出す（書きは呼ぶ前、読みは呼んだ後。レジスタは 16bit で下位 2 バイトが値）。
 - `/dev/*` の mmap（`/dev/mem` 経由のレジスタ窓など）。
+
+ログを区間ごと（`### MARK` 行で区切る）に 1 操作 1 行へ畳むのは `trsum.py`
+（`python3 trsum.py /tmp/fapex-trace.log`）。LED とリセット SW の 110ms の空回りは除く。
 
 **bring-up シム（既定 off・観察専用ではない）**: 対象プロセスの **chroot 内**にフラグファイルを
 置くと有効になる。
