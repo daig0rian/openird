@@ -57,9 +57,9 @@ PC ── COM3 ── 機器の基板 UART（ttyAMA0）
 機器の USB-A ── USB ディスク（FAT32・直挿し。ハブは使わない）
 ```
 
-- **telnet `192.168.200.10`**（パスワード無しの root）。USB ディスクの `rc.sh` が、
-  ベンダアプリの作る br0 に固定の 2 つめのアドレスとして付ける（アプリが DHCP で
-  取る主アドレスは毎回変わりうる。予行では `192.168.11.13`）。シェルの
+- **telnet `192.168.200.10`**（パスワード無しの root）。rcS が、ベンダアプリの作る br0 に
+  固定の 2 つめのアドレスとして付ける（USB ディスクが無くても付く。アプリが DHCP で
+  取る主アドレスは毎回変わりうる。2026-09-29 は `192.168.11.13`）。シェルの
   `LD_LIBRARY_PATH` / `PATH` はベンダアプリと同じ（`/slot/lib`・`/slot/app`）。
 - **シリアル（COM3）はベンダアプリの工場テストシェル `-> `**
   （`docs/specs/sb-tv02-wfpl-vendor-boot.md` §5。選局は `forceinit` → `dpower 1 1` →
@@ -79,7 +79,8 @@ USB-A に挿したディスクで代える。**抜けば「純正＋telnet」で
 
 - **FAT32・MBR・USB-A に直挿し。** ベンダカーネルが読めるのは vfat と MBR だけ
   （ext2/3/4・jffs2・loop・GPT は無い）。ハブを挟まない理由は下の「USB の制約」。
-- rcS は起動時にディスクを **読み取り専用** で `/tmp/usb` に mount し、
+- rcS は起動時にディスクを最大 60 秒待ち（SSD はコールドスタートで 25〜32 秒かかった）、
+  **読み取り専用** で `/tmp/usb` に mount し、
   `openird/rc.sh` を source する（CR を取り除いた写しを構文検査してから）。
   直後に `slot_entry.sh` が同じディスクを rw で `/mnt` に mount して `updater.full` /
   `dionekeyEraser.full` を探すが、読み取り専用の mount がある間は EBUSY で失敗するので、
@@ -124,6 +125,33 @@ USB-A に挿したディスクで代える。**抜けば「純正＋telnet」で
 
 OpenIRD の区画表へ戻るときは `init=/bin/sh` のシェルから firstaid を入れ直す
 （`br-ext-chip-fujitsu/board/mb86h61/README.md` の導入順）。
+
+## rootfs だけを焼き直す（firstaid 無し）
+
+差し込み（`rcS-insert.sh`）を変えたとき。2026-09-29 にこの手順で、USB ディスクを最大 60 秒
+待つ版・固定アドレスを rcS 側で付ける版へ焼き直した（書き込みは mtd1 を 2 回・mtd6 を 1 回）。
+
+1. `scripts/build-vendor-base.sh` → `temp/vendor-base/vendor-rootfs.bin`（1MB・0xFF 埋め）と
+   `expected.md5` の `vendor mtd6`。静的な `busybox` と `mtd` は firstaid のビルド出力
+   （`output/…_firstaid/target/{bin/busybox,sbin/mtd}`）を使う。
+2. libooter で cmdline の末尾に ` init=/bin/sh` を足して `saveparam` → 電源再投入。
+   rcS を通らない root シェルが COM3 に出る。
+3. COM3 で作業の足場を作る：
+   ```sh
+   mount -t proc proc /proc; mount -t sysfs sysfs /sys; mount -t tmpfs tmpfs /tmp
+   mount -t devpts devpts /dev/pts
+   ifconfig eth0 192.168.200.10 netmask 255.255.255.0 up; /usr/sbin/telnetd -l /bin/sh
+   ```
+4. telnet 越しに 3 つを `/tmp` へ送る（base64＋`uudecode`）。MD5 を照合する。
+5. COM3 で、rootfs を使うものを止めてから書く：
+   ```sh
+   killall telnetd; chmod 755 /tmp/mtd /tmp/busybox
+   exec /tmp/busybox sh          # PID 1 を tmpfs 上の静的 busybox に置き換える
+   /tmp/mtd write /tmp/vendor-rootfs.bin rootfs
+   /tmp/mtd verify /tmp/vendor-rootfs.bin rootfs
+   /tmp/busybox md5sum /dev/mtd6 # expected.md5 の vendor mtd6
+   ```
+6. 電源再投入 → libooter で ` init=/bin/sh` を外して `saveparam` → 電源再投入。
 
 ## 移行手順（OpenIRD の区画表 → vendor-base）
 

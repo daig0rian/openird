@@ -12,6 +12,7 @@
 #   xfer-rootfs_data.bin  移行用。OpenIRD 区画表の mtd7（7MB）へ書く分
 #                         （OpenIRD の mtd8 = firstaid の 1MB は、ベンダ配置では slot1 の
 #                          末尾の未使用域＝0xFF。erase するだけでよいので像は作らない）
+#   vendor-rootfs.bin     ベンダ区画の rootfs（mtd6）1MB 分。0xFF 埋め。rootfs だけを焼き直すとき用
 #   expected.md5          書いた後に実機の md5sum と突き合わせる値（区画表 2 通り）
 #
 # 方針:
@@ -125,6 +126,7 @@ cp "$WORK/vendor-kernel.bin" "$OUT/vendor-kernel.bin"
 { cat "$OUT/base-rootfs.sqfs"; ff $((R_SIZE - s)); cat "$WORK/slot0.img" "$WORK/slot1.img"; } > "$WORK/region.bin"
 [ "$(stat -c%s "$WORK/region.bin")" -eq $((13 * MB)) ] || { echo "✗ 領域の大きさが違う"; exit 1; }
 head -c $((5 * MB)) "$WORK/region.bin" > "$OUT/xfer-rootfs.bin"
+head -c $MB "$WORK/region.bin" > "$OUT/vendor-rootfs.bin"
 dd if="$WORK/region.bin" bs=64K iflag=skip_bytes,count_bytes skip=$((5 * MB)) count=$((7 * MB)) \
   status=none > "$OUT/xfer-rootfs_data.bin"
 [ "$(tail -c $MB "$WORK/region.bin" | md5)" = "$(ff $MB | md5)" ] || { echo "✗ 末尾 1MB が 0xFF ではない"; exit 1; }
@@ -149,7 +151,7 @@ FF1M=$(ff $MB | md5)
   echo "vendor mtd9 $(slice $SI1_OFF $SI_SIZE | md5)"
   echo "vendor mtd10 $(slice $((0xFD0000)) $((0x30000)) | md5)"
 } > "$OUT/expected.md5"
-( cd "$OUT" && md5sum vendor-kernel.bin xfer-rootfs.bin xfer-rootfs_data.bin base-rootfs.sqfs > files.md5 )
+( cd "$OUT" && md5sum vendor-kernel.bin vendor-rootfs.bin xfer-rootfs.bin xfer-rootfs_data.bin base-rootfs.sqfs > files.md5 )
 sed 's/^/  /' "$OUT/files.md5"
 echo "  expected.md5:"; sed 's/^/    /' "$OUT/expected.md5"
 echo

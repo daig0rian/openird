@@ -17,8 +17,9 @@
 #   loglevel  console log level for dmesg -n (the file holds a digit)
 #
 # The fixed address is for a PC on the same wire (e.g. 192.168.200.100/24).
-# With the vendor application running it goes on br0, never on eth0: the
-# application bridges eth0 into br0, and an address left on eth0 kills the LAN.
+# With the vendor application running, rcS puts it on br0 (never on eth0: the
+# application bridges eth0 into br0, and an address left on eth0 kills the
+# LAN).  Without the application (noapp) this script puts it on eth0.
 #
 # Files in bin/ are copied to /tmp/openird/bin (tmpfs), so they keep working
 # with the disk unmounted.  To keep results across a power cycle:
@@ -92,13 +93,7 @@ if [ -f $OPENIRD_USB/noapp ] ; then
 		echo "OpenIRD: noapp ignored, slot_entry.sh is not the expected one"
 	fi
 else
-	( while : ; do
-		if [ -e /sys/class/net/br0/brif/eth0 ] ; then
-			ifconfig br0:9 2>/dev/null | grep -q "addr:$OPENIRD_IP " \
-				|| ifconfig br0:9 $OPENIRD_IP netmask $OPENIRD_MASK up
-		fi
-		sleep 5
-	  done ) < /dev/null > /dev/null 2>&1 &
+	# rcS itself puts the address on br0 once the application has built it.
 	echo "OpenIRD: telnet $OPENIRD_IP once the vendor application has built br0"
 fi
 
