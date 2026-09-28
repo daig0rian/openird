@@ -81,6 +81,15 @@ FAPex より**先**に入れ、(b) `fapex_fdlclkpwr` を**載せ**、(c) `modpro
 ∴ **観測中は FAT の USB マスストレージを挿さない**。USB シリアル変換器（PL2303）は
 ブロックデバイスにならないので `/sys/block/sda` が現れず、この経路には入らない。
 
+ただし、`slot_entry.sh` より前に同じディスクを**読み取り専用**で mount しておけば、
+この経路の rw の mount は EBUSY で失敗し、ディスクの中身に関係なく 2 つの分岐に入らない
+（2026-09-29 実機で確認・§7）。
+
+検出は決め打ち：`update check_usb_flash` は `2-1:1.0`（基板上のハブ）を最大 3 秒待ち、
+800 ms 置いて **`2-1.3:1.0`** のクラス／サブクラス／プロトコルが `08/06/50` のときだけ
+「USB メモリ」とみなす。ハブを挟むと `2-1.3:1.0` はハブ（クラス 09）になり、この経路には
+入らない。
+
 ## 4. `slot_selector` は mtd8/mtd9 を書き換える
 
 `slot_selector` の文字列に `Slot Duplication starts` / `... end` と、
@@ -91,6 +100,18 @@ slot0 を複製する機能を持つ**（発火条件は逆アセを見ないの
 OpenIRD の区画表では `/dev/mtd8` = **firstaid**（唯一の救助 rootfs）なので、
 **ベンダ rootfs をそのまま起動させてはいけない**。rig では rcS から
 `slot_selector` を外す（§6）。
+
+**起動時の出力**（2026-09-29・ベンダ像で slot0/slot1 がともにダンプと一致し、slot info の
+MD5 欄とも一致している状態）：
+
+```
+New slot_selector!!
+slot[0].status = 1
+slot[1].status = 0
+Use slot0
+```
+
+この状態では複製は起きず、mtd8/mtd9 の MD5 は起動後も変わらなかった。
 
 ## 5. 工場テストシェル（`nop_dbgsh`）
 
@@ -283,6 +304,8 @@ Factory_SetTunerFreq
 
 ## 6. 観測 rig（ベンダアプリを起動しない状態）
 
+> 2026-09-29 に §7 の vendor-base へ置き換えた。以下は経緯として残す。
+
 **方針**: 自前カーネル（mtd5）と firstaid（mtd8）は**一切書かない**。ベンダの
 rootfs と slot0 を OpenIRD の区画に置き、起動スクリプト 2 本だけを差し替える。
 ベンダバイナリは 1 バイトも改変しない。
@@ -362,7 +385,62 @@ slot0 = 同じ、`bytes_used` 4,203,033（6MB 区画）。
    `ifconfig` `losetup` `chroot` `strings` があり、書き込みは
    `dione_server -w /dev/mtdN:file`（暗号ゲート無し）で行える。
 
-## 7. 参照
+## 7. vendor-base（ベンダ像のまま・入口 1 か所）
+
+2026-09-29 に §6 の rig を置き換えるために設計した観察土台。カーネル・区画表・slot は
+ダンプのバイトのまま、rootfs の rcS の `/slot/slot_entry.sh` の直前に telnetd と USB
+ディスクのフックだけを差し込む（`tools/vendor-base/`・`scripts/build-vendor-base.sh`）。
+運用は `tools/vendor-base/README.md`。**2026-09-29 に実機へ導入し、全区画の MD5 が
+想定と一致した**（カーネル・slot0/1・slot info・reserved はダンプと同一、rootfs は差し込み入りの像）。
+以下はその設計の根拠になった事実。
+
+### USB の決め打ち（`dione_server` と `update` の文字列より）
+
+| 経路 | 対象 |
+|---|---|
+| `/sys/bus/usb/devices/1-1`・`1-1/devnum`・`1-1:1.0/net/wlan0/`・`1-1:1.1/net/wlan1/` | Wi-Fi（RTL8192DU）。USB ホスト 1 に直結 |
+| `/sys/bus/usb/devices/2-1.3`・`2-1.3:1.0/ttyUSB0` | Factory Port（USB シリアル）。背面 USB-A＝基板上のハブのポート 3 |
+| `2-1:1.0`・`2-1.3:1.0/bInterface{Class,SubClass,Protocol}` | `update check_usb_flash`（§3） |
+
+Dione（MB86H58）は基板上のハブのポート 4（`2-1.4`・`06b8:102d`）。USB-A に何も無いとき
+アプリは `err : can't open /dev/ttyUSB0 [nop_common_init@nop_common.c:84]` を出して続行する。
+
+### SoC の USB ホスト（MUSB）のエンドポイント
+
+GPL の板設定は `num_eps = 16` だが、実物は**各ホスト 6 本**（起動ログ）：
+
+| hw_ep | tx | rx |
+|---|---|---|
+| 0 | 64（制御・共用） | |
+| 1 | 512 | 512（ドライバが bulk の共用枠に予約） |
+| 2 | 512 | 512 |
+| 3 | 1024 | 1024 |
+| 4 | 1 | 64 |
+| 5 | 1 | 32 |
+
+割り込み転送は専用の枠を要し、空きが無いと `-ENOSPC`。受信側で使えるのは ep2〜5 の
+4 本で、ハブ 1 段・PL2303・Dione がそれぞれ 1 本取る。USB-A に 2 チップのハブ＋
+USB ディスク＋PL2303 を挿すと、PL2303 が `pl2303_open - failed submitting interrupt urb,
+error -28` で開けなかった。USB-A に USB ディスクを直挿しした構成では、ベンダアプリの
+`forceinit` → `settuner 0 557142857 0 0` → `Sync = LOCK`・`E_CN = 29.0`・
+`there is TS_IN` まで通った（エラー無し）。ベンダは `musb_hdrc use_dma=0`（PIO）で load する。
+
+### ベンダカーネルが読めるもの
+
+カーネル像（mtd5）の登録名と出荷 .config より：vfat・msdos（MBR）・squashfs・tmpfs・
+NFS クライアントはある。ext2/3/4・jffs2・loop・GPT は無い。USB シリアルは
+`usbserial.ko` と `pl2303.ko`（2.6.31・旧型の PL2303HX `067b:2303` 向け）だけで、
+PL2303G 系（`067b:23a3`・bcdDevice `0405`）は ID を知らない。`usb-storage` の
+`delay_use` は既定 5 秒。レガシー pty（`CONFIG_LEGACY_PTYS=y`・16 本）と
+`/dev/ptyp*`・`/dev/ttyp*` のノードがあるので、§6 の「偽 Factory Port」も使える見込み。
+
+### 読み取り専用の先 mount（予行・2026-09-29）
+
+`mount -t vfat -o ro /dev/sda1 /tmp/usb` の後、`slot_entry.sh` と同じ
+`mount -t vfat /dev/sda1 /mnt` は `Device or resource busy` で失敗し、先の mount を
+外すと成功する。逆に rw の mount が先にあると、読み取り専用の mount が EBUSY になる。
+
+## 8. 参照
 
 - `docs/specs/sb-tv02-wfpl-stage-b-fapex.md` — FAPex chardev 契約・Dione 立ち上げ・
   復調器/チューナ同定・TS データパス。

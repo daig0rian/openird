@@ -80,8 +80,24 @@ console=ttyAMA0,115200 root=/dev/mtdblock6 rw ip=none mac_adrs=XX:XX:XX:XX:XX:XX
 00000000  54 4f 4c 53 01 00 00 00  ...   |TOLS....|
 ```
 
-`TOLS` = "SLOT" のリトルエンディアン表記。libooter はここを見てカーネルスロットを
-選ぶ（起動ログの `Slot at 0x00140000 is selected.`）。どちらの面を読むかは未確認
-なので、OpenIRD の区画レイアウトでは**両方とも温存**している。
+`TOLS` = "SLOT" のリトルエンディアン表記。44 バイトの中身はダンプとの突き合わせで
+次のとおりと分かった（2026-09-29）：
+
+| off | 長さ | 中身 |
+|---|---|---|
+| 0x00 | 4 | `TOLS` |
+| 0x04 | 4 | u32 LE。実測 `1`（意味未確認） |
+| 0x08 | 16 | **slot0 区画（mtd7・6MB 全体）の MD5** |
+| 0x18 | 4 | u32 LE。実測 `0`（意味未確認） |
+| 0x1C | 16 | **slot1 区画（mtd8・6MB 全体）の MD5** |
+
+MD5 は squashfs の実データ（約 4.0MB）ではなく、末尾の 0xFF を含む**区画全体**に
+対するもの。∴ slot0/slot1 を 1 バイトでも変えるとこの値と合わなくなる（`slot_selector`
+がそれをどう扱うかは未確認。ベンダ像へ戻す `tools/vendor-base` が slot をダンプの
+バイトのまま書くのはこのため）。
+
+slot info が記述しているのは app 層の slot0/slot1 で、libooter のカーネル選択
+（起動ログの `Slot at 0x00140000 is selected.`）がここを読むかは未確認。どちらの面を
+読むかも未確認なので、OpenIRD の区画レイアウトでは**両方とも温存**している。
 
 `reserved`（mtd10, 0xFD0000, 192KB）は全域 0xff＝未使用。
