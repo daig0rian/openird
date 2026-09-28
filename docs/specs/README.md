@@ -26,7 +26,8 @@ clean-room のファイアウォール。観察 → 実装の間に挟む「文�
 | [sb-tv02-wfpl-vendor-boot.md](sb-tv02-wfpl-vendor-boot.md) | SB-TV02-WFPL の起動連鎖と工場モード | 機構 | `reference` |
 | [sb-tv02-wfpl-stage-b-fapex.md](sb-tv02-wfpl-stage-b-fapex.md) | SB-TV02-WFPL の FAPex chardev/ioctl 契約（段階 B の観察） | 契約 | `observing` |
 | [poe-br100-yb1-reception-stack.md](poe-br100-yb1-reception-stack.md) | POE-BR100-YB1 の受信スタック構成と chardev 境界（段階 B の観察） | 契約 | `observing` |
-| [poe-br100-yb1-ts-fifo.md](poe-br100-yb1-ts-fifo.md) | POE-BR100-YB1 の生 TS の取り出し（AV SRAM の TS 入力 FIFO・PID の列挙・ドレイナー） | 機構 | `specified` |
+| [poe-br100-yb1-ts-fifo.md](poe-br100-yb1-ts-fifo.md) | POE-BR100-YB1 の生 TS の取り出し（AV SRAM の TS 入力 FIFO・PID の列挙・ドレイナー・chardev への対応） | 機構 | `specified` |
+| [poe-br100-yb1-av-command.md](poe-br100-yb1-av-command.md) | POE-BR100-YB1 の AV コマンド経路（ベンダの `.ko` 無しでデマルチプレクサを組む・フィルタの状態遷移） | 機構 | `specified` |
 | [poe-br100-yb1-subcpu-control.md](poe-br100-yb1-subcpu-control.md) | POE-BR100-YB1 の裏 CPU 制御インターフェース（BHIF の CPU 制御ブロック・アドレス窓・割り込みの振り分け・デバッグの口） | 機構 | `observing` |
 
 ## 実装状態の宣言（`openird-spec` ヘッダ）
