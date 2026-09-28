@@ -23,6 +23,13 @@
  *     cmdseq   (command ID << 16) | sequence number
  *     reqaddr  where the request goes (KSEG1 address in the data ring)
  *     status   the status expected back; resp the response words expected
+ * or, with the entry, sequence number and data-ring address taken care of:
+ *   next <entry> <seq> <reqaddr>     where the following "auto" lines go
+ *   auto <cmd> <reqlen> <resplen> <status> [req ...] [= resp ...] [> $k]
+ *     in an auto line "@N" is this request's own address + N, "$k" (k=0..7)
+ *     a saved value, and "> $k" saves response word 0.  Every posted command
+ *     moves "next" on (entries 1..31; 0 is not part of the ring), and the
+ *     last position is printed at the end, so a later run can carry on.
  * tools/host/trace2cmd.py writes such a file from a yb1-ioctl "trace" log, so
  * a vendor call sequence can be replayed exactly (same entries, sequence
  * numbers and data-ring addresses).  Every command is checked against the
@@ -222,6 +229,12 @@ static long post(unsigned long entry, unsigned long cmdseq, unsigned long req,
 
 static char text[131072];
 
+/* Where the next "auto" command goes; every posted command moves it on. */
+#define RING_START	0xa0010800ul
+#define RING_END	0xa0018800ul	/* not seen past 0xa00112fc; assumed */
+static unsigned long nx_entry, nx_seq, nx_addr, var[8];
+static int have_next;
+
 static int is_space(char c)
 {
 	return c == ' ' || c == '\t' || c == '\r' || c == '\n';
@@ -279,7 +292,8 @@ int main(int argc, char **argv)
 		char *line = p, *tok;
 		unsigned long f[6], w[MAXW], x[MAXW];
 		u32 resp[MAXW];
-		int nf = 0, nw = 0, nx = 0, after = 0, i, bad;
+		int nf = 0, nw = 0, nx = 0, after = 0, i, bad, isauto = 0;
+		int save = -1;
 		long st;
 
 		while (p < end && *p != '\n')
@@ -290,27 +304,88 @@ int main(int argc, char **argv)
 			line++;
 		if (!*line || *line == '#')
 			continue;
+		if (line[0] == 'n' && line[1] == 'e' && line[2] == 'x' &&
+		    line[3] == 't' && is_space(line[4])) {
+			/* next <entry> <seq> <reqaddr>: where "auto" lines go */
+			unsigned long v[3];
+			int k;
+
+			line += 4;
+			for (k = 0; k < 3; k++) {
+				while (is_space(*line))
+					line++;
+				tok = line;
+				while (*line && !is_space(*line))
+					line++;
+				if (*line)
+					*line++ = 0;
+				if (parse(tok, &v[k]))
+					break;
+			}
+			if (k == 3) {
+				nx_entry = v[0];
+				nx_seq = v[1];
+				nx_addr = v[2];
+				have_next = 1;
+			} else {
+				put("bad next line\n");
+			}
+			continue;
+		}
+		if (line[0] == 'a' && line[1] == 'u' && line[2] == 't' &&
+		    line[3] == 'o' && is_space(line[4])) {
+			/* auto <cmd> <reqlen> <resplen> <status> [req] [= resp]
+			 *      [> $k]: entry, sequence and address from "next" */
+			if (!have_next) {
+				put("auto without a next line\n");
+				flushout();
+				break;
+			}
+			isauto = 1;
+			line += 4;
+			f[nf++] = nx_entry;
+		}
 		while (*line) {
 			unsigned long v;
 
+			while (is_space(*line))
+				line++;
+			if (!*line)
+				break;
 			tok = line;
 			while (*line && !is_space(*line))
 				line++;
 			if (*line)
 				*line++ = 0;
-			while (is_space(*line))
-				line++;
 			if (streq(tok, "=")) {
 				after = 1;
 				continue;
 			}
-			if (parse(tok, &v))
+			if (streq(tok, ">")) {
+				after = 2;
+				continue;
+			}
+			if (after == 2) {		/* > $k: keep response word 0 */
+				if (tok[0] == '$' && tok[1] >= '0' && tok[1] <= '7')
+					save = tok[1] - '0';
+				continue;
+			}
+			if (tok[0] == '$' && tok[1] >= '0' && tok[1] <= '7' && !tok[2])
+				v = var[tok[1] - '0'];
+			else if (tok[0] == '@' && isauto && !parse(tok + 1, &v))
+				v += nx_addr;		/* @N: this request + N */
+			else if (parse(tok, &v))
 				break;
+			if (isauto && nf == 1) {	/* the command ID */
+				f[nf++] = (v << 16) | nx_seq;
+				f[nf++] = nx_addr;
+				continue;
+			}
 			if (nf < 6)
 				f[nf++] = v;
 			else if (!after && nw < MAXW)
 				w[nw++] = v;
-			else if (after && nx < MAXW)
+			else if (after == 1 && nx < MAXW)
 				x[nx++] = v;
 		}
 		if (nf < 6 || f[0] > 31 || f[3] > 4 * MAXW ||
@@ -320,6 +395,19 @@ int main(int argc, char **argv)
 			continue;
 		}
 		st = post(f[0], f[1], f[2], f[3], f[4], w, resp);
+		if (st != -1000) {
+			/* the ring goes 1..31 (entry 0 is not part of it); the
+			 * sequence counts in its low 8 bits */
+			if (f[0])
+				nx_entry = f[0] == 31 ? 1 : f[0] + 1;
+			nx_seq = (f[1] & 0xff00) | ((f[1] + 1) & 0xff);
+			nx_addr = f[2] + f[3] + f[4];
+			if (nx_addr + 0x100 > RING_END)
+				nx_addr = RING_START;
+			have_next = 1;
+			if (save >= 0 && f[4] >= 4)
+				var[save] = resp[0];
+		}
 		if (st == -1000) {
 			ntimeout++;
 			put("TIMEOUT cmd 0x");
@@ -365,6 +453,15 @@ int main(int argc, char **argv)
 			put("\n");
 		}
 		flushout();
+	}
+	if (have_next) {
+		put("next ");
+		putdec((long)nx_entry);
+		put(" 0x");
+		puthex(nx_seq, 4);
+		put(" 0x");
+		puthex(nx_addr, 8);
+		put("\n");
 	}
 	put("commands ok ");
 	putdec((long)nok);
