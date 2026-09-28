@@ -29,22 +29,39 @@ def words(line):
 
 def main():
     lines = open(sys.argv[1]).read().splitlines()
-    out = []
-    call = ''
+    groups = []                 # one list of commands per vendor call
     for i, ln in enumerate(lines):
         if ln.startswith('nr='):
-            call = ln.split('  buf:')[0]
+            groups.append((ln.split('  buf:')[0], []))
             continue
         m = ENTRY.match(ln)
-        if not m:
+        if not m or not groups:
             continue
         entry, cmd, seq, status, reqlen, resplen, addr = m.groups()
-        req = words(lines[i + 1])
-        resp = words(lines[i + 2])
-        out.append('# %s' % call)
-        out.append(' '.join([entry, '0x%04x%04x' % (int(cmd, 16), int(seq, 16)),
-                             '0x' + addr, reqlen, resplen, status] + req +
-                            (['='] + resp if resp else [])))
+        groups[-1][1].append((int(entry), int(cmd, 16), int(seq, 16), status, reqlen,
+                              resplen, addr, words(lines[i + 1]), words(lines[i + 2])))
+
+    # The trace lists a call's entries in TABLE order; the sub-CPU takes them in
+    # SEQUENCE order (the low 8 bits count, and wrap), and a call whose commands
+    # straddle the end of the table (entry 31, then 1) must keep that order.
+    # Entry 0 is not part of the ring: the vendor posts its status polls there
+    # by some other means, so those are kept as comments only.
+    out = []
+    last = None
+    for call, cmds in groups:
+        if last is not None:
+            cmds.sort(key=lambda c: (c[2] - last - 1) & 0xff)
+        else:
+            cmds.sort(key=lambda c: c[2] & 0xff)
+        for entry, cmd, seq, status, reqlen, resplen, addr, req, resp in cmds:
+            line = ' '.join([str(entry), '0x%04x%04x' % (cmd, seq), '0x' + addr, reqlen,
+                             resplen, status] + req + (['='] + resp if resp else []))
+            out.append('# %s' % call)
+            if entry == 0:
+                out.append('# (entry 0, not replayed) ' + line)
+                continue
+            out.append(line)
+            last = seq
     text = '\n'.join(out) + '\n'
     if len(sys.argv) > 2:
         open(sys.argv[2], 'w').write(text)

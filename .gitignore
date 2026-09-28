@@ -86,6 +86,8 @@ tools/yb1-mxl/yb1-mxl
 
 # yb1-poke build artifact (source-only in repo)
 tools/yb1-poke/yb1-poke
+# yb1-cmd build artifact (source-only in repo)
+tools/yb1-cmd/yb1-cmd
 tools/yb1-mmac/*.ko
 tools/yb1-mmac/*.o
 tools/yb1-mmac/*.mod.c

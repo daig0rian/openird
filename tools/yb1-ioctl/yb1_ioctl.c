@@ -31,6 +31,8 @@
  *   <cmd> [word ...]   issue that request, payload given as 32-bit words
  *   load $N <phys>     read one 32-bit word of physical memory into $N
  *   hold <seconds>     keep the fd open and wait (so the capture can run)
+ *   trace              from here on, print the command-stack entries each
+ *                      request produced (command ID, request, response)
  * Blank lines and lines starting with '#' are ignored.  Anywhere a word is
  * expected, "$N" (N = 0..7) substitutes a stored value.
  *
@@ -203,6 +205,115 @@ static void dump(const char *label, const u8 *p, unsigned long n)
 #define ARGBUF_ROOM	8192
 static u8 argbuf[ARGBUF_ROOM];
 
+/*
+ * "trace" (script line): after every request, print the entries of the AV
+ * sub-CPU command stack that it produced -- command ID, sequence number,
+ * status, and the request and response words -- so that a vendor call can be
+ * written down as the command it turns into (reception-stack spec §66, §72,
+ * §80).  Reads the shared memory (physical 0x10000, 64 KB) only.
+ */
+#define SHM_PHYS	0x10000ul
+#define SHM_LEN		0x10000ul
+#define ENT_PHYS	0x10400ul
+#define NENT		32
+
+static const volatile u8 *shm;
+static unsigned long ent_w1[NENT];
+
+static unsigned long shm_rd(unsigned long phys)
+{
+	const volatile u8 *m = shm + (phys - SHM_PHYS);
+
+	return ((unsigned long)m[0] << 24) | ((unsigned long)m[1] << 16) |
+	       ((unsigned long)m[2] << 8) | (unsigned long)m[3];
+}
+
+static int trace_on(void)
+{
+	long fd, r;
+
+	if (shm)
+		return 0;
+	fd = tr_syscall(SYS_open, (long)"/dev/mem", O_RDONLY | O_SYNC, 0, 0, 0, 0);
+	if (fd < 0)
+		return -1;
+	r = tr_syscall(SYS_mmap2, 0, (long)SHM_LEN, PROT_READ, MAP_SHARED, fd,
+		       (long)(SHM_PHYS >> PAGE_SHIFT));
+	tr_syscall(SYS_close, fd, 0, 0, 0, 0, 0);
+	if (r < 0 && r > -4096)
+		return -1;
+	shm = (const volatile u8 *)r;
+	return 0;
+}
+
+static void trace_snap(void)
+{
+	int i;
+
+	for (i = 0; i < NENT; i++)
+		ent_w1[i] = shm_rd(ENT_PHYS + 32 * i + 4);
+}
+
+/* the data ring holds KSEG1 addresses of shared memory */
+static void trace_words(const char *label, unsigned long a, unsigned long b)
+{
+	unsigned long p;
+	int n = 0;
+
+	put(label);
+	for (p = a; p + 4 <= b && n < 16; p += 4, n++) {
+		unsigned long phys = p & 0x1ffffffful;
+
+		put(" ");
+		if (phys < SHM_PHYS || phys + 4 > SHM_PHYS + SHM_LEN)
+			put("????????");
+		else
+			puthex(shm_rd(phys), 8);
+	}
+	if (p + 4 <= b)
+		put(" ...");
+	put("\n");
+}
+
+static void trace_diff(void)
+{
+	int i, any = 0;
+
+	for (i = 0; i < NENT; i++) {
+		unsigned long e = ENT_PHYS + 32 * i;
+		unsigned long w1 = shm_rd(e + 4), w2, w3, w6;
+
+		if (w1 == ent_w1[i])
+			continue;
+		any = 1;
+		w2 = shm_rd(e + 8);
+		w3 = shm_rd(e + 12);
+		w6 = shm_rd(e + 24);
+		put("  => entry ");
+		putdec(i);
+		put(" cmd 0x");
+		puthex(w1 >> 16, 4);
+		put(" seq 0x");
+		puthex(w1 & 0xffff, 4);
+		put(" w0 ");
+		puthex(shm_rd(e), 8);
+		put(" status ");
+		putdec((long)shm_rd(e + 20));
+		put(" req ");
+		putdec((long)(w3 - w2));
+		put(" B resp ");
+		putdec((long)(w6 - (w3 - w2)));
+		put(" B @");
+		puthex(w2, 8);
+		put("\n");
+		trace_words("     req :", w2, w3);
+		trace_words("     resp:", w3, w2 + w6);
+	}
+	if (!any)
+		put("  => no command\n");
+	flushout();
+}
+
 static long do_one(long fd, unsigned long cmd, const unsigned long *w, int nw)
 {
 	unsigned long size, dir, nr;
@@ -222,6 +333,8 @@ static long do_one(long fd, unsigned long cmd, const unsigned long *w, int nw)
 		argbuf[i * 4 + 2] = (u8)(w[i] >> 8);
 		argbuf[i * 4 + 3] = (u8)w[i];
 	}
+	if (shm)
+		trace_snap();
 	r = tr_syscall(SYS_ioctl, fd, (long)cmd, (long)argbuf, 0, 0, 0);
 
 	put("nr=0x");
@@ -239,6 +352,8 @@ static long do_one(long fd, unsigned long cmd, const unsigned long *w, int nw)
 	}
 	put("\n");
 	flushout();
+	if (shm)
+		trace_diff();
 	return r;
 }
 
@@ -506,6 +621,12 @@ static int run_script(long fd, const char *dev0, const char *path)
 				}
 				put("\n");
 			}
+			flushout();
+			continue;
+		}
+		if (streq(tok, "trace")) {
+			put(trace_on() ? "trace: cannot map the shared memory\n" :
+					 "trace on\n");
 			flushout();
 			continue;
 		}
