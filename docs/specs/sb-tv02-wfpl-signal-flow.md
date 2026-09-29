@@ -47,7 +47,7 @@ flowchart LR
     ANT(["アンテナ入力<br/>地上D / BS・CS 別F 【確定】"])
 
     XC["Tuner 地上: Xceive<br/>XC5200(C) 【確定】"]
-    CXD["Tuner 衛星: CXD2818<br/>（推測: 型番・LNB給電未観察）"]
+    CXD["Tuner 衛星: Sony CXD2818<br/>型番【確定: dione_server】<br/>LNB給電・選局は未観察"]
 
     subgraph DEMOD["Toshiba TC90532XBG ｜ 復調IC 【確定】"]
         direction TB
@@ -181,7 +181,7 @@ flowchart LR
 | 物理 IC | 論理ブロック | 確度 | 根拠 |
 |---|---|---|---|
 | **Xceive XC5200(C)**（地上チューナ） | — | 【確定】 | FAPex §5.7（I2C1 slave 0xc2 直結・周波数語）。FW は公開 `xc5000c` と同型 |
-| **CXD2818**（衛星チューナ・推定） | — | 推測 | 写真・`temp/spec_SB-TV02-WFPL.md` §5.2。復調器 0xfe ゲートの奥 0xc0。LNB 給電・選局は未観察（アンテナ未接続） |
+| **Sony CXD2818**（衛星チューナ） | — | 型番【確定】/動作は未観察 | `dione_server`：`cxd2818_Initialize/Tune/Sleep/Wakeup`・`cxd_read/write_some_regs`。復調器 0xfe ゲートの奥 0xc0。LNB 給電・選局は未観察（アンテナ未接続） |
 | **Toshiba TC90532XBG**（復調） | OFDM コア ISDB-T（slave 0x20/0x21） | 【確定】 | FAPex §5.7（地上ロック・C/N を実機で実行）。写真でシルク確認 |
 | | PSK コア ISDB-S（slave 0x22/0x23） | 存在【確定】/衛星動作は未観察 | FAPex §5.7（起動時に 0x22 を初期化）。実選局は 18:00 以降 |
 | | I2C ゲート 0xfe → 衛星チューナ | 【確定: topology】 | FAPex §5.7（`fe c0 <reg> <val>` で書き `fe c1` 後に読む） |
@@ -247,14 +247,29 @@ flowchart LR
    **表示用の映像/音声デコーダ**であって復号器ではない。∴ YB1 のように主 SoC 内の
    AV サブシステムを覗いて生 TS を得る道は、この機には二重の意味で無い（休止かつ復号器でない）。
    トランスコード＋復号は外部チップ Dione に外出しされている。
-5. **制御は 4 系統**：フロントエンドは **I2C（0/1）**、電源・リセットは **GPIO**、クロックと
+5. **前段（復調器・両チューナ）を操作するのは主 CPU で、Dione ではない**。`dione_server` の
+   `demod_WriteSomeRegs`（FAPex I2C0・復調器 0x20/0x22）、`xc5200c_initialize`/`xc_load_i2c_sequence`
+   （FAPex I2C1・地上 0xc2）、`cxd2818_Initialize/Tune`（衛星）はすべて **SoC の I2C** を使う。
+   Dione 側の I2C（`fmb_*_i2c`）と `FMB_API_SET/GET_LSI_REG` は **Dione 内部レジスタ用**で、
+   前段には向いていない。主 CPU が Dione の**内部デマルチプレクサ＋トランスコード**を設定するのは、
+   USB の `nr=0x01` コマンド（`INITIALIZE`/state 変更）と `SET_LSI_REG` の「塊」（PID 表・
+   ストリーム種別・ビットレート＝FAPex §5.7）である。∴ 「Dione が前段を操作する」経路は無い。
+   残る唯一の絡みは、復調器が Dione 起動前に I2C 応答しないこと（§5.5）で、これは Dione が
+   前段のクロックを供給しているか、ベンダの立ち上げ順（復調器 reset 7/8 を Dione の後に解除）の
+   どちらかによる（未判別・§6）。
+6. **制御は 4 系統**：フロントエンドは **I2C（0/1）**、電源・リセットは **GPIO**、クロックと
    ウォッチドッグは **CLKPWR**、Dione（FW・コマンド・レジスタ・カード）は **USB**。
    フロントエンドと Dione の口はいずれも FAPex chardev 越しに自前で叩けることを確認済み。
 
 ## 6. 未確定（次に埋めるべき点）
 
-- **衛星系（A3）**: CXD2818 の型番確定、衛星チューナの選局 I2C 列、TSID の選択、LNB 電源の
-  実体（GPIO か I2C か Dione か）。アンテナ接続後（18:00 以降）に観察する。
+- **衛星系（A3）**: 衛星チューナ CXD2818 の選局 I2C 列（`cxd2818_Tune`・0xfe ゲート越し）、
+  TSID の選択、LNB 電源の実体（GPIO か I2C か Dione か）。型番は確定済み。アンテナ接続後
+  （18:00 以降）に観察する。
+- **復調器が Dione 起動前に I2C 応答しない理由**（§5.5）: Dione が前段のクロックを供給して
+  いるか、ベンダの立ち上げ順（復調器 reset 7/8 を Dione の後に解除）の副作用か。Dione の電源・
+  FW を載せずに復調器 rail(48/49)＋reset(7/8)＋CLKPWR init だけで I2C ACK するかを実機で試せば
+  切り分く（生 TS は得られないが、前段が Dione から独立かが分かる）。
 - **復調器 → Dione の TS 電気インターフェース**（シリアル/パラレル・ピン数）。到達は確定だが
   電気的詳細は未観察で、基板タップの可否判断に要る。
 - **生 TS を得るハード改造の可否**: 復調器→Dione の TS 配線を基板でタップする案（ソフト範囲外）。
