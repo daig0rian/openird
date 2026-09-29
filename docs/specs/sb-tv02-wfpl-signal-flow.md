@@ -2,7 +2,7 @@
 
 <!-- openird-spec
 Status: observing
-As-of:  実機 SB-TV02-WFPL / ベンダ airtuner 1.0.3 r763 (2026-09-29・受信の位相を実機で確定)
+As-of:  実機 SB-TV02-WFPL / ベンダ airtuner 1.0.3 r763 (2026-09-29 受信の位相を確定 → 2026-09-30 自前立ち上げ・idle・カード抜きで生TS不可を確定・補強)
 Impl:   -
 Tests:  -
 Note:   受信スタックの物理/論理構成の俯瞰図。詳細と根拠は sb-tv02-wfpl-stage-b-fapex.md（以下「FAPex §」）と sb-tv02-wfpl-vendor-boot.md（以下「起動 §」）。作例は poe-br100-yb1-signal-flow.md。
@@ -237,6 +237,20 @@ flowchart LR
    受けるのは Dione の**復号後**の出力だけ。生 TS は復調器→Dione の**基板配線上**にしかない。
 2. **復号は Dione の中でインライン**。B-CAS カードも Dione 配下（主 CPU に口なし）。∴ Dione の
    どの出力（THROUGH 含む）も復号後で、OpenIRD の chardev 契約（生 TS）を満たさない。
+   **2026-09-30 に 3 方向で追試し、この確定を補強した**（FAPex §5.10）：
+   - **自前立ち上げ（Milestone A）**: ベンダアプリ抜きで `tools/h57cmd` が Dione を電源投入し、
+     FW（idle 232,864B＋trc 859,616B）を完走ロードできる（記述子ハンドシェイク `nr=0x11/0x12`
+     が要る）。∴ Dione は自前で上げられるが、それでも生 TS は出せない。
+   - **idle は素通しにならない（exp10）**: idle FW だけ載せ、前段を自前でロックさせても
+     TSD CH_A は **0 バイト**＝idle は demod→CH_A の素通し経路を作らない。
+   - **復号 OFF フラグは無い**: `dione_server` の文字列（`strings`）に復号のトグルは無い。
+     `THROUGH`/`MPEG2_THROUGH` は「再エンコードしない」出力モードで、復号のスイッチではない。
+     MULTI2 復号は Dione のファーム内・カード/ECM 連動で、設定では切れない。
+   - **カードを抜いても素通ししない**: B-CAS を物理的に抜いて `settuner`（no-card）しても、
+     `TsStreamer` は起動するが CH_A は同じ細い remux（約1.6Mbps・ヌル89%・`transport_scrambling_
+     control`＝10/11 は全 PID で 0・映像 PID 無し）＝Dione は復号できない映像を**素通しせず捨てる**。
+   ∴ **カードの有無・FW の種別・出力モードに依らず、Dione は生スクランブル TS を SoC に渡さない。**
+   生 TS を得るには demod→Dione の基板配線をハードでタップする以外に無い（ソフト範囲外）。
 3. **フロントエンドの選局は Dione 非依存でクリーンに書ける**。復調器 TC90532（I2C0）と
    地上チューナ XC5200（I2C1 直結）の初期化・選局の I2C 列は実機で採れており（FAPex §5.7）、
    mainline `tc90522.c`/`xc5000.c` の公開意味論で仕様化できる。ただし**復調器は Dione の
