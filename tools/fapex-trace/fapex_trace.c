@@ -205,6 +205,148 @@ static void put_h57_val(struct line *l, const void *arg)
 	put_bytes(l, "val", (const unsigned char *)a[2], 4);
 }
 
+/* Experiment shim (off unless /tmp/fapex-h57-rewrite exists): replace the
+ * value the application writes to a Dione register.  Each line of the file is
+ * "ADDR VALUE [ONLY-IF]" in hex (e.g. "0x00100a 0x0000 0x0010"); with ONLY-IF
+ * the rule fires only when the application writes that value (the same block
+ * is written more than once with different meanings); '#' starts a comment.
+ * Only the low 16 bits change (the registers are 16-bit).  The application
+ * reads every word back after writing it, so a read that returns a value we
+ * substituted is shown to the application as the value it wrote.  The file is
+ * read again on every register write, so rules can change between tunes
+ * without restarting the application.  Used to find which word selects the
+ * transcode mode, one word per trial (stage-b-fapex §5.7). */
+#define RW_MAX 8
+#define RW_MEMO 32
+static struct { unsigned long addr, val, only_if; } rw_rule[RW_MAX];
+#define RW_ANY 0xffffffffUL
+static int rw_rules;
+static struct { unsigned long addr, newv, orig; } rw_memo[RW_MEMO];
+static int rw_memo_next;
+
+static unsigned long parse_hex(const char *b, long n, long *i)
+{
+	unsigned long v = 0;
+
+	while (*i < n && (b[*i] == ' ' || b[*i] == '\t'))
+		(*i)++;
+	if (*i + 1 < n && b[*i] == '0' && (b[*i + 1] == 'x' || b[*i + 1] == 'X'))
+		*i += 2;
+	for (; *i < n; (*i)++) {
+		char c = b[*i];
+
+		if (c >= '0' && c <= '9')
+			v = v * 16 + (unsigned long)(c - '0');
+		else if (c >= 'a' && c <= 'f')
+			v = v * 16 + (unsigned long)(c - 'a' + 10);
+		else if (c >= 'A' && c <= 'F')
+			v = v * 16 + (unsigned long)(c - 'A' + 10);
+		else
+			break;
+	}
+	return v;
+}
+
+static void load_rewrites(void)
+{
+	char buf[512];
+	long n, i = 0;
+	int fd = (int)tr_syscall(SYS_open, (long)"/tmp/fapex-h57-rewrite",
+				 0 /*O_RDONLY*/, 0, 0, 0, 0);
+
+	rw_rules = 0;
+	if (fd < 0)
+		return;
+	n = tr_syscall(SYS_read, fd, (long)buf, sizeof(buf), 0, 0, 0);
+	tr_syscall(SYS_close, fd, 0, 0, 0, 0, 0);
+	while (i < n && rw_rules < RW_MAX) {
+		if (buf[i] != '#' && buf[i] != '\n' && buf[i] != '\r') {
+			long j;
+
+			rw_rule[rw_rules].addr = parse_hex(buf, n, &i);
+			rw_rule[rw_rules].val = parse_hex(buf, n, &i) & 0xffff;
+			rw_rule[rw_rules].only_if = RW_ANY;
+			j = i;
+			while (j < n && (buf[j] == ' ' || buf[j] == '\t'))
+				j++;
+			if (j < n && buf[j] != '\n' && buf[j] != '\r' && buf[j] != '#')
+				rw_rule[rw_rules].only_if = parse_hex(buf, n, &i) & 0xffff;
+			rw_rules++;
+		}
+		while (i < n && buf[i] != '\n')
+			i++;
+		i++;
+	}
+}
+
+/* Before a register write: substitute the value if a rule matches.  Returns
+ * the original value (to put back into the caller's buffer afterwards) or -1
+ * when nothing was changed. */
+static long h57_rewrite_before(struct line *l, const void *arg)
+{
+	const unsigned long *a = arg;
+	unsigned char *v;
+	unsigned long orig;
+	int k;
+
+	if (!readable(arg, 12))
+		return -1;
+	v = (unsigned char *)a[2];
+	if (!v || !readable(v, 2))
+		return -1;
+	load_rewrites();
+	for (k = 0; k < rw_rules; k++) {
+		if (rw_rule[k].addr != a[1])
+			continue;
+		orig = (unsigned long)v[0] | ((unsigned long)v[1] << 8);
+		if (rw_rule[k].only_if != RW_ANY && orig != rw_rule[k].only_if)
+			continue;
+		if (orig == rw_rule[k].val)
+			return -1;
+		v[0] = (unsigned char)(rw_rule[k].val & 0xff);
+		v[1] = (unsigned char)(rw_rule[k].val >> 8);
+		rw_memo[rw_memo_next].addr = a[1];
+		rw_memo[rw_memo_next].newv = rw_rule[k].val;
+		rw_memo[rw_memo_next].orig = orig;
+		rw_memo_next = (rw_memo_next + 1) % RW_MEMO;
+		put(l, " [rewrite 0x");
+		put_hex(l, orig, 4);
+		put(l, "->0x");
+		put_hex(l, rw_rule[k].val, 4);
+		put(l, "]");
+		return (long)orig;
+	}
+	return -1;
+}
+
+/* After a register read: if it returns a value we substituted at that
+ * address, show the application the value it originally wrote. */
+static void h57_rewrite_after_read(struct line *l, const void *arg)
+{
+	const unsigned long *a = arg;
+	unsigned char *v;
+	unsigned long got;
+	int k;
+
+	if (!readable(arg, 12))
+		return;
+	v = (unsigned char *)a[2];
+	if (!v || !readable(v, 2))
+		return;
+	got = (unsigned long)v[0] | ((unsigned long)v[1] << 8);
+	for (k = 0; k < RW_MEMO; k++) {
+		if (rw_memo[k].addr != a[1] || rw_memo[k].newv != got ||
+		    !(rw_memo[k].addr | rw_memo[k].newv | rw_memo[k].orig))
+			continue;
+		v[0] = (unsigned char)(rw_memo[k].orig & 0xff);
+		v[1] = (unsigned char)(rw_memo[k].orig >> 8);
+		put(l, " [shown-as 0x");
+		put_hex(l, rw_memo[k].orig, 4);
+		put(l, "]");
+		return;
+	}
+}
+
 /* A pointer is only safe to dereference if it is mapped.  The app hands the
  * driver real user pointers, so a plain read is fine; but guard the length so
  * a bogus value cannot make us walk off the end. */
@@ -662,6 +804,8 @@ int ioctl(int fd, unsigned long cmd, ...)
 		 * (tuner/demod I2C rides here, §5.3).  We don't know the struct
 		 * layout, so dump the top-level arg by _IOC_SIZE, both sides. */
 		if (is_h57(fd)) {
+			long rw_orig = -1;
+
 			stamp(&l);
 			put(&l, "ioctl ");
 			put(&l, fd_name(fd));
@@ -676,6 +820,8 @@ int ioctl(int fd, unsigned long cmd, ...)
 			put_dec(&l, size);
 			if ((dir & IOC_WRITE) && arg && size)
 				put_bytes(&l, "in", arg, size);
+			if ((dir & IOC_WRITE) && nr == 0x03 && size == 12 && arg)
+				rw_orig = h57_rewrite_before(&l, arg);
 			if ((dir & IOC_WRITE) && h57_is_reg(nr, size))
 				put_h57_val(&l, arg);
 			r = tr_syscall(SYS_ioctl, fd, cmd, (long)arg, 0, 0, 0);
@@ -721,6 +867,15 @@ int ioctl(int fd, unsigned long cmd, ...)
 				put_bytes(&l, "out", arg, size);
 			if (r >= 0 && (dir & IOC_READ) && h57_is_reg(nr, size))
 				put_h57_val(&l, arg);
+			if (r >= 0 && (dir & IOC_READ) && nr == 0x02 && size == 12 && arg)
+				h57_rewrite_after_read(&l, arg);
+			if (rw_orig >= 0) {
+				/* give the caller its own buffer back unchanged */
+				unsigned char *v = (unsigned char *)((const unsigned long *)arg)[2];
+
+				v[0] = (unsigned char)(rw_orig & 0xff);
+				v[1] = (unsigned char)((unsigned long)rw_orig >> 8);
+			}
 			put(&l, " = ");
 			put_dec(&l, r < 0 ? r : (long)(int)r);
 			if (!h57_quiet())
