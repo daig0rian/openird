@@ -1463,6 +1463,68 @@ CH_B（TSD1）には地上の選局中、TS が来ていない（リングはほ
   （Dione は列挙されたまま、復調器はロックのまま）。手順：`fapex-poke` で CLKPWR を OPEN
   → アプリの全スレッドに `kill -STOP` → `kill -9`。
 
+## 5.8 ★受信の位相と生 TS の所在（2026-09-29 実機・確定）
+
+「Dione のどこかから生 TS を出せないか」を突き詰めた結果、**WFPL ではソフトから生
+（スクランブルのまま）TS は取れない**ことが分かった。根拠と構図：
+
+### ICカードの口は Dione 配下（＝MULTI2 復号は Dione の中）
+
+- 主 CPU のユーザランドに ICカード／スマートカードの口もノードも無く、`fdlicc.ko` も
+  載っていない。カードへの接続はすべて `LSC_DIONE_ICCARD`／`WirelessDioneICCard.c`
+  経由（`GetICCardStatusInfo`・`ICCardCmdSet/Get`）＝h57fmb の USB トンネルで Dione へ。
+- SoC 自体は ICカードコントローラ（GPL `MB86HXX_ICC_BASE 0xC5000000`・IRQ 12/13）を
+  2 面持つが、この製品ではドライバも載らず未使用。B-CAS スロットは Dione 側に配線。
+- ∴ ECM→カード→Ks→MULTI2 復号は Dione の中で完結する。
+
+### AV サブシステム＝この製品では Dione（主 SoC のは休止）
+
+- FAPex SDK には AV 一式（`fdlvidec`/`fdlvienc`/`fdlaudec`/`fdlauout`/`fdlviout`/
+  `fdlhdmi`…）があり、SoC は AV 用に 46MB（`CONFIG_FIRM_AREA_SIZE`）を予約する＝主 SoC は
+  AV サブシステムを持つ。だが**この製品のスロットに載る FAPex は TSD/I2C/GPIO/CLKPWR の
+  4 つだけ**で、AV デコード・エンコード系は 1 つも載らない。トランスコード＋復号は
+  すべて USB 接続の別チップ Dione（MB86H58）が担う。YB1 で復号を担った裏 CPU にあたる
+  ものが、WFPL では独立した封止チップに外出しされている。
+
+### 受信の位相（配線）
+
+```
+アンテナ → tuner(XC5200/D2818) → 復調器 TC90532 ──(生・スクランブル TS)──> Dione
+                                                     │  [System Demux → ECM→カード→Ks
+                                                     │   → MULTI2 復号 → トランスコード]
+                                                     └──(復号済み TS)──> SoC TSD CH_A/CH_B
+```
+
+- **復調器の生 TS は SoC の TS 入力には来ない。「ロックだけ」と「配信」の両状態で確認した**
+  （2026-09-29。ロックと配信は別状態なので分けて見た）：
+  - **ロックだけ**（`forceinit`→`dpower 1 1`→`sfreq 1 <Hz>`＝復調器 LOCK・Dione の
+    TsStreamer は開かない・`chktunerts` は No TS_IN）：SoC 入力 A/B/C を全モード
+    （直列／並列／並列+PS）で読んで 0 バイト。
+  - **配信**（`settuner`＝Dione の TsStreamer を開く）：CH_A は Dione の出力、空いている
+    CH_C は全モード 0 バイト、CH_B も別ブロックで空（§5.6）。
+  - SoC が受けるのは Dione の**出力**だけ（CH_A の約 1.6 Mbps・ヌル 89%・映像
+    無し・スクランブル 10/11 無し＝復号後の細い remux）。
+- ∴ 生 TS は**復調器→Dione の基板配線上**にしか無く、ソフトからは取れない。Dione の
+  中で TS は必ず復号段を通る（THROUGH は「復号済み・トランスコードなし」）。
+
+### YB1 との違い（なぜ YB1 は取れて WFPL は取れないか）
+
+- YB1（BMMPX1301）は B-CAS スロットが無く**オンデバイスで復号しない**。復調後の生
+  スクランブル TS が主 SoC の AV SRAM の入力 FIFO に入り、そこを読めた（参照受信機と
+  ビット一致）。復号器の**手前**に SoC のタップがあった。
+- WFPL は B-CAS スロットを持ち Dione が**インラインで復号**する。復調器→Dione→SoC の
+  一方向で、SoC は復号後しか見えない。復号器の手前に SoC のタップが無い。
+
+### 含意（生 TS が要るなら）
+
+- ソフトだけでは不可。取るなら (a) 復調器→Dione の TS 配線を基板でタップする（ハード
+  改造・CFW のソフト範囲外）、または (b) Dione に取り込んだ TS を復号前に吐かせる
+  （Dione 内部モード＝B-CAS/復号器を手探りする方向で、限定受信の境界に近く採らない）。
+- **OpenIRD の chardev 契約は「生（スクランブル）TS」**（CLAUDE.md §4。復号は上位に
+  委ねる）。WFPL はこの契約をソフトだけでは満たせない。一方、選局（復調器 TC90532・
+  チューナ XC5200/D2818）の仕様は Dione に依存せず §5.7 で採れているので、段階 C の
+  「選局部分の仕様」は WFPL でも成果として残る。
+
 ## 6. 段階 C（クリーン実装）への含意
 
 - OpenIRD が満たすべき chardev 契約は **px4_drv 互換**（CLAUDE.md §4）。FAPex の
