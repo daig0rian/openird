@@ -78,7 +78,7 @@ EOF
 fi
 
 if [ -f $OPENIRD_USB/noapp ] ; then
-	if grep -qx 'insmod /slot/drv/h57fmb.ko' /slot/slot_entry.sh ; then
+	if grep -q '^insmod /slot/drv/h57fmb\.ko$' /slot/slot_entry.sh ; then
 		# Everything slot_entry.sh does before the application, then return;
 		# rcS then falls through to its own root shell on the console.
 		sed '/^insmod \/slot\/drv\/h57fmb\.ko$/,$d' /slot/slot_entry.sh \
