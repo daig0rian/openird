@@ -1407,10 +1407,50 @@ TranscodeSetting3,TranscodePIDFilter,TranscodeCheckoutFormat,Transcode3D_2D_Mode
 `VideoTSOutMode`（`TRANSCODE`＝1）がどの語かは未確定（`0x00100c`＝`4512` のように 4bit ずつ
 詰めた語がある）。
 
-**`h57fmb0` の `nr=0x01`（12 バイト・RW）はレジスタ操作ではなくコマンドの口**と読める。先頭の
-語がコマンド番号で、`0x01`・`0x04`・`0x05`・`0x08`・`0x0a` を観測（塊を書いた後に `0x0a`・
-引数 `0x1221`）。モードの切り替えは「塊」と「コマンド」の組と見られ、THROUGH の割り出しは
-これを 1 点ずつ切り分けて行う（計画 `docs/sb-tv02-wfpl-chardev-plan.md`）。
+**`h57fmb0` の `nr=0x01`（12 バイト・RW）はレジスタ操作ではなくコマンドの口**。先頭の語の下位
+16bit がコマンド番号、上位 16bit がサブコマンド、3 語目が引数（body）。アプリのログ
+`send cmd [OK] cmd = 0x%02x sub_cmd = 0x%02x body = 0x%04x` と一致する（`ssloglev 255` で出る。
+既定では出ない。255 は他のログも大量に出すので観察後は `ssloglev 7` に戻す）。`settuner` の後半
+（Dione が既に起きているとき）で観測した順：`cmd 0x08` ×数回 → `cmd 0x05 body 0x0004` →
+`cmd 0x05 body 0x0001` → （塊）→ `cmd 0x04 sub 0x20 body 0x0000`（`CommitTranscode` の中）→
+`cmd 0x05 body 0x0002`。コマンド名の語彙（文字列）：`send_cmd(INITIALIZE,MPEG2_H264)`・
+`send_cmd(INITIALIZE,DOWNLOAD)`・`send_cmd(IDLE)`、状態 `SYSTEM_STATE_START`／`STOP`／`NULL_OUT`。
+ログ 255 では、`CommitParam` が書いた塊の語を 1 つずつ読み返して `get_lsi_register 0x100a = 0x0010`
+のように表示する＝アプリはこの塊を「LSI のレジスタ」として扱っている。
+
+**塊の書き込みは 1 回の `settuner` の中で 2 回**（Dione を冷起動したとき）。idle ファームの後と、
+トランスコード用ファーム（trc・1,679 塊）を転送して選局した後。**2 回で値が違うのは `0x00100a`
+だけ**（前者 `0x001b`、後者 `0x0010`）。4bit ずつ見ると、下位の `b`・`0` が `VideoTSOut2Mode`
+（既定 `0xb`）、次の `1` が `VideoTSOutMode`（TRANSCODE＝1）に当たると読める（仮説）。
+
+**差し替えの試行**（`fapex-trace` の `/tmp/fapex-h57-rewrite`。揮発のみ）：
+
+| 試行 | 差し替え | 結果 |
+|---|---|---|
+| 1 | `0x00100a` を 1 回目（`0x001b`）で `0x0000` に | idle ファームの後の `cmd 0x04 sub 0x20` がタイムアウト（`errno = 110`）→ `XERROR factor 0x80000000` → STOP。TS 無し |
+| 1b | `0x00100a` を 2 回目（`0x0010`）だけ `0x0000` に | `CommitTranscode` の中の同じコマンドがタイムアウト → STOP。TS 無し＝両方 0 は無効な設定 |
+| 2〜7 | `0x00100a` を 2 回目だけ `0x0020`・`0x0040`・`0x0050`・`0x0060`・`0x0070` に | どれも受け付けられ（エラー無し）、CH_A のレートも中身（PID の構成・ヌルの割合）も基準と同じ |
+
+∴ `0x00100a` の 4bit を単独で変えても出力は切り替わらない（または THROUGH ではない値）。
+
+### CH_A の中身と、アプリ動作中にリングを読む方法（2026-09-29 実機）
+
+TSD のリングはアプリの mmap の中身がそのまま物理メモリにある（`/proc/<pid>/maps` の
+`/dev/fapi/fapi004` の行のオフセット＝物理アドレス）。**CH_A は物理 `0x46000000`、CH_B は
+`0x45400000`、各 3,850,240 B**。アプリが TSD を握っていても `/dev/mem` から読める
+（`dd if=/dev/mem bs=4096 skip=$((0x46000000/4096)) count=940`）。デバイス領域なので
+`/proc/<pid>/mem` からは読めない。
+
+トランスコード設定（既定）で ch27 を選局したときの CH_A（`tools/host/tsref.py` で要約）：
+
+- 20,480 パケットのうち **約 89% がヌル**。レートは一定（約 1.6 Mbit/s）で、中身が変わっても
+  レートは変わらないと見られる＝**レートだけでは THROUGH を判定できない**。
+- 残りは PAT・CAT・SI（`0x0010`/`0x0011`/`0x0012`/`0x0014`/`0x0024`）・`0x01f0`・`0x01ff`（PCR）・
+  `0x0901`・`0x0130`/`0x0138` を少量ずつ。**映像にあたる大量のパケットは無い**。
+- `transport_scrambling_control` が `10`/`11`（本物のスクランブル）のパケットは 0。Dione の出力は
+  `01`（予約）の印を付けている。
+
+CH_B（TSD1）には地上の選局中、TS が来ていない（リングはほぼ 0 埋め）。
 
 ### ウォッチドッグ（2026-09-29 実機）
 
