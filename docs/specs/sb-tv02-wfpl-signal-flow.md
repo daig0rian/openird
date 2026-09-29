@@ -199,7 +199,7 @@ flowchart LR
 | | USB ホスト MUSB×2（`0xC7000800`） | 【確定】 | GPL `platform.c`・起動 §7。エンドポイント各 6 本（起動 §7） |
 | | EMAC（`0xE2000000`）→ RTL8201EL | 【確定】 | GPL・起動ログ |
 | | ICカードコントローラ ×2（`0xC5000000`・IRQ12/13） | 存在【確定】/**未使用** | GPL `mb86hxx.h`。この製品はドライバも載らず B-CAS は Dione 側 |
-| | AV サブシステム（VIDDEC `0x60000000`/VIDOUT `0xCB000000`/AUD `0xCC000000`/HDMI/GRAPHENG） | 存在【確定】/**休止** | GPL `mb86hxx.h`・FAPex SDK に AV FDL 一式。46MB FIRM_AREA 予約。この製品は AV .ko 非搭載 |
+| | AV サブシステム＝**表示用の映像/音声デコーダ**（VIDDEC `0x60000000`/VIDOUT `0xCB000000`/AUD `0xCC000000`/HDMI/GRAPHENG） | 存在【確定】/**休止・FW 不在** | GPL `mb86hxx.h`・FAPex SDK に AV FDL 一式。46MB FIRM_AREA 予約。この製品は AV .ko（fdlvidec/audec 等）非搭載。**デコーダ FW（`FIRMWARE_video_h264/mpeg/vc1/avs_code`・`_audio_decoder_code`）はどの区画にも無い**——fapi_core.ko には 28B の記述子だけで実体（マイクロコード）は非収録（YB1 の 6.1MB fapi_core とは別物）。復号器ではない＝生 TS には無関係 |
 | **Realtek RTL8192DU** | WiFi（USB・2T2R） | 【確定】 | 起動ログ・GPL ドライバ。配信の主経路（br0） |
 | **Realtek RTL8201EL** | Ether PHY | 【確定】 | 写真・GPL |
 | **Macronix MX25L12845E** | SPI-NOR 16MB（FW/rootfs 格納） | 【確定】 | 写真・`cat /proc/mtd` |
@@ -240,9 +240,13 @@ flowchart LR
    地上チューナ XC5200（I2C1 直結）の初期化・選局の I2C 列は実機で採れており（FAPex §5.7）、
    mainline `tc90522.c`/`xc5000.c` の公開意味論で仕様化できる。ただし**復調器は Dione の
    完全起動なしでは I2C に応答しない**（FAPex §5.5）＝選局だけでも Dione の電源・FW が要る。
-4. **SoC の AV サブシステムは休止**。この製品は TSD/I2C/GPIO/CLKPWR しか FAPex を載せず、
-   トランスコード＋復号は外部チップ Dione に外出しされている。YB1 のように主 SoC 内の
-   AV サブシステムを覗いて生 TS を得る道は、この機には無い。
+4. **SoC の AV サブシステムは休止で、しかも FW がフラッシュに無い**。この製品は
+   TSD/I2C/GPIO/CLKPWR しか FAPex を載せず、AV デコーダの FW（映像/音声デコーダの
+   マイクロコード）はどの区画にも入っていない（fapi_core.ko に記述子だけ・実体なし。
+   フラッシュの FW blob は Dione 用の 3 つだけ）。しかもこの AV サブシステムは
+   **表示用の映像/音声デコーダ**であって復号器ではない。∴ YB1 のように主 SoC 内の
+   AV サブシステムを覗いて生 TS を得る道は、この機には二重の意味で無い（休止かつ復号器でない）。
+   トランスコード＋復号は外部チップ Dione に外出しされている。
 5. **制御は 4 系統**：フロントエンドは **I2C（0/1）**、電源・リセットは **GPIO**、クロックと
    ウォッチドッグは **CLKPWR**、Dione（FW・コマンド・レジスタ・カード）は **USB**。
    フロントエンドと Dione の口はいずれも FAPex chardev 越しに自前で叩けることを確認済み。
