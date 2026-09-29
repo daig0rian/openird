@@ -1363,6 +1363,55 @@ TS 入力を自前の `fapex-ts` で読んだ。
 生 TS を SoC で得るには、Dione を THROUGH（素通し）で動かす必要がある（§5.6 の Path D 系。
 ただし USB の packet-RAM ではなく、SoC の TS 入力ピン経由）。
 
+### トランスコードの設定（`gettraco`）と塊の語の対応（2026-09-29 実機）
+
+工場テストシェルの `gettraco`（引数なし）は、アプリが持つトランスコードの設定を名前と数値で
+表示する。待機中（Dione の電源が切れている）でも表示され、そのとき Dione には触れない
+＝アプリ内の値で、選局のたびに Dione へ書かれる。既定値（2026-09-29・抜粋）：
+
+```
+FirmwareMode         = MPEG2_TO_H264(0x0)
+VideoTSOutMode       = TRANSCODE(0x1)        VideoTSOut2Mode = HUMBNAIL_TRANSCODE_REMUX(0xb)
+AudioTSOutMode       = THROUGH(0x1)          AudioTSOut2Mode = TRANSCODE(0x2)
+AudioMode            = MPEG2_AAC(0x4)        Audio2Mode      = MPEG4_AAC(0x5)
+PMTMode / PMT2Mode   = REWRITE_STREAM_TYPE(0x7)
+In{Video,Audio}StreamType  = MPEG2_VIDEO(0x2) / MPEG2_AAC(0xf)
+Out{Video,Audio}StreamType = H264(0x1b) / MPEG2_AAC(0xf)   Out2… = H264(0x1b) / MPEG4_AAC(0x11)
+Video{Out,2Out}StreamID = 0xe0   Audio{Out,2Out}StreamID = 0xc0
+HOutSizeSD×VOutSizeSD = 720×480  HOutSizeBL×VOutSizeBL = 320×240
+VideoBitrate/Max/Ave/Min = 4000/4000/2000/1200   …BL = 768/768/512/256
+GOPSize = 15  GOPStruct = IBBP(0x0)  VLCMode = CABAC(0x0)  InterlaceProgressive = INTERLACE(0x1)
+PID[0..26] = 0x0010, 0x0011, 0x0012, …   CheckoutFormat = MEMORY_STICK(0x0)
+```
+
+モード名の語彙（`dione_server` の文字列）：`TRANSCODE`・`THROUGH`・`MPEG2_THROUGH`・
+`OFFLINE_MPEG2_TO_H264`・`OFFLINE_MPEG2_TO_MPEG2`・`OFFLINE_H264_TO_MPEG2`・`THUMBNAIL_TRANSCODE`。
+操作の語彙：`StartTranscodeChange` → `Set{TranscodeMode,TranscodeSetting,TranscodeSetting2,
+TranscodeSetting3,TranscodePIDFilter,TranscodeCheckoutFormat,Transcode3D_2D_Mode}` →
+`CommitTranscode`。外からは制御ポートのサービス `LSC_DIONE_TRANSCODE` として見える。
+
+選局時に書く塊（前節）との対応（値の一致から読んだもの）：
+
+| 番地 | 値 | 対応する設定 |
+|---|---|---|
+| `0x00101c` | `020f` | `InVideoStreamType`(2)・`InAudioStreamType`(0xf) を 1 バイトずつ |
+| `0x001028`〜 | `8010 8011 8012 8014 …` | `PID[0..]` に有効ビット `0x8000` |
+| `0x001130`・`0x001132` | `00e0`・`00c0` | 出力 1 の `VideoOutStreamID`・`AudioOutStreamID` |
+| `0x00113a` | `1b0f` | 出力 1 の `OutVideoStreamType`・`OutAudioStreamType` |
+| `0x00127a` | `1b11` | 出力 2 の `Out2VideoStreamType`・`Out2AudioStreamType` |
+| `0x001532`〜`0x001538` | `0fa0 0fa0 07d0 04b0` | `VideoBitrate`・`Max`・`Ave`・`Min` |
+| `0x001540`〜`0x001548` | `02d0 01e0 0fa0 07d0 04b0` | `HOutSizeSD`・`VOutSizeSD`・SD のビットレート |
+| `0x00162e`〜`0x001638` | `0140 00f0 0300 0300 0200 0100` | `HOutSizeBL`・`VOutSizeBL`・BL のビットレート |
+| `0x001586`・`0x001588` | `ea60`・`03e9` | 60000/1001（フレームレート） |
+
+`VideoTSOutMode`（`TRANSCODE`＝1）がどの語かは未確定（`0x00100c`＝`4512` のように 4bit ずつ
+詰めた語がある）。
+
+**`h57fmb0` の `nr=0x01`（12 バイト・RW）はレジスタ操作ではなくコマンドの口**と読める。先頭の
+語がコマンド番号で、`0x01`・`0x04`・`0x05`・`0x08`・`0x0a` を観測（塊を書いた後に `0x0a`・
+引数 `0x1221`）。モードの切り替えは「塊」と「コマンド」の組と見られ、THROUGH の割り出しは
+これを 1 点ずつ切り分けて行う（計画 `docs/sb-tv02-wfpl-chardev-plan.md`）。
+
 ### ウォッチドッグ（2026-09-29 実機）
 
 - アプリの LED・リセット SW の 110ms ループが出す CLKPWR `nr=0x05` は
