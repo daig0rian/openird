@@ -6,6 +6,7 @@
 #   make BOARD=<device> clean        … 当該機種の output を掃除
 #   make test-overlayfs BOARD=<device> … overlayfs カーネルパッチの QEMU 機能テスト（TEST_ARGS="-n 5" 等）
 #   make test-kabi BOARD=<device>      … ベンダ製 .ko と構造体レイアウトが互換かを確かめる
+#   make sdk BOARD=<device>          … アドオン作者向け SDK（toolchain＋sysroot＋ird-mkaddon）
 #   make test-addon                  … アドオン機構（ird-mkaddon / ird-addon）のテスト
 #   make hooks                       … git フック/テンプレートを有効化
 #
@@ -30,7 +31,7 @@ BR_MAKE = env PATH="$(BR_PATH)" BR2_DL_DIR="$(ROOT)/dl" \
 
 .DEFAULT_GOAL := $(if $(BOARD),all,help)
 
-.PHONY: help list-boards all kernel test-overlayfs test-kabi test-mkimage test-tuner test-addon menuconfig linux-menuconfig savedefconfig clean distclean hooks check-buildroot check-board
+.PHONY: help list-boards all kernel sdk test-overlayfs test-kabi test-mkimage test-tuner test-addon menuconfig linux-menuconfig savedefconfig clean distclean hooks check-buildroot check-board
 
 help:
 	@echo "OpenIRD — make list-boards | make BOARD=<device> [menuconfig|clean]"
@@ -40,6 +41,7 @@ help:
 	@echo "     make test-kabi BOARD=<device> … ベンダ製 .ko との構造体レイアウト互換テスト"
 	@echo "     make test-mkimage … openird-mkimage の自己完結テスト (BOARD 不要・uv のみ)"
 	@echo "     make test-tuner … tuner-core の PID 列挙のホスト単体テスト (BOARD 不要)"
+	@echo "     make sdk BOARD=<device> … アドオン作者向け SDK (docs/addon.md)"
 	@echo "     make test-addon … アドオン機構のテスト (BOARD 不要・要 Linux/WSL)"
 	@$(MAKE) -s list-boards
 
@@ -70,6 +72,13 @@ all: check-buildroot check-board
 # 検証済みカーネル(mtd5 像)を再現ビルド（Buildroot 不使用・要 Linux/WSL）。詳細は docs/BUILDING.md
 kernel: check-board
 	@$(ROOT)/scripts/build-kernel.sh $(BOARD)
+
+# アドオン作者向け SDK＝再配置できる cross toolchain＋sysroot＋ird-mkaddon（docs/addon.md §6）。
+# 再配置は Buildroot の仕組み（prepare-sdk が relocate-sdk.sh を host に置く）に任せ、
+# OpenIRD の分（sdk.env・ird-mkaddon・README）を重ねて固める。
+sdk: all
+	$(BR_MAKE) prepare-sdk
+	@$(ROOT)/scripts/make-sdk.sh $(BOARD)
 
 # アドオン機構（host/ird-mkaddon と ird-addon）の自己完結テスト（要 Linux/WSL・python3）
 test-addon:
