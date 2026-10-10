@@ -18,6 +18,12 @@
     "container": "v1b",
     "family_tag": "BLUR",
     "nand_generation": "1Gb",
+    "payload_name": "blur.zip",
+    "update_store_mtd": 9,
+    "update_dir": "/flash/tmp_update",
+    "staging": "0x83000000",
+    "env_tool": "/app/bin/nand_flash_write -u /dev/mtd1",
+    "_pack_note": "pack-factory が write.sh を生成するときの値（nand-update 仕様 §3.2）。payload_name はベンダの update.sh が展開する名前、update_store_mtd は更新ファイルの置き場（ブートローダが ymount する区画）、update_dir はブートローダから見たその展開先、staging は RAM 上の作業番地、env_tool は機器上にあるベンダの env 書き込みツール。",
     "_note": "族タグはコンテナの族であって実モデル名ではない（update-v1b-container.md §2.1）。512Mb 機はオフセット体系が別＝別 defconfig・別ボード定義にする。",
     "images": [
       {"name": "vmlinux.img",      "mtd": 2, "write_offset": "0x600000",  "write_len": "0x300000",  "erase_len": "0x480000",  "openird": true,
@@ -37,7 +43,8 @@
     "os": 5, "arch": 5, "type": 2, "comp": 1,
     "name": "emma3se",
     "load": "0x82280000", "entry": "0x822841b0",
-    "_note": "実機ダンプ mtd2 先頭の実測（load≠entry）。os=linux arch=mips type=kernel comp=gzip。RAM base 0x80000000・256MB。"
+    "nboot_load": "0x82000000",
+    "_note": "実機ダンプ mtd2 先頭の実測（load≠entry）。os=linux arch=mips type=kernel comp=gzip。RAM base 0x80000000・256MB。nboot_load はブートローダが NAND の uImage を置く番地（env bootlinux の nboot 82000000）。load までの差 0x280000 より大きい uImage は gunzip が自分の未読ソースを潰す＝起動不能（実機で確認）。pack-kernel/pack-factory はこの差で弾く。"
   },
 
   "squashfs": {

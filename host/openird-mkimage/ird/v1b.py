@@ -297,3 +297,75 @@ def pack(family, version, plain, key, h20=b"\x00" * LEN_H20, h30=b"\x00" * LEN_H
     """中間 ZIP の平文からコンテナ 1 本を組む。plain は呼び出し側で詰め物済みにしておく。"""
     body = encrypt_body(plain, key)
     return build_header(family, version, body, h20, h30) + body
+
+
+# --- OpenIRD 自身の factory 像（書き込み機構の仕様 poe-br100-yb1-nand-update §3.2） ---
+
+FACTORY_MARKER = "openird-factory"      # ペイロードに入れる目印（導入後の片付けが見る）
+UBOOT_CMD_MAX = 2048                    # ブートローダが 1 つの変数を実行できる上限
+
+
+def factory_update_commands(images, staging, ymount, workdir):
+    """ブートローダに実行させるコマンド列（`;` 区切りの前の並び）。
+
+    images: [{"name", "write_offset", "write_len", "erase_len"}]（整数）。区画ごとに
+    「RAM を 0xff で固定長ぶん埋める → 更新ファイルを読む → 消去 → 固定長を書く」。
+    最後に更新用 env を消して再起動する（消さないと起動のたびに書き込みを繰り返す）。
+    """
+    cmds = ["echo ###### OpenIRD factory install #####", "ymount %x %x" % ymount]
+    for im in images:
+        cmds += ["mw.b %x ff %x" % (staging, im["write_len"]),
+                 "yrdm %s/%s %x" % (workdir, im["name"], staging),
+                 "nand erase %x %x" % (im["write_offset"], im["erase_len"]),
+                 "nand write %x %x %x" % (staging, im["write_offset"], im["write_len"])]
+    cmds += ["delenvu", "reset"]
+    if len("update=" + ";".join(cmds)) >= UBOOT_CMD_MAX:
+        raise ValueError("ブートローダのコマンド列が %dB の上限を超えます" % UBOOT_CMD_MAX)
+    return cmds
+
+
+def factory_write_script(model, images, staging, ymount, workdir, env_tool, min_blocks):
+    """ペイロードの `write.sh` を生成する（純正からは流用しない）。
+
+    機器の更新スクリプトが展開先を cwd にして `./write.sh` を実行する。ここでは区画を
+    書かない: ブートローダのコマンド列を更新用 env として mtd1 に書くだけで、実際の
+    消去と書き込みは次の起動でブートローダが行う。
+
+    ymount: (開始, 終端)＝更新ファイルの置き場（yaffs2 区画）
+    min_blocks: この区画表が成り立つ NAND の総量（512B 単位）。満たなければ何もしない。
+    機器に出る文字列は ASCII のみ。
+    """
+    cmds = factory_update_commands(images, staging, ymount, workdir)
+    lines = [
+        "#!/bin/sh",
+        "# OpenIRD factory image for %s." % model,
+        "#",
+        "# Run by the vendor updater in the directory the images were unpacked to.",
+        "# Nothing is written to the flash partitions here: this stores a list of",
+        "# boot loader commands in the update environment (mtd1), and the boot",
+        "# loader erases and writes the kernel and root partitions on the next",
+        "# start.  No other partition is touched.",
+        "",
+        "E=/tmp/u-boot_update_env.bin",
+        "",
+        "# The offsets below are those of the 128MB NAND layout.",
+        "n=0",
+        "for b in 0 1 2 3 4 5 6 7 8 9 10; do",
+        "\tn=`expr $n + \\`cat /sys/block/mtdblock$b/size\\``",
+        "done",
+        "[ $n -ge %d ] || { echo 'OpenIRD: this image is for 128MB NAND devices'; exit 1; }" % min_blocks,
+        "for f in %s; do" % " ".join(im["name"] for im in images),
+        "\t[ -e $f ] || { echo \"OpenIRD: $f is missing\"; exit 1; }",
+        "done",
+        "",
+        "rm -f $E",
+        "echo -ne 'bootdelay=0\\0000' > $E",
+        "echo -ne 'baudrate=115200\\0000' >> $E",
+        "echo -ne 'bootcmd=run update\\0000' >> $E",
+        "echo -ne 'update=' >> $E",
+    ]
+    for i, c in enumerate(cmds):
+        end = "\\0000\\0000" if i == len(cmds) - 1 else ";"
+        lines.append("echo -ne '%s%s' >> $E" % (c, end))
+    lines += ["", "%s $E" % env_tool, "exit $?", ""]
+    return "\n".join(lines).encode("ascii")

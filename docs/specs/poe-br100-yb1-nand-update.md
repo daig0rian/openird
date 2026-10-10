@@ -79,6 +79,25 @@ MAC は保たれる。∴ OpenIRD でも「mtd1 = env 領域のみ書く・最�
   区画表（§1）と整合＝オフセット体系の裏取りになる。
 - 5 点とも任意。同梱しなかった区画は消去も書き込みもされない＝**差分アップデートが成立**。
 
+### 2.1 カーネルの展開余裕（起動する uImage の真の上限）＝ `0x280000`
+
+mtd2 の書き込み長は 3.0MB だが、**起動する uImage の上限はもっと小さい**。ブートローダは
+NAND の uImage を `nboot 82000000` で `0x82000000` に読み、`bootm` が gunzip で
+**load=`0x82280000`** へ展開する（既定 env `bootlinux`・`emma3sep.h`）。展開の出力先
+（`0x82280000` から）は圧縮ソース（`0x82000000`+64 から）の**上**にあるので、uImage が
+`0x82280000 − 0x82000000 = 0x280000`（2,621,440 B）より大きいと、展開が自分の**まだ読んで
+いない圧縮ソースを上書き**して `inflate() returned -3`（`GUNZIP: ... overwrite error`）で
+止まる。**uImage の CRC は通る**ので、書き込み自体は成功して見える。
+
+- **確認（2026-10-10・実機）**: 2.78MB の uImage（救助 initramfs 埋め込み）を factory で
+  mtd2 に書いたら、CRC OK の直後に上記エラーで起動不能になった。同じバイト列を `yrdm` で
+  `0x83000000`（load の上）に置いて `bootm` すると正常に展開・起動した＝原因は番地差による
+  自己上書きで確定。2.09MB（initramfs 無し）は `0x280000` 未満で正常。
+- **∴ 上限は書き込み長 3.0MB ではなく `load − nboot_load = 0x280000`。** `openird-mkimage` は
+  `boards/<board>.json` の `uimage.nboot_load` と `uimage.load` からこの差を求め、超える
+  uImage を `pack-kernel` / `pack-factory` の時点で弾く（`_check_uimage_fits_decompress`）。
+  救助 initramfs をカーネルに積むなら、この差に収まる最小 BusyBox で作ること。
+
 ## 3. 実書き込みの仕組み — u-boot env 経由（インタラクティブロックを経由しない）
 
 **Linux ユーザランドは NAND を直接書かない。** 代わりに u-boot のコマンド列を **env として

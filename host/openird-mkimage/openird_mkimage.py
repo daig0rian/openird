@@ -24,6 +24,7 @@ NOTES-sb-tv02-factory.md / NOTES-poe-br100-yb1-factory.md を参照。
 import sys
 import os
 import json
+import zlib
 import argparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -54,21 +55,94 @@ def cmd_pack_rootfs(a):
         sys.exit("✗ mtd%d(%s) は policy=%s＝書き込み禁止。" % (a.mtd, part["name"], part["policy"]))
     with open(a.infile, "rb") as f:
         data = f.read()
-    if data[:4] != images.SQUASHFS_MAGIC:
-        sys.exit("✗ squashfs マジック 'hsqs' がありません（得: %r）。" % data[:4])
-    images.check_squashfs(data, b["squashfs"])
     cap = h(part["size"])
+    want = b["squashfs"].get("vendor_format")
+    if want:
+        # ベンダカーネルの squashfs が mainline 以前の版（emma3sep: 3.1 BE）。
+        # 中身の検査は版とバイト順まで。上限は区画ではなく factory の書き込み固定長
+        # （それを超えた分は更新時に黙って切り捨てられる）。
+        got = images.identify_squashfs(data)
+        if got is None:
+            sys.exit("✗ squashfs のマジックがありません（得: %r）。" % data[:4])
+        if (got["major"], got["minor"], got["endian"]) != (want["major"], want["minor"], want["endian"]):
+            sys.exit("✗ squashfs %d.%d %s。このボードのカーネルが読むのは %d.%d %s だけです。"
+                     % (got["major"], got["minor"], got["endian"].upper(),
+                        want["major"], want["minor"], want["endian"].upper()))
+        print("  squashfs %d.%d %s" % (got["major"], got["minor"], got["endian"].upper()))
+        im = next((i for i in b.get("factory", {}).get("images", []) if i["mtd"] == a.mtd), None)
+        if im:
+            cap = h(im["write_len"])
+    else:
+        if data[:4] != images.SQUASHFS_MAGIC:
+            sys.exit("✗ squashfs マジック 'hsqs' がありません（得: %r）。" % data[:4])
+        images.check_squashfs(data, b["squashfs"])
     if len(data) > cap:
-        sys.exit("✗ %dB > mtd%d 容量 %dB。" % (len(data), a.mtd, cap))
+        sys.exit("✗ %dB > mtd%d に書ける %dB。" % (len(data), a.mtd, cap))
     with open(a.outfile, "wb") as f:
         f.write(data)
     print("✓ rootfs OK: %dB / %dB (%d%%) mtd%d(%s) → %s"
           % (len(data), cap, 100 * len(data) // cap, a.mtd, part["name"], a.outfile))
-    print("  → 書き込み: mtd write <file> /dev/mtd%d（区画を切り直した後）" % a.mtd)
+    if not want:
+        print("  → 書き込み: mtd write <file> /dev/mtd%d（区画を切り直した後）" % a.mtd)
+
+
+def _check_uimage_fits_decompress(spec, img, load):
+    """このボードのブートローダは NAND の uImage を nboot_load に置き、gunzip で load へ
+    展開する。uImage が load までに収まらないと、展開の出力が自分の未読の圧縮ソースを
+    上書きして起動しない（CRC は通るので気づきにくい・実機でブリックを踏んだ）。
+    ここで生成時に弾く。"""
+    nboot = spec.get("nboot_load")
+    if not nboot:
+        return
+    budget = load - h(nboot)
+    if len(img) > budget:
+        sys.exit(
+            "✗ uImage %d B > ブートローダの展開余裕 %d B（load 0x%08x - nboot_load %s）。\n"
+            "  この境界を超えると gunzip が自分の未読ソースを潰して起動しません（CRC は通る）。\n"
+            "  カーネルを小さく（埋め込み initramfs を外す等）してください。"
+            % (len(img), budget, load, nboot))
+
+
+def _factory_image(b, name):
+    for im in b.get("factory", {}).get("images", []):
+        if im["name"] == name:
+            return im
+    return None
+
+
+def _pack_kernel_uimage(a, b):
+    """生の vmlinux.bin → gzip → Legacy uImage（emma3sep。契約は board["uimage"]）。"""
+    spec = b["uimage"]
+    if not a.entry:
+        sys.exit("✗ --entry が要ります（System.map の kernel_entry。ビルドごとに変わる）。")
+    # System.map は 32bit カーネルでも符号拡張した 16 桁で出ることがある（ffffffff8228...）
+    load = (h(a.load) if a.load else h(spec["load"])) & 0xFFFFFFFF
+    entry = h(a.entry) & 0xFFFFFFFF
+    with open(a.infile, "rb") as f:
+        raw = f.read()
+    if raw[:2] == b"\x1f\x8b" or raw[:4] == b"\x7fELF":
+        sys.exit("✗ 入力は objcopy -O binary した *非圧縮* の vmlinux.bin を渡してください。")
+    if not (load <= entry < load + len(raw)):
+        sys.exit("✗ entry 0x%08x が像の範囲 0x%08x+%dB の外です。" % (entry, load, len(raw)))
+    img = images.build_uimage(images.gzip_deterministic(raw), spec, load, entry)
+    im = _factory_image(b, "vmlinux.img")
+    cap = h(im["write_len"]) if im else h(part_by_mtd(b, 2)["size"])
+    if len(img) > cap:
+        sys.exit("✗ uImage %dB > 書き込み固定長 %dB（超過分は黙って切り捨てられる）。" % (len(img), cap))
+    _check_uimage_fits_decompress(spec, img, load)
+    u = images.check_uimage(img)
+    if u is None or zlib.decompress(img[images.UIMAGE_HDR_LEN:], 31) != raw:
+        sys.exit("✗ 内部エラー: 生成した uImage を読み直せません。")
+    with open(a.outfile, "wb") as f:
+        f.write(img)
+    print("✓ uImage: %dB (%d%% of %dB) → %s" % (len(img), 100 * len(img) // cap, cap, a.outfile))
+    print("  name=%r load=0x%08x entry=0x%08x  展開後=%dB" % (u["name"], load, entry, len(raw)))
 
 
 def cmd_pack_kernel(a):
     b = load_board(a.board)
+    if "uimage" in b:
+        return _pack_kernel_uimage(a, b)
     mtd5 = part_by_mtd(b, 5)
     cap = h(mtd5["size"])
     load = h(b["load"]["zreladdr"]) if not a.load else h(a.load)
@@ -516,11 +590,97 @@ def a_times(r):
     return r["entries"][0]["times"] if r["entries"] else None
 
 
+def _factory_entries(b, kernel, rootfs, label):
+    """factory のペイロードに入れるもの: 渡された像・生成した write.sh・目印。
+
+    像は機種の契約（uImage の形・squashfs の版・書き込み固定長）に合うものだけを通す。
+    同梱しなかった区画は機器側で消去も書き込みもされない。
+    """
+    fac = b["factory"]
+    entries, used = [], []
+    for name, path in (("vmlinux.img", kernel), ("rootfs.img", rootfs)):
+        if not path:
+            continue
+        im = _factory_image(b, name)
+        if not im or not im.get("openird"):
+            sys.exit("✗ %s はこの機種で OpenIRD が書く像ではありません。" % name)
+        with open(path, "rb") as f:
+            data = f.read()
+        if len(data) > h(im["write_len"]):
+            sys.exit("✗ %s: %dB > 書き込み固定長 %dB（超過分は黙って切り捨てられる）。"
+                     % (name, len(data), h(im["write_len"])))
+        if name == "vmlinux.img":
+            u, spec = images.check_uimage(data), b["uimage"]
+            if (u is None or u["name"] != spec["name"] or u["load"] != h(spec["load"])
+                    or (u["os"], u["arch"], u["type"], u["comp"])
+                    != (spec["os"], spec["arch"], spec["type"], spec["comp"])):
+                sys.exit("✗ %s はこの機種のブートローダが食う uImage ではありません。" % path)
+            _check_uimage_fits_decompress(spec, data, h(spec["load"]))
+        else:
+            got, want = images.identify_squashfs(data), b["squashfs"]["vendor_format"]
+            if got is None or (got["major"], got["minor"], got["endian"]) != (
+                    want["major"], want["minor"], want["endian"]):
+                sys.exit("✗ %s はこの機種のカーネルが読む squashfs %d.%d %s ではありません。"
+                         % (path, want["major"], want["minor"], want["endian"].upper()))
+        entries.append((name, data))
+        used.append({"name": name, "write_offset": h(im["write_offset"]),
+                     "write_len": h(im["write_len"]), "erase_len": h(im["erase_len"])})
+        print("  %-12s %8d B / %8d B (%d%%)" % (name, len(data), h(im["write_len"]),
+                                              100 * len(data) // h(im["write_len"])))
+    store = part_by_mtd(b, fac["update_store_mtd"])
+    script = v1b.factory_write_script(
+        b["model"], used, h(fac["staging"]),
+        (h(store["offset"]), h(store["offset"]) + h(store["size"])),
+        fac["update_dir"], fac["env_tool"], h(b["nvm"]["size"]) // 512)
+    entries.append(("write.sh", script))
+    entries.append((v1b.FACTORY_MARKER, ("OpenIRD %s for %s\n" % (label, b["model"])).encode("ascii")))
+    return entries
+
+
 def cmd_pack_factory(a):
-    sys.exit(
-        "✗ 未実装（P2）: unpack が先。理由は NOTES-poe-br100-yb1-factory.md の V1。\n"
-        "  ペイロードの write.sh 系は純正から流用せず仕様どおり自前生成する必要があり（仕様 §6-2）、\n"
-        "  その呼び出し契約がまだ仕様化されていない。")
+    """OpenIRD 自身の kernel / rootfs から factory コンテナを作る。"""
+    b = load_board(a.board)
+    fac = b.get("factory", {})
+    if fac.get("container") != "v1b" or "payload_name" not in fac:
+        sys.exit("✗ %s の factory 像はまだ作れません（ボード定義に書き込み側の値が無い）。" % a.board)
+    if not a.kernel and not a.rootfs:
+        sys.exit("✗ --kernel / --rootfs の少なくとも一方が要ります。")
+    try:
+        version = tuple(int(x) for x in a.fw_version.split("."))
+        if len(version) != 3 or not all(0 <= x <= 255 for x in version):
+            raise ValueError
+    except ValueError:
+        sys.exit("✗ --fw-version は 0〜255 の三つ組（例 26.10.0）で渡してください。")
+    entries = _factory_entries(b, a.kernel, a.rootfs, a.fw_version)
+    payload = v1b.build_payload_zip(entries)
+    if a.payload_only:
+        # 鍵の要らない形: 機器の展開先（更新ファイルの置き場）にほどいて write.sh を
+        # 実行すれば、コンテナ経由と同じ書き込みになる（開発・復旧用）
+        with open(a.outfile, "wb") as f:
+            f.write(payload)
+        print("✓ payload ZIP（無暗号）: %d B → %s" % (len(payload), os.path.abspath(a.outfile)))
+        return
+
+    key, key_path = secrets.load_key(a.key_file)
+    pw, pw_path = secrets.load_zip_password(a.zip_pw_file)
+    secrets.report("AES 鍵       ", key, key_path)
+    secrets.report("ZIP パスワード", pw, pw_path)
+    mid = v1b.build_middle_zip(fac["payload_name"], payload, pw, salt=bytes(11))
+    out = v1b.pack(fac["family_tag"], version, v1b.pad_to_block(mid), key)
+    try:
+        v = v1b.unpack(out, key, pw)
+    except (ValueError, v1b.NotV1b) as e:
+        sys.exit("✗ 生成物を読み直せません: %s" % e)
+    got = {e["name"]: e["data"] for e in v["entries"]}
+    ok = (v1b.sha1_ok(v["header"]) and v["csum_ok"] and v["header"]["family"] == fac["family_tag"]
+          and [e["name"] for e in v["entries"]] == [n for n, _ in entries]
+          and all(got[n] == d for n, d in entries))
+    if not ok:
+        sys.exit("✗ 内部エラー: 生成したコンテナが渡した中身と一致しません。")
+    with open(a.outfile, "wb") as f:
+        f.write(out)
+    print("✓ factory: %s_UPDATE_v1b %s / %d B → %s"
+          % (fac["family_tag"], a.fw_version, len(out), os.path.abspath(a.outfile)))
 
 
 def cmd_full(a):
@@ -548,12 +708,14 @@ def main():
     p.add_argument("--mtd", type=int, default=6, help="対象区画（既定 6=rootfs。復旧用は 8=firstaid）")
     p.set_defaults(fn=cmd_pack_rootfs)
 
-    p = sub.add_parser("pack-kernel", help="生カーネル Image を RDHB で包み mtd5 像を作る")
+    p = sub.add_parser("pack-kernel",
+                       help="生カーネルをボードの容器で包む（mb86h61: RDHB / emma3sep: uImage）")
     p.add_argument("board")
-    p.add_argument("infile", help="arch/arm/boot/Image（非圧縮）")
+    p.add_argument("infile", help="非圧縮の生カーネル（arch/arm/boot/Image / vmlinux.bin）")
     p.add_argument("outfile")
     p.add_argument("--name", default=rdhb.NAME_DEFAULT, help="RDHB 名(既定=観察値)")
-    p.add_argument("--load", help="load/entry アドレス(既定=board の zreladdr)")
+    p.add_argument("--load", help="load アドレス(既定=board の値)")
+    p.add_argument("--entry", help="uImage の entry（System.map の kernel_entry。uImage のボードで必須）")
     p.add_argument("--cksum", help="0x08 チェックサム(既定 0=HOLD H1b)")
     p.set_defaults(fn=cmd_pack_kernel)
 
@@ -609,8 +771,17 @@ def main():
     p.add_argument("--zip-pw-file", help="ZIP パスワードファイル（既定 ~/.openird/v1b/%s）" % secrets.PW_FILE)
     p.set_defaults(fn=cmd_repack_factory)
 
-    p = sub.add_parser("pack-factory", help="v1b factory コンテナを作る（未実装）")
+    p = sub.add_parser("pack-factory", help="OpenIRD の kernel / rootfs から v1b factory コンテナを作る")
     p.add_argument("board")
+    p.add_argument("outfile")
+    p.add_argument("--kernel", help="vmlinux.img（uImage）")
+    p.add_argument("--rootfs", help="rootfs.img（squashfs）")
+    p.add_argument("--fw-version", default="0.0.0",
+                   help="ヘッダに入れる版数の三つ組（既定 0.0.0。機器は版数の大小を見ない）")
+    p.add_argument("--payload-only", action="store_true",
+                   help="暗号層を被せず、ペイロード ZIP だけを出す（鍵不要）")
+    p.add_argument("--key-file", help="AES 鍵ファイル（既定 ~/.openird/v1b/%s）" % secrets.KEY_FILE)
+    p.add_argument("--zip-pw-file", help="ZIP パスワードファイル（既定 ~/.openird/v1b/%s）" % secrets.PW_FILE)
     p.set_defaults(fn=cmd_pack_factory)
 
     p = sub.add_parser("full", help=".full コンテナ（HOLD）")

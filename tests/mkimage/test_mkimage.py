@@ -27,8 +27,8 @@ sys.path.insert(0, MKIMAGE)
 sys.path.insert(0, os.path.dirname(HERE))
 
 import spec_status                   # noqa: E402
-from ird import rdhb, v1b, zipcrypto  # noqa: E402
-from ird.board import h              # noqa: E402
+from ird import rdhb, v1b, zipcrypto, images  # noqa: E402
+from ird.board import h, load_board  # noqa: E402
 
 # scripts/extract-mbin.py はハイフン入りの実行スクリプトなので、パス指定で読み込む。
 _mbin_spec = importlib.util.spec_from_file_location(
@@ -464,6 +464,41 @@ def test_samples():
     print("  族: " + ", ".join("%s=%d" % kv for kv in sorted(fams.items())))
 
 
+def test_uimage_decompress_budget():
+    """起動する uImage の上限は書き込み長ではなく load - nboot_load（spec §2.1）。
+    ブートローダは nboot_load に置いた圧縮像を load へ gunzip 展開するので、uImage が
+    その差を超えると展開が自分の未読ソースを潰して起動しない。pack-kernel はこれを弾く。"""
+    print("[uimage] 展開余裕（gunzip の自己上書き）")
+    b = load_board("poe-br100-yb1")
+    spec = b["uimage"]
+    load, nboot = h(spec["load"]), h(spec["nboot_load"])
+    budget = load - nboot
+    check("展開余裕 = load - nboot_load = 0x280000", budget == 0x280000,
+          "0x%x" % budget, spec="poe-br100-yb1-nand-update#2.1")
+
+    def mk(total):
+        # a uImage of exactly `total` bytes (header 64 + body), well-formed enough
+        # for build_uimage's CRC; body content does not matter for the size gate
+        body = bytes(total - images.UIMAGE_HDR_LEN)
+        return images.build_uimage(body, spec, load, h(spec["entry"]))
+
+    import openird_mkimage as mk_cli
+    def refused(total):
+        try:
+            mk_cli._check_uimage_fits_decompress(spec, mk(total), load)
+            return False
+        except SystemExit:
+            return True
+
+    check("余裕ちょうどは通す", not refused(budget),
+          spec="poe-br100-yb1-nand-update#2.1")
+    check("余裕 + 1 は弾く", refused(budget + 1),
+          spec="poe-br100-yb1-nand-update#2.1")
+    # the brick we actually hit: a 2.78MB uImage must be refused
+    check("実際にブリックした 2.78MB を弾く", refused(2775487),
+          spec="poe-br100-yb1-nand-update#2.1")
+
+
 def test_spec_declarations():
     """仕様の Status 宣言と、上の実測（spec= の引用）を突き合わせる。"""
     print("[spec] docs/specs の宣言を検査")
@@ -478,6 +513,7 @@ def main():
     test_zipcrypto()
     test_rdhb()
     test_mbin()
+    test_uimage_decompress_budget()
     test_samples()
     test_spec_declarations()
     print()
