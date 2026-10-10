@@ -1,32 +1,58 @@
-# OpenIRD: BMMPX1301 / POE-BR100-YB1  (Renesas EMMA3SEP, MIPS32r2 BE)
-# ビルド: make BOARD=emma3sep_softbank_poe-br100-yb1
-# 骨格。NAND ダンプ後に確定する値は TODO を参照（CLAUDE.md §11）。
+# OpenIRD: BMMPX1301 / POE-BR100-YB1（Renesas EMMA3SEP, MIPS 4KEc＝MIPS32r2 BE・FPU 無し）
+# ビルド: make BOARD=emma3sep_softbank_poe-br100-yb1          （rootfs と救助用 initramfs）
+#         make kernel BOARD=emma3sep_softbank_poe-br100-yb1   （カーネル。先に上を通すこと）
+# 出力:   output/<BOARD>/images/rootfs.img    … mtd3 用（squashfs 3.1 BE）
+#         output/<BOARD>/images/rescue.cpio   … カーネルに埋め込む救助用 initramfs
+#         output/<BOARD>/vmlinux.img          … mtd2 用（uImage）
+#
+# 段階 C の中身: 素の Linux 基盤（BusyBox・dropbear・mtd）＋ px4_drv 互換 chardev
+# （/dev/irdvideo0。ドライバはカーネルに組み込み）とその起動スクリプト・確認用クライアント。
+# カーネルは別建て（GPL 2.6.27.39 の再ビルド）。区画はベンダのまま（mtd2/mtd3 だけ書く）。
 
-# --- アーキテクチャ ---
+# --- アーキテクチャ / toolchain ---
+# FPU が無いので soft-float（musl）。toolchain は Buildroot に作らせる。
 BR2_mips=y
 BR2_mips_32r2=y
-BR2_ENDIAN_BIG=y
+BR2_MIPS_SOFT_FLOAT=y
+BR2_TOOLCHAIN_BUILDROOT_MUSL=y
+BR2_KERNEL_HEADERS_5_10=y
 
-# --- toolchain / libc ---
-# TODO(§10): 段階A は musl 新規、段階B で blob に合わせる場合は uClibc-ng。
-#            受信 blob の libc は Milestone 0 チェック2 で判定。
-BR2_TOOLCHAIN_BUILDROOT=y
-BR2_TOOLCHAIN_BUILDROOT_UCLIBC=y
+# --- ダウンロードの完全性（全ソースを .hash で検証） ---
+BR2_DOWNLOAD_FORCE_CHECK_HASHES=y
 
-# --- kernel (GPL 再ビルド・非 DT) ---
-BR2_LINUX_KERNEL=y
-BR2_LINUX_KERNEL_CUSTOM_VERSION=y
-BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="2.6.27.39"
-# TODO: pristine GPL tarball を dl/ に置き CUSTOM_TARBALL で指す（*.hash で検証）。
-BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG=y
-BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="$(BR2_EXTERNAL_IRD_RENESAS_PATH)/board/emma3sep/kernel/linux.config"
-BR2_LINUX_KERNEL_UIMAGE=y
-BR2_LINUX_KERNEL_UIMAGE_LOADADDR=0x82280000
+# --- 静的リンク・サイズ優先 ---
+# 同じ BusyBox を救助用 initramfs（カーネルに埋め込む・3.0MB の枠）にも入れるため。
+BR2_STATIC_LIBS=y
+BR2_OPTIMIZE_S=y
 
-# --- rootfs ---
-# TODO: 実区画（mtdparts）確定後に squashfs 等へ。factory は kernel+rootfs のみ上書き。
+# --- system ---
+BR2_TARGET_GENERIC_HOSTNAME="openird"
+BR2_TARGET_GENERIC_ISSUE="OpenIRD"
+BR2_INIT_BUSYBOX=y
+# 2.6.27 は devtmpfs 無し → squashfs に静的 /dev を持ち、起動時に tmpfs へ写す（preinit）
+BR2_ROOTFS_DEVICE_CREATION_STATIC=y
+BR2_ROOTFS_STATIC_DEVICE_TABLE="system/device_table_dev.txt $(BR2_EXTERNAL_IRD_RENESAS_PATH)/board/emma3sep/device_table_dev.txt"
+# / は preinit が組み立てる（squashfs + yaffs2 を unionfs で重ねる）。getty も使わない
+# BR2_TARGET_GENERIC_REMOUNT_ROOTFS_RW is not set
+# BR2_TARGET_GENERIC_GETTY is not set
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_IRD_RENESAS_PATH)/board/emma3sep/rootfs_overlay"
+BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_IRD_RENESAS_PATH)/board/emma3sep/post-build.sh"
+BR2_ROOTFS_POST_FAKEROOT_SCRIPT="$(BR2_EXTERNAL_IRD_RENESAS_PATH)/board/emma3sep/post-fakeroot.sh"
+BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_IRD_RENESAS_PATH)/board/emma3sep/post-image.sh"
 
 # --- packages ---
+BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_IRD_RENESAS_PATH)/board/emma3sep/busybox.fragment"
+# ネットワークは ird-base-files の S40network（フォールバック IP → DHCP）
+# BR2_PACKAGE_IFUPDOWN_SCRIPTS is not set
 BR2_PACKAGE_IRD_BASE_FILES=y
-BR2_PACKAGE_IRD_CONFIG=y
-# BR2_PACKAGE_IRD_TUNER_MXL683=y   # 段階C（Milestone 2）で有効化
+BR2_PACKAGE_OPENWRT_MTD=y
+BR2_PACKAGE_DROPBEAR=y
+BR2_PACKAGE_DROPBEAR_DISABLE_REVERSEDNS=y
+# チューナ: 起動スクリプト（裏 CPU の FW・csd・MBIN は所有者の機器から実行時に使う）と
+# px4_drv 互換 chardev の確認用クライアント。ドライバ本体はカーネル側（make kernel）
+BR2_PACKAGE_IRD_TUNER_EMMA3SEP=y
+
+# --- rootfs 像 ---
+# ベンダカーネルの squashfs は 3.1 BE。Buildroot の mksquashfs(4.x) では作れないので、
+# post-fakeroot.sh が pin した squashfs-tools 3.4 で固める（tar は fakeroot を回すためだけ）。
+BR2_TARGET_ROOTFS_TAR=y

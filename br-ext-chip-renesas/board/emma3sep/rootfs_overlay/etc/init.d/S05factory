@@ -1,0 +1,19 @@
+#!/bin/sh
+# After a factory install: remove what the vendor updater left behind.
+#
+# The updater unpacks the install images onto the mass-storage partition
+# (mtd9, here mounted at /overlay) for the boot loader to read, and would
+# have removed them itself on its next start - which never comes, because the
+# system that starts is OpenIRD.  Only an OpenIRD install is cleaned up: its
+# payload carries the file "openird-factory".
+
+case "$1" in
+	start)
+		if [ -f /overlay/tmp_update/openird-factory ]; then
+			echo "Removing the factory installer's work files"
+			rm -rf /overlay/tmp_update /overlay/updatefile.zip
+		fi
+		;;
+	stop) ;;
+	*) echo "Usage: $0 {start|stop}"; exit 1 ;;
+esac

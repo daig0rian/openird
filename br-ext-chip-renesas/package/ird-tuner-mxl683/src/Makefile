@@ -1,0 +1,1 @@
+obj-$(CONFIG_IRD_TUNER_MXL683)	+= mxl683.o

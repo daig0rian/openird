@@ -2,8 +2,13 @@
 # OpenIRD preinit - runs as PID 1 from the read-only squashfs root.
 #
 # Builds the writable root: squashfs (lower) + a writable partition (upper)
-# joined by overlayfs, then pivot_root()s into it and hands over to BusyBox
-# init.  The old read-only root stays visible at /rom.
+# joined by a union filesystem, then pivot_root()s into it and hands over to
+# BusyBox init.  The old read-only root stays visible at /rom.
+#
+# The union is overlayfs where the kernel has it, unionfs where it has that
+# instead (the 2.6.27 vendor kernels).  The upper layer is the whole writable
+# partition, or one directory of it when the partition is shared with other
+# data (OVERLAY_SUBDIR).
 #
 # If the upper layer cannot be mounted the system still boots: first with a
 # tmpfs upper (changes are lost on reboot), and if even that fails, directly
@@ -14,6 +19,10 @@ export PATH
 
 OVERLAY_DEV=/dev/mtdblock7
 OVERLAY_FSTYPE=jffs2
+OVERLAY_SUBDIR=
+# DEV_TMPFS=1: the kernel has no devtmpfs and the board wants device nodes for
+# what its drivers register at run time, so /dev becomes a writable tmpfs.
+DEV_TMPFS=
 [ -r /etc/openird/board.conf ] && . /etc/openird/board.conf
 
 mount -t proc proc /proc
@@ -25,29 +34,81 @@ for arg in $(cat /proc/cmdline 2>/dev/null); do
 	esac
 done
 
+UNION=
+grep -q overlayfs /proc/filesystems && UNION=overlayfs
+[ -z "$UNION" ] && grep -q unionfs /proc/filesystems && UNION=unionfs
+
+# Nothing may be mounted inside the lower layer while the union is put
+# together: unionfs leaves a directory that is a mount point out of the union,
+# and the new root would have no /proc.  It is mounted again where it belongs.
+umount /proc
+
+populate_dev() {
+	[ "$DEV_TMPFS" = 1 ] || return 0
+	# The static nodes of the image stay; they move into a tmpfs.  (mdev
+	# cannot build /dev here: sysfs of these kernels does not carry the
+	# device names it needs.)
+	mount -t tmpfs -o mode=0755,size=256k tmpfs /mnt 2>/dev/null || return 0
+	if ! cp -a /dev/. /mnt/ || ! mount -o move /mnt /dev; then
+		umount /mnt
+		return 0
+	fi
+	# Device numbers handed out at run time: the misc devices of the
+	# OpenIRD drivers (the tuner nodes).
+	while read -r minor name; do
+		case "$name" in
+			ird*) mknod -m 600 "/dev/$name" c 10 "$minor" ;;
+		esac
+	done < /proc/misc
+}
+
+start_init() {
+	mount -t proc proc /proc
+	populate_dev
+	exec /bin/busybox init
+}
+
 boot_readonly() {
 	echo "openird: booting read-only, nothing will be saved"
-	exec /bin/busybox init
+	start_init
+}
+
+# union_mount <lower> <upper> <target>
+union_mount() {
+	case "$UNION" in
+		overlayfs) mount -t overlayfs -o "lowerdir=$1,upperdir=$2" overlayfs "$3" ;;
+		unionfs) mount -t unionfs -o "dirs=$2=rw:$1=ro" unionfs "$3" ;;
+		*) echo "openird: this kernel has neither overlayfs nor unionfs"
+		   return 1 ;;
+	esac
 }
 
 if [ "$OVERLAY_DEV" = none ] ||
    ! mount -t "$OVERLAY_FSTYPE" -o noatime "$OVERLAY_DEV" /overlay 2>/dev/null; then
 	echo "openird: cannot mount $OVERLAY_FSTYPE on $OVERLAY_DEV, using a tmpfs overlay"
-	echo "openird: changes will be lost on reboot - see 'mtd erase' to reformat it"
+	echo "openird: changes will be lost on reboot"
+	OVERLAY_SUBDIR=
 	mount -t tmpfs -o noatime,mode=0755 tmpfs /overlay || boot_readonly
 fi
 
-if ! mount -t overlayfs -o lowerdir=/,upperdir=/overlay overlayfs /mnt; then
-	echo "openird: overlayfs mount failed"
+UPPER=/overlay
+if [ -n "$OVERLAY_SUBDIR" ]; then
+	UPPER="/overlay/$OVERLAY_SUBDIR"
+	mkdir -p "$UPPER" || { umount /overlay 2>/dev/null; boot_readonly; }
+fi
+
+if ! union_mount / "$UPPER" /mnt; then
+	echo "openird: union mount failed"
 	umount /overlay 2>/dev/null
 	boot_readonly
 fi
 
-mount -o move /proc /mnt/proc
 if ! pivot_root /mnt /mnt/rom; then
 	echo "openird: pivot_root failed"
+	umount /mnt 2>/dev/null
+	umount /overlay 2>/dev/null
 	boot_readonly
 fi
 mount -o move /rom/overlay /overlay
 
-exec /bin/busybox init
+start_init

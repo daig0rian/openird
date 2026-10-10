@@ -1,0 +1,83 @@
+#!/bin/sh
+# OpenIRD rescue preinit - /init of the initramfs built into the kernel image.
+#
+# Normal boot: mount the real root filesystem and switch to it.  When that is
+# not possible (or when asked), stay here as a small rescue system, so that a
+# bad root filesystem never leaves the device without a way back: this board's
+# boot loader accepts no commands, and the vendor update path lives in the
+# very root filesystem that would be missing.
+#
+# Kernel command line:
+#   root=/dev/mtdblockN       the root partition (the boot loader passes mtdblock3)
+#   openird.rootimg=<path>    take the root image from this file on the
+#                             mass-storage partition instead (mtd9, yaffs2);
+#                             used to try an image before it is written
+#   openird.rescue            stay in the rescue system
+# Typing "r" on the serial console during the one-second prompt does the same.
+# Messages are ASCII only - this is a serial console.
+
+/bin/busybox --install -s
+PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export PATH
+
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+
+ROOT=/dev/mtdblock3
+ROOTIMG=
+RESCUE=
+for arg in $(cat /proc/cmdline); do
+	case "$arg" in
+		root=*) ROOT="${arg#root=}" ;;
+		openird.rootimg=*) ROOTIMG="${arg#openird.rootimg=}" ;;
+		openird.rescue) RESCUE=1 ;;
+	esac
+done
+
+rescue() {
+	. /etc/openird_release
+	echo
+	echo "openird-rescue: $1"
+	echo "openird-rescue: OpenIRD $OPENIRD_BUILD rescue system (runs from RAM)"
+	echo "openird-rescue: root shell here and on telnet (192.168.1.1, or DHCP)"
+	mkdir -p /dev/pts
+	mount -t devpts devpts /dev/pts
+	ifconfig lo 127.0.0.1 up
+	ifconfig eth0 192.168.1.1 netmask 255.255.255.0 up
+	telnetd -l /bin/sh
+	udhcpc -b -i eth0 -t 8 -T 3 >/dev/null 2>&1 &
+	while :; do
+		setsid cttyhack /bin/sh || sleep 2
+	done
+}
+
+[ -n "$RESCUE" ] && rescue "requested on the kernel command line"
+
+printf 'openird: type r for the rescue system '
+k=
+read -t 1 -n 1 k
+echo
+[ "$k" = r ] && rescue "requested on the console"
+
+if [ -n "$ROOTIMG" ]; then
+	# Copy the image to RAM and let go of the partition: the system that is
+	# about to start wants to mount it read-write itself.
+	mount -t yaffs2 -o ro /dev/mtdblock9 /flash ||
+		rescue "cannot mount the mass-storage partition"
+	cp "/flash/$ROOTIMG" /rootimg || { umount /flash; rescue "cannot read $ROOTIMG"; }
+	umount /flash
+	mount -t squashfs -o ro,loop /rootimg /newroot ||
+		rescue "cannot mount the root image $ROOTIMG"
+	echo "openird: root is $ROOTIMG (copied to RAM)"
+else
+	mount -t squashfs -o ro "$ROOT" /newroot ||
+		rescue "cannot mount the root filesystem on $ROOT"
+fi
+
+[ -e /newroot/sbin/init ] || [ -L /newroot/sbin/init ] ||
+	rescue "no /sbin/init in the root filesystem"
+
+umount /sys
+umount /proc
+exec switch_root /newroot /sbin/init
+rescue "switch_root failed"

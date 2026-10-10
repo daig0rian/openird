@@ -1,0 +1,17 @@
+# OpenIRD emma3sep: differences from the stock Buildroot busybox.config
+# Added: a second transfer path (nc) and small utilities the boot scripts use
+CONFIG_NC=y
+CONFIG_NC_SERVER=y
+CONFIG_NC_EXTRA=y
+CONFIG_STAT=y
+CONFIG_TIMEOUT=y
+CONFIG_USLEEP=y
+# The rescue shell takes the serial console as its controlling terminal
+CONFIG_CTTYHACK=y
+# telnetd stays in the binary for the rescue initramfs only (the recovery door
+# when the root filesystem does not come up); the normal system never starts it.
+CONFIG_TELNETD=y
+CONFIG_FEATURE_TELNETD_STANDALONE=y
+# Dropped: the cron daemon (not needed on an appliance)
+# CONFIG_CROND is not set
+# CONFIG_CRONTAB is not set

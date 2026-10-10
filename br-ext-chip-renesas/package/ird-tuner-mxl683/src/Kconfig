@@ -1,0 +1,7 @@
+config IRD_TUNER_MXL683
+	bool "MaxLinear MXL683 ISDB-T demodulator"
+	depends on I2C
+	help
+	  Cold start, firmware transfer, tuning, lock and C/N of the
+	  MXL683.  The firmware itself is supplied at run time from the
+	  owner's own device.  Board tuner drivers select this.

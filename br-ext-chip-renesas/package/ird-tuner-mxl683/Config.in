@@ -2,5 +2,9 @@ config BR2_PACKAGE_IRD_TUNER_MXL683
 	bool "ird-tuner-mxl683"
 	select BR2_PACKAGE_IRD_TUNER_CORE
 	help
-	  MaxLinear MXL683 復調のクリーン実装（EMMA3SEP 機）。ird-tuner-core の
-	  chardev ABI の上に乗る。段階 C（Milestone 2）で実装。
+	  MaxLinear MXL683（ISDB-T 復調器）のクリーン実装。
+
+	  ドライバ本体（src/）はカーネルに組み込む。このパッケージが
+	  rootfs に入れるのは ird-mbin＝所有者の機器上のファイルから
+	  復調器のファーム（MBIN 容器）を探して取り出す道具。ファーム
+	  そのものは配布物に含めない。

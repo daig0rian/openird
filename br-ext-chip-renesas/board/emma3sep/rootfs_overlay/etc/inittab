@@ -1,0 +1,17 @@
+# /etc/inittab - OpenIRD on EMMA3SEP (BusyBox init)
+#
+# The root filesystem is already the union by the time init runs: sbin/init
+# is the preinit script, which mounts it and pivot_root()s into it.
+
+::sysinit:/bin/mount -t proc proc /proc
+::sysinit:/bin/mount -a
+::sysinit:/bin/mkdir -p /run/lock/subsys
+::sysinit:/bin/hostname -F /etc/hostname
+::sysinit:/etc/init.d/rcS
+
+# Root shell on the serial console (physical access already means full control).
+# The boards of this family have the console on the second UART.
+ttyS1::respawn:-/bin/sh
+
+::shutdown:/etc/init.d/rcK
+::shutdown:/bin/umount -a -r

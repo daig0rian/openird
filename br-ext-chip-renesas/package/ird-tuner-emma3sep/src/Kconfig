@@ -1,0 +1,18 @@
+config IRD_TUNER_EMMA3SEP
+	bool "Renesas EMMA3SEP TS capture (AV sub-CPU commands, TS input FIFOs)"
+	depends on EMMA3SX
+	help
+	  The command path to the firmware of the SoC's AV sub-CPU and the
+	  drainer of the transport stream input FIFOs in its data SRAM.
+	  Board tuner drivers select this.
+
+config IRD_TUNER_YB1
+	bool "POE-BR100-YB1 (BMMPX1301) tuner"
+	depends on EMMA3SX && I2C
+	select IRD_TUNER_CORE
+	select IRD_TUNER_MXL683
+	select IRD_TUNER_EMMA3SEP
+	help
+	  /dev/irdvideo0 on the POE-BR100-YB1: MXL683 demodulator, the
+	  SoC's PID filters and TS input FIFOs.  Inactive on other boards
+	  of the family (the boot loader names the board).

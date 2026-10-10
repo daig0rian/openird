@@ -1,0 +1,7 @@
+config IRD_TUNER_CORE
+	bool "OpenIRD tuner core (px4_drv-compatible character device)"
+	select CRC32
+	help
+	  The character device OpenIRD tuners appear as (/dev/irdvideoN):
+	  the ABI of px4_drv, which recpt1 and recisdb already speak.
+	  Board tuner drivers select this.

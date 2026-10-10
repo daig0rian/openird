@@ -1,0 +1,14 @@
+# OpenIRD emma3sep: extra entries for system/device_table_dev.txt
+# (format: package/makedevs/README)
+#
+# 2.6.27 has no devtmpfs.  These static nodes are what the system has until
+# the boot scripts mount a tmpfs on /dev and let mdev fill it (and what it
+# keeps if that fails).  The stock table stops at mtd3; this board has
+# mtd0-mtd10 plus the whole-chip mtd11.
+# Minor numbers: mtdN = 2N (odd ones are mtdNro), mtdblockN = N.
+#
+# <name>	<type>	<mode>	<uid>	<gid>	<major>	<minor>	<start>	<inc>	<count>
+/dev/mtd	c	640	0	0	90	8	4	2	8
+/dev/mtdblock	b	640	0	0	31	4	4	1	8
+/dev/loop	b	640	0	0	7	2	2	1	2
+/dev/watchdog	c	600	0	0	10	130	-	-	-
