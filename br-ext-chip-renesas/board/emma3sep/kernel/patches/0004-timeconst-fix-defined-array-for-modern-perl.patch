@@ -1,0 +1,26 @@
+From: OpenIRD contributors
+Subject: [PATCH] timeconst: do not call defined() on an array
+
+kernel/timeconst.pl tests "defined(@val)" to see whether the canned table
+had an entry for this HZ.  Perl deprecated defined(@array) in 5.6 and made
+it a fatal error in 5.22, so on any current build host the script dies and
+kernel/timeconst.h is never generated:
+
+  Can't use 'defined(@array)' (Maybe you should just omit the defined()?)
+
+An array in boolean context is true when it has elements, which is what
+the test meant.  Mainline later made the same change.
+
+Origin: gpl-derived
+---
+--- a/kernel/timeconst.pl
++++ b/kernel/timeconst.pl
+@@ -370,7 +370,7 @@
+ 	}
+ 
+ 	@val = @{$canned_values{$hz}};
+-	if (!defined(@val)) {
++	if (!@val) {
+ 		@val = compute_values($hz);
+ 	}
+ 	output($hz, @val);

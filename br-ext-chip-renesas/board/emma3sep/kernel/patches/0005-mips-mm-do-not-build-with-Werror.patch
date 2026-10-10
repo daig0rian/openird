@@ -1,0 +1,26 @@
+From: OpenIRD contributors
+Subject: [PATCH] mips: mm: do not build with -Werror
+
+arch/mips/mm is built with -Werror.  The code was warning-free for the
+compilers of its day, but the pinned gcc 4.9.4 has warnings that did not
+exist then, and here they stop the build:
+
+  include/asm/elf.h:235:7: error: "__MIPSEL__" is not defined [-Werror=undef]
+  arch/mips/mm/c-r4k.c: error: variable 'tmp' set but not used
+                               [-Werror=unused-but-set-variable]
+  arch/mips/mm/init.c:  error: variable 'lastpfn' set but not used
+
+None of them is a defect in what the code does (the first is a big-endian
+build evaluating "#elif __MIPSEL__", the others are leftovers), so let them
+be warnings like everywhere else in the tree instead of touching each site.
+
+Origin: gpl-derived
+---
+--- a/arch/mips/mm/Makefile
++++ b/arch/mips/mm/Makefile
+@@ -31,5 +31,3 @@
+ obj-$(CONFIG_R5000_CPU_SCACHE)  += sc-r5k.o
+ obj-$(CONFIG_RM7000_CPU_SCACHE)	+= sc-rm7k.o
+ obj-$(CONFIG_MIPS_CPU_SCACHE)	+= sc-mips.o
+-
+-EXTRA_CFLAGS += -Werror

@@ -6,7 +6,8 @@
 #
 # pin は各機種の board/<family>/kernel/build.env。toolchain と host lib は公開URLから
 # sha256 検証つきで自動取得。GPL カーネルソースは各自 dl/ に置く（sha256 で検証）。
-# 出力: output/<BOARD>/mtd5.img（= openird-mkimage pack-kernel の RDHB 像）。
+# 出力: mb86h61 は output/<BOARD>/mtd5.img（RDHB 像）、emma3sep は
+#       output/<BOARD>/vmlinux.img（Legacy uImage）。梱包は build.env の KERNEL_PACK で決まる。
 set -eu
 
 BOARD="${1:-}"
@@ -62,24 +63,50 @@ if [ ! -f "$DL/$KERNEL_TARBALL" ] || ! verify "$KERNEL_SHA256" "$DL/$KERNEL_TARB
 fi
 echo "  ok: $KERNEL_TARBALL"
 
-echo "== [4/6] extract (+ FAPex 除外) =="
+echo "== [4/6] extract =="
 KSRC="$OUT/$KERNEL_TOP"; rm -rf "$KSRC"
-ex=""; for e in $KERNEL_EXTRACT_EXCLUDE; do ex="$ex --exclude=$e"; done
+ex=""; for e in ${KERNEL_EXTRACT_EXCLUDE:-}; do ex="$ex --exclude=$e"; done
 # shellcheck disable=SC2086
 tar xjf "$DL/$KERNEL_TARBALL" -C "$OUT" $ex || true
 [ -f "$KSRC/Makefile" ] || { echo "✗ kernel 展開失敗（$KSRC/Makefile 無し）"; exit 1; }
 
 echo "== [5/6] patch + config + build ($KERNEL_IMAGE_TARGET) =="
 for p in "$KDIRSRC"/patches/*.patch; do [ -e "$p" ] || continue; echo "  apply $(basename "$p")"; patch -s -d "$KSRC" -p1 < "$p"; done
+# OpenIRD のドライバ（build.env の KERNEL_DRIVER_DIRS）を drivers/ird/ に重ねる
+"$ROOT/scripts/kernel-overlay.sh" "$BOARD" "$KSRC"
 cp "$KDIRSRC/linux.config" "$KSRC/.config"
+# カーネルに埋め込む initramfs（Buildroot 側の成果物。パスはビルドごとに違うのでここで入れる）
+if [ -n "${KERNEL_INITRAMFS:-}" ]; then
+  [ -f "$OUT/$KERNEL_INITRAMFS" ] || {
+    echo "✗ $OUT/$KERNEL_INITRAMFS がありません。"
+    echo "  先に make BOARD=$BOARD（rootfs と救助用 initramfs）を通してください。"; exit 2; }
+  sed -i "s|^CONFIG_INITRAMFS_SOURCE=.*|CONFIG_INITRAMFS_SOURCE=\"$OUT/$KERNEL_INITRAMFS\"|" "$KSRC/.config"
+fi
 yes "" | make -C "$KSRC" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" oldconfig >/dev/null
 # 再現性のためビルド identity を固定（2.6.31 が尊重すれば banner も固定）
 export KBUILD_BUILD_USER=openird KBUILD_BUILD_HOST=openird
 export KBUILD_BUILD_TIMESTAMP="Thu Jan  1 00:00:00 UTC 1970"
 make -C "$KSRC" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" -j"$(nproc)" "$KERNEL_IMAGE_TARGET"
 
-echo "== [6/6] pack RDHB =="
-python3 "$ROOT/host/openird-mkimage/openird_mkimage.py" pack-kernel "${MKIMAGE_BOARD:-$BOARD}" \
-  "$KSRC/arch/$ARCH/boot/$KERNEL_IMAGE_TARGET" "$OUT/mtd5.img"
-echo
-echo "✓ DONE: $OUT/mtd5.img"
+echo "== [6/6] pack (${KERNEL_PACK:-rdhb}) =="
+MKIMAGE="$ROOT/host/openird-mkimage/openird_mkimage.py"
+case "${KERNEL_PACK:-rdhb}" in
+rdhb)
+  python3 "$MKIMAGE" pack-kernel "${MKIMAGE_BOARD:-$BOARD}" \
+    "$KSRC/arch/$ARCH/boot/$KERNEL_IMAGE_TARGET" "$OUT/mtd5.img"
+  echo
+  echo "✓ DONE: $OUT/mtd5.img"
+  ;;
+uimage)
+  # ベンダの mk_vmlinux_img.sh と同じ形: 生バイナリ → gzip → uImage。load は _text、
+  # entry は kernel_entry（どちらも System.map から。entry はビルドごとに変わる）。
+  "${CROSS_COMPILE}objcopy" -O binary -R .note -R .comment -S "$KSRC/vmlinux" "$OUT/vmlinux.bin"
+  sym() { awk -v s="$1" '$3 == s { print $1 }' "$KSRC/System.map"; }
+  python3 "$MKIMAGE" pack-kernel "${MKIMAGE_BOARD:-$BOARD}" "$OUT/vmlinux.bin" "$OUT/vmlinux.img" \
+    --load "0x$(sym _text)" --entry "0x$(sym kernel_entry)"
+  cp "$KSRC/System.map" "$OUT/System.map"
+  echo
+  echo "✓ DONE: $OUT/vmlinux.img"
+  ;;
+*) echo "✗ 未知の KERNEL_PACK: $KERNEL_PACK"; exit 1 ;;
+esac

@@ -1,0 +1,45 @@
+From: OpenIRD contributors
+Subject: [PATCH] mips: div64: spell the high-word divide in C so modern gcc builds it
+
+Same cause as 0001: GCC dropped the MIPS "h" (HI register) asm constraint
+after 4.3, so with the pinned gcc 4.9.4 every file that reaches do_div()
+with a 64-bit dividend fails with
+
+  include/asm/div64.h:73:3: error: impossible constraint in 'asm'
+
+0001 only had to cover udelay() because the module build never compiled
+the built-in objects.  Building vmlinux does (lib/vsprintf.c, kernel/time,
+fs/...), so do_div() needs the same treatment.
+
+The asm divided the high word by the base and took the remainder from HI
+and the quotient from LO.  Say that in C; the compiler still emits one
+divu and reads both registers.  The long division of the low word that
+follows (do_div64_32) has no "h" constraint and is left alone, so the
+results are bit-for-bit what the vendor kernel computed.
+
+Origin: gpl-derived
+---
+--- a/include/asm-mips/div64.h
++++ b/include/asm-mips/div64.h
+@@ -69,11 +69,16 @@
+ 	__low = __div; \
+ 	__upper = __high; \
+ 	\
+-	if (__high) \
+-		__asm__("divu	$0, %z2, %z3" \
+-			: "=h" (__upper), "=l" (__high) \
+-			: "Jr" (__high), "Jr" (__base) \
+-			: GCC_REG_ACCUM); \
++	/* \
++	 * Remainder and quotient of the high word -- what "divu" left in \
++	 * HI and LO.  Spelled in C because gcc dropped the MIPS "h" (HI \
++	 * register) constraint after 4.3; the compiler still emits a \
++	 * single divu for the pair. \
++	 */ \
++	if (__high) { \
++		__upper = __high % __base; \
++		__high = __high / __base; \
++	} \
+ 	\
+ 	__mod = do_div64_32(__low, __upper, __low, __base); \
+ 	\

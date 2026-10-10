@@ -1,0 +1,29 @@
+From: OpenIRD contributors
+Subject: [PATCH] kbuild: let KBUILD_BUILD_USER/HOST name the builder in the banner
+
+The version banner ("Linux version ... (user@host) ...") is filled in from
+whoami and hostname, so every build carries the name of whoever built it
+and of their machine, and two builds of the same source never match.  This
+tree already takes the build time from KBUILD_BUILD_TIMESTAMP; take the
+user and the host from KBUILD_BUILD_USER and KBUILD_BUILD_HOST the same
+way, falling back to whoami/hostname when they are not set.
+
+scripts/build-kernel.sh sets all three, so an OpenIRD kernel says
+"openird@openird" whoever builds it.  Mainline later grew the same two
+variables.
+
+Origin: gpl-derived
+---
+--- a/scripts/mkcompile_h
++++ b/scripts/mkcompile_h
+@@ -60,8 +60,8 @@
+   echo \#define UTS_VERSION \"`echo $UTS_VERSION | $UTS_TRUNCATE`\"
+ 
+   echo \#define LINUX_COMPILE_TIME \"`date +%T`\"
+-  echo \#define LINUX_COMPILE_BY \"`whoami`\"
+-  echo \#define LINUX_COMPILE_HOST \"`hostname | $UTS_TRUNCATE`\"
++  echo \#define LINUX_COMPILE_BY \"${KBUILD_BUILD_USER:-`whoami`}\"
++  echo \#define LINUX_COMPILE_HOST \"`echo ${KBUILD_BUILD_HOST:-\`hostname\`} | $UTS_TRUNCATE`\"
+ 
+   if [ -x /bin/dnsdomainname ]; then
+     echo \#define LINUX_COMPILE_DOMAIN \"`dnsdomainname | $UTS_TRUNCATE`\"

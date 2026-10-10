@@ -1,0 +1,59 @@
+From: OpenIRD contributors
+Subject: [PATCH] mips: emma3sx: fall back to the board's serial port for the console
+
+The vendor boot loader boots with "run rom", whose bootargs carry no
+console= (only the "rom_dev" variant, selected by an environment the locked
+boot loader does not let anyone set, has one).  With the vendor system that
+is the point: the serial port stays silent.  For OpenIRD the serial port is
+the one place a user can see why a device does not come up, and the root
+shell lives there.
+
+If the command line names no console, add the one the boot loader's own
+development environment would have passed: ttyS1 on the AirTuner boards
+(the boot loader says which board it is with PRODUCT_FWIDS=), ttyS0
+otherwise.  A command line that does name a console is left alone.
+
+Origin: gpl-derived
+---
+--- a/arch/mips/emma/emma3sx/init.c
++++ b/arch/mips/emma/emma3sx/init.c
+@@ -16,6 +16,7 @@
+  */
+ 
+ #include <linux/init.h>
++#include <linux/string.h>
+ 
+ #include <asm/bootinfo.h>
+ #include <asm/emma/emmaxxx.h>
+@@ -26,6 +27,23 @@
+ 	return "EMMA3Sx";
+ }
+ 
++/*
++ * The production environment of the boot loader passes no console= at all
++ * ("rom"; only its "rom_dev" variant does), so nothing the kernel or init
++ * says would reach the serial port.  When the boot loader names none, use
++ * the port it would have named itself: the second UART on the AirTuner
++ * boards, the first on the others (u-boot include/configs/emma3sep.h).
++ */
++static void __init emma3sx_default_console(void)
++{
++	if (strstr(arcs_cmdline, "console="))
++		return;
++	strlcat(arcs_cmdline,
++		strstr(arcs_cmdline, "PRODUCT_FWIDS=PIX_AIRTUNER") ?
++		" console=ttyS1,115200" : " console=ttyS0,115200",
++		sizeof(arcs_cmdline));
++}
++
+ void __init prom_init(void)
+ {
+ 	prom_argc = (int)fw_arg0;
+@@ -33,6 +51,7 @@
+ 	prom_envp = (char **)fw_arg2;
+ 
+ 	prom_init_cmdline();
++	emma3sx_default_console();
+ 
+ 	add_memory_region(EMMA_RAM_BASE, EMMA_RAM_SIZE, BOOT_MEM_RAM);
+ }

@@ -1,0 +1,48 @@
+From: OpenIRD contributors
+Subject: [PATCH] mips: allow FPU opcodes in the FPU context switch code
+
+The kernel is compiled -msoft-float, and gcc hands that on to the
+assembler.  Since binutils 2.25 a soft-float assembly rejects the FPU
+load/store instructions, so the two files that save and restore the FPU
+registers no longer assemble with the pinned binutils 2.29.1:
+
+  arch/mips/kernel/r4k_fpu.S:59: Error: opcode not supported on this
+      processor: mips3 (mips3) `sdc1 $f0,272+0($4)'
+
+Those instructions are the whole point of these files.  Say so with
+".set hardfloat", which only widens what the assembler accepts from that
+line on; it does not change the object's float ABI or anything gcc
+generates.  (This SoC has no FPU; the code is reached only through the
+emulator's lazy-FPU paths, but it has to build.)
+
+Mainline later did the same, behind a toolchain test.  The toolchain is
+pinned here, so the directive is used unconditionally.
+
+Origin: gpl-derived
+---
+--- a/arch/mips/kernel/r4k_fpu.S
++++ b/arch/mips/kernel/r4k_fpu.S
+@@ -31,6 +31,9 @@
+ 
+ 	.set	noreorder
+ 	.set	mips3
++	/* The kernel is built -msoft-float; binutils 2.25 and later then
++	 * refuse FPU load/store opcodes unless told otherwise. */
++	.set	hardfloat
+ 
+ LEAF(_save_fp_context)
+ 	cfc1	t1, fcr31
+--- a/arch/mips/kernel/r4k_switch.S
++++ b/arch/mips/kernel/r4k_switch.S
+@@ -23,6 +23,11 @@
+ 
+ #include <asm/asmmacro.h>
+ 
++	/* The kernel is built -msoft-float; binutils 2.25 and later then
++	 * refuse the FPU load/store opcodes in fpu_save_double and
++	 * fpu_restore_double unless told otherwise. */
++	.set	hardfloat
++
+ /*
+  * Offset to the current process status flags, the first 32 bytes of the
+  * stack are not used.
