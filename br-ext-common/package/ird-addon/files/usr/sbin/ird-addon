@@ -1,0 +1,510 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# Copyright (C) 2026 OpenIRD contributors
+#
+# ird-addon - install and remove OpenIRD add-ons (docs/addon.md)
+#
+# An add-on is a gzip'ed tar "<name>_<version>_<arch>.ird" holding a manifest,
+# a root/ tree that is laid over /, and optional postinstall / preremove
+# scripts.  Everything it adds lands in the writable overlay.  The read-only
+# base (visible at /rom) is never changed, and a path the base already has is
+# never taken over - so removing an add-on leaves no whiteouts behind, and
+# wiping the overlay brings back the pristine system.
+#
+# State is one receipt per add-on in /var/lib/ird-addon, no central database:
+#   <name>.files      every path the add-on owns, directories with a trailing
+#                     slash (written before the copy, so an interrupted
+#                     install can still be removed)
+#   <name>.manifest   the add-on's manifest (written last: marks it complete)
+#   <name>.preremove  its preremove script, if it has one
+#   lists/            the repository indexes fetched by "ird-addon update"
+#
+# Messages are ASCII only - they are read on a serial console.
+#
+# IRD_ADDON_ROOT=<dir> works on a system tree other than / (the host tests).
+
+set -u
+
+ROOT="${IRD_ADDON_ROOT:-}"
+ROM="$ROOT/rom"
+CONF="$ROOT/etc/openird/addons.conf"
+BOARD_CONF="$ROOT/etc/openird/board.conf"
+STATE="$ROOT/var/lib/ird-addon"
+LISTS="$STATE/lists"
+LOCK="$ROOT/tmp/ird-addon.lock"
+
+# Never the target of an add-on: volatile and virtual trees, the two layers of
+# the union themselves, and this tool's own records.
+DENY="/dev /proc /sys /tmp /run /rom /overlay /var/lib/ird-addon"
+
+ARCH=
+WORK=
+LOCKED=
+
+msg() { echo "ird-addon: $*"; }
+warn() { echo "ird-addon: warning: $*" >&2; }
+die() { echo "ird-addon: $*" >&2; exit 1; }
+
+usage() {
+	cat >&2 <<'EOF'
+usage: ird-addon update                       fetch the indexes of the repositories
+       ird-addon available                    add-ons the repositories have for this device
+       ird-addon install <name>               install (or replace) an add-on from a repository
+       ird-addon install <url|file> <sha256>  install one add-on directly
+       ird-addon remove <name>
+       ird-addon list                         installed add-ons
+       ird-addon info <name>
+Repositories are listed in /etc/openird/addons.conf.
+EOF
+	exit 1
+}
+
+cleanup() {
+	[ -n "$WORK" ] && rm -rf "$WORK"
+	[ -n "$LOCKED" ] && rmdir "$LOCK" 2>/dev/null
+	return 0
+}
+trap cleanup EXIT
+trap 'exit 1' INT TERM HUP
+
+# One ird-addon at a time, and a scratch directory in the tmpfs (a stale lock
+# or half-unpacked add-on does not survive a reboot).
+begin() {
+	mkdir "$LOCK" 2>/dev/null ||
+		die "another ird-addon is running (if not, remove $LOCK)"
+	LOCKED=1
+	WORK="$(mktemp -d "$ROOT/tmp/ird-addon.XXXXXX")" || die "cannot create a work directory"
+}
+
+# The commands that change the system need the overlay: a base tree to compare
+# against and a root that can be written.
+need_overlay() {
+	[ -d "$ROM/etc" ] ||
+		die "no base system at $ROM: this system is not running on an overlay"
+	mkdir -p "$LISTS" 2>/dev/null ||
+		die "cannot write $STATE (read-only root?)"
+	if [ -z "$ROOT" ] && grep -q ' /overlay tmpfs ' /proc/mounts 2>/dev/null; then
+		warn "the overlay is a tmpfs: add-ons will be gone after a reboot"
+	fi
+}
+
+device_arch() {
+	ARCH="$(sed -n 's/^ADDON_ARCH=//p' "$BOARD_CONF" 2>/dev/null | head -n 1)"
+	[ -n "$ARCH" ] || die "this image does not say what it runs (no ADDON_ARCH in $BOARD_CONF)"
+}
+
+check_name() {
+	case "$1" in
+		''|[!a-z0-9]*|*[!a-z0-9.+-]*) die "not an add-on name: '$1'" ;;
+	esac
+}
+
+# field <file> <key>: the value of the first "Key: value" line
+field() {
+	tr -d '\r' < "$1" |
+		sed -n "/^$2:/{s/^$2:[[:space:]]*//;s/[[:space:]]*\$//;p;q;}"
+}
+
+valid_sha256() {
+	case "$1" in
+		''|*[!0-9a-f]*) return 1 ;;
+	esac
+	[ "${#1}" -eq 64 ]
+}
+
+# repos: the repository URLs of addons.conf, one per line, in order
+repos() {
+	[ -r "$CONF" ] || return 0
+	sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's:/*$::' -e '/^$/d' "$CONF"
+}
+
+# list_file <url>: where the index of that repository is kept
+list_file() {
+	echo "$LISTS/$(printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_')"
+}
+
+# fetch <url|file> <out>.  Anything remote is https; everything else is a
+# local file.
+fetch() {
+	case "$1" in
+		https://*) wget -q -T 30 -O "$2" "$1" ;;
+		http://*) die "plain http is refused: $1 (use https, or copy the file over and install it with its sha256)" ;;
+		*://*)
+			case "$1" in
+				file://*) cp "${1#file://}" "$2" ;;
+				*) die "unsupported URL: $1" ;;
+			esac
+			;;
+		*) [ -f "$1" ] && cp "$1" "$2" ;;
+	esac
+}
+
+# lookup <name>: find the add-on in the fetched indexes, first repository of
+# addons.conf first.  Sets R_URL R_SHA R_SIZE R_VER.
+lookup() {
+	local url lf fn
+	repos > "$WORK/repos"
+	while IFS= read -r url; do
+		lf="$(list_file "$url")"
+		[ -r "$lf" ] || continue
+		awk -v want="$1" -v arch="$ARCH" '
+			function flush() {
+				if (!done && pkg == want && a == arch) {
+					print file; print sha; print size; print ver
+					done = 1
+				}
+				pkg = a = file = sha = size = ver = ""
+			}
+			/^[ \t]*$/ { flush(); next }
+			{
+				i = index($0, ":")
+				if (i == 0) next
+				k = substr($0, 1, i - 1)
+				v = substr($0, i + 1)
+				sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v)
+				if (k == "Package") pkg = v
+				else if (k == "Arch") a = v
+				else if (k == "Filename") file = v
+				else if (k == "SHA256") sha = v
+				else if (k == "Size") size = v
+				else if (k == "Version") ver = v
+			}
+			END { flush() }
+		' "$lf" > "$WORK/hit"
+		[ -s "$WORK/hit" ] || continue
+		{
+			IFS= read -r fn
+			IFS= read -r R_SHA
+			IFS= read -r R_SIZE
+			IFS= read -r R_VER
+		} < "$WORK/hit"
+		# a plain name below the repository: not empty, not absolute,
+		# no "..", no URL of its own
+		case "/$fn/" in
+			//*|*/../*|*:*) die "$1: bad Filename in the index of $url" ;;
+		esac
+		R_URL="$url/$fn"
+		R_SHA="$(printf '%s' "$R_SHA" | tr 'A-F' 'a-f')"
+		return 0
+	done < "$WORK/repos"
+	return 1
+}
+
+# owner_of <path> <self>: a few words on who owns a path that is in the way
+owner_of() {
+	local f n
+	for f in "$STATE"/*.files; do
+		[ -e "$f" ] || continue
+		n="${f##*/}"
+		n="${n%.files}"
+		[ "$n" = "$2" ] && continue
+		if grep -qxF -- "$1" "$f"; then
+			echo "it belongs to the add-on $n"
+			return
+		fi
+	done
+	echo "it does not belong to this add-on"
+}
+
+# do_remove <name>: run its preremove, take away what its receipt lists, and
+# drop the receipt.  Directories go only when they are empty and the base does
+# not have them.
+do_remove() {
+	local p
+	if [ -f "$STATE/$1.manifest" ] && [ -f "$STATE/$1.preremove" ]; then
+		( cd "$ROOT/" && IRD_ADDON_ROOT="$ROOT" sh "$STATE/$1.preremove" ) ||
+			warn "the preremove script of $1 failed (removing it anyway)"
+	fi
+	# reverse order: what is inside a directory comes before the directory
+	LC_ALL=C sort -r "$STATE/$1.files" > "$WORK/rm"
+	while IFS= read -r p; do
+		case "$p" in
+			/*/)
+				p="${p%/}"
+				[ -d "$ROM$p" ] || rmdir "$ROOT$p" 2>/dev/null
+				;;
+			/*)
+				# Deleting a path the base has would leave a whiteout
+				# that hides the base's own file.
+				if [ -e "$ROM$p" ] || [ -L "$ROM$p" ]; then
+					warn "kept $p: the base system has this path now"
+				else
+					rm -f "$ROOT$p"
+				fi
+				;;
+		esac
+	done < "$WORK/rm"
+	rm -f "$STATE/$1.files" "$STATE/$1.manifest" "$STATE/$1.preremove"
+}
+
+cmd_update() {
+	local url lf f rc=0
+	[ $# -eq 0 ] || usage
+	need_overlay
+	begin
+	repos > "$WORK/repos"
+	[ -s "$WORK/repos" ] || msg "no add-on repositories in $CONF"
+	: > "$WORK/keep"
+	while IFS= read -r url; do
+		lf="$(list_file "$url")"
+		echo "${lf##*/}" >> "$WORK/keep"
+		if fetch "$url/Packages" "$WORK/Packages" && grep -q '^Package:' "$WORK/Packages"; then
+			tr -d '\r' < "$WORK/Packages" > "$lf.new" && mv "$lf.new" "$lf"
+			msg "$url: $(grep -c '^Package:' "$lf") add-ons"
+		else
+			warn "cannot fetch the index $url/Packages"
+			rc=1
+		fi
+	done < "$WORK/repos"
+	# indexes of repositories that are not configured any more
+	for f in "$LISTS"/*; do
+		[ -e "$f" ] || continue
+		grep -qxF -- "${f##*/}" "$WORK/keep" || rm -f "$f"
+	done
+	return $rc
+}
+
+cmd_available() {
+	[ $# -eq 0 ] || usage
+	device_arch
+	repos | while IFS= read -r url; do
+		lf="$(list_file "$url")"
+		[ -r "$lf" ] || continue
+		awk -v arch="$ARCH" '
+			function flush() {
+				if (pkg != "" && a == arch) print pkg, ver, (desc != "" ? "- " desc : "")
+				pkg = a = ver = desc = ""
+			}
+			/^[ \t]*$/ { flush(); next }
+			{
+				i = index($0, ":")
+				if (i == 0) next
+				k = substr($0, 1, i - 1)
+				v = substr($0, i + 1)
+				sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v)
+				if (k == "Package") pkg = v
+				else if (k == "Arch") a = v
+				else if (k == "Version") ver = v
+				else if (k == "Description") desc = v
+			}
+			END { flush() }
+		' "$lf"
+	done
+}
+
+cmd_install() {
+	local want= src sha size= got X pkg ver arch k p s d old
+	[ $# -eq 1 ] || [ $# -eq 2 ] || usage
+	device_arch
+	need_overlay
+	begin
+
+	if [ $# -eq 2 ]; then
+		src="$1"
+		sha="$(printf '%s' "$2" | tr 'A-F' 'a-f')"
+		valid_sha256 "$sha" || die "not a sha256 (64 hex digits): $2"
+	else
+		case "$1" in
+			*/*|*.ird) die "a URL or a file needs its sha256: ird-addon install <url|file> <sha256>" ;;
+		esac
+		want="$1"
+		check_name "$want"
+		lookup "$want" ||
+			die "$want: not in the repository indexes for $ARCH (try: ird-addon update)"
+		src="$R_URL"
+		sha="$R_SHA"
+		size="$R_SIZE"
+		valid_sha256 "$sha" || die "$want: the index has no usable SHA256"
+		if [ -f "$STATE/$want.manifest" ] &&
+		   [ "$(field "$STATE/$want.manifest" Version)" = "$R_VER" ]; then
+			msg "$want $R_VER is already installed"
+			return 0
+		fi
+	fi
+
+	# --- fetch and check against the pin ---
+	msg "fetching $src"
+	fetch "$src" "$WORK/addon.ird" || die "cannot fetch $src"
+	if [ -n "$size" ]; then
+		got="$(wc -c < "$WORK/addon.ird" | tr -d ' ')"
+		[ "$got" = "$size" ] || die "size mismatch: the index says $size bytes, got $got"
+	fi
+	got="$(sha256sum "$WORK/addon.ird" | cut -d' ' -f1)"
+	[ "$got" = "$sha" ] || die "SHA256 mismatch: expected $sha, got $got"
+
+	# --- unpack into the scratch directory ---
+	gzip -dc "$WORK/addon.ird" 2>/dev/null | tar tf - > "$WORK/members" 2>/dev/null ||
+		die "this is not an add-on (gzip'ed tar)"
+	while IFS= read -r p; do
+		p="${p#./}"
+		p="${p%/}"
+		case "$p" in
+			''|.|manifest|postinstall|preremove|root) continue ;;
+		esac
+		case "/$p/" in
+			*/../*|*//*) die "bad path in the add-on: $p" ;;
+		esac
+		case "$p" in
+			root/*) ;;
+			*) die "unexpected member in the add-on: $p" ;;
+		esac
+	done < "$WORK/members"
+	X="$WORK/x"
+	mkdir "$X" || die "cannot create a work directory"
+	gzip -dc "$WORK/addon.ird" | tar xof - -C "$X" || die "cannot unpack the add-on"
+	[ -f "$X/manifest" ] && [ ! -L "$X/manifest" ] || die "the add-on has no manifest"
+	[ -d "$X/root" ] && [ ! -L "$X/root" ] || die "the add-on has no root/ tree"
+	[ -z "$(find "$X" -name '*
+*')" ] || die "bad path in the add-on (a newline in a name)"
+
+	# --- manifest ---
+	pkg="$(field "$X/manifest" Package)"
+	ver="$(field "$X/manifest" Version)"
+	arch="$(field "$X/manifest" Arch)"
+	check_name "$pkg"
+	case "$ver" in
+		''|*[!A-Za-z0-9.+~-]*) die "$pkg: bad Version in the manifest: '$ver'" ;;
+	esac
+	[ -z "$want" ] || [ "$pkg" = "$want" ] ||
+		die "the index says $want, but the add-on it points to is $pkg"
+	[ "$arch" = "$ARCH" ] ||
+		die "$pkg is built for '$arch', this device is '$ARCH'"
+	for k in Depends Requires-OpenIRD; do
+		[ -z "$(field "$X/manifest" "$k")" ] ||
+			die "$pkg uses $k, which this version of ird-addon does not understand"
+	done
+
+	# --- what it wants to put where: nothing of the base, nothing of others ---
+	old="$STATE/$pkg.files"
+	( cd "$X/root" && find . | LC_ALL=C sort ) > "$WORK/tree" || die "cannot read the add-on"
+	: > "$WORK/files"
+	while IFS= read -r p; do
+		p="${p#.}"
+		[ -n "$p" ] || continue
+		s="$X/root$p"
+		for d in $DENY; do
+			case "$p/" in
+				"$d"/*) die "$pkg installs into $d, which add-ons must not: $p" ;;
+			esac
+		done
+		if [ -L "$s" ] || [ -f "$s" ]; then
+			if [ -e "$ROM$p" ] || [ -L "$ROM$p" ]; then
+				die "$pkg would replace a file of the base system: $p"
+			fi
+			if [ -e "$ROOT$p" ] || [ -L "$ROOT$p" ]; then
+				{ [ -f "$old" ] && grep -qxF -- "$p" "$old"; } ||
+					die "$p exists already ($(owner_of "$p" "$pkg"))"
+			fi
+			echo "$p" >> "$WORK/files"
+		elif [ -d "$s" ]; then
+			if [ -L "$ROM$p" ] || { [ -e "$ROM$p" ] && [ ! -d "$ROM$p" ]; }; then
+				die "$pkg needs the directory $p, which is not a directory in the base system"
+			fi
+			if [ -L "$ROOT$p" ] || { [ -e "$ROOT$p" ] && [ ! -d "$ROOT$p" ]; }; then
+				die "$pkg needs the directory $p, which exists and is not a directory"
+			fi
+			echo "$p/" >> "$WORK/files"
+		else
+			die "$pkg holds something that is not a file, a link or a directory: $p"
+		fi
+	done < "$WORK/tree"
+	grep -q '[^/]$' "$WORK/files" || die "$pkg installs no files"
+
+	# --- from here on the system changes ---
+	if [ -f "$old" ]; then
+		if [ -f "$STATE/$pkg.manifest" ]; then
+			msg "replacing $pkg $(field "$STATE/$pkg.manifest" Version)"
+		else
+			msg "clearing an incomplete install of $pkg"
+		fi
+		do_remove "$pkg"
+	fi
+	cp "$WORK/files" "$STATE/$pkg.files" || die "cannot write the receipt in $STATE"
+	while IFS= read -r p; do
+		case "$p" in
+			*/)
+				d="$ROOT${p%/}"
+				[ -d "$d" ] || mkdir -m 755 "$d"
+				;;
+			*)
+				cp -a "$X/root$p" "$ROOT$p"
+				;;
+		esac || {
+			warn "cannot install $p"
+			do_remove "$pkg"
+			die "$pkg was not installed"
+		}
+	done < "$WORK/files"
+	if [ -f "$X/preremove" ]; then
+		cp "$X/preremove" "$STATE/$pkg.preremove" || {
+			do_remove "$pkg"
+			die "cannot write the receipt in $STATE"
+		}
+	fi
+	cp "$X/manifest" "$STATE/$pkg.manifest" || {
+		do_remove "$pkg"
+		die "cannot write the receipt in $STATE"
+	}
+	sync
+
+	if [ -f "$X/postinstall" ]; then
+		( cd "$ROOT/" && IRD_ADDON_ROOT="$ROOT" sh "$X/postinstall" ) || {
+			warn "the postinstall script of $pkg failed; its files are installed"
+			msg "installed $pkg $ver (postinstall failed)"
+			return 1
+		}
+	fi
+	msg "installed $pkg $ver"
+}
+
+cmd_remove() {
+	[ $# -eq 1 ] || usage
+	check_name "$1"
+	[ -f "$STATE/$1.files" ] || die "$1 is not installed"
+	need_overlay
+	begin
+	do_remove "$1"
+	sync
+	msg "removed $1"
+}
+
+cmd_list() {
+	local f n
+	[ $# -eq 0 ] || usage
+	for f in "$STATE"/*.files; do
+		[ -e "$f" ] || continue
+		n="${f##*/}"
+		n="${n%.files}"
+		if [ -f "$STATE/$n.manifest" ]; then
+			echo "$n $(field "$STATE/$n.manifest" Version)"
+		else
+			echo "$n (incomplete install - run: ird-addon remove $n)"
+		fi
+	done
+}
+
+cmd_info() {
+	[ $# -eq 1 ] || usage
+	check_name "$1"
+	[ -f "$STATE/$1.files" ] || die "$1 is not installed"
+	if [ -f "$STATE/$1.manifest" ]; then
+		cat "$STATE/$1.manifest"
+	else
+		echo "(incomplete install - run: ird-addon remove $1)"
+	fi
+	echo "Files:"
+	sed -n '/[^/]$/s/^/  /p' "$STATE/$1.files"
+}
+
+[ $# -ge 1 ] || usage
+cmd="$1"
+shift
+case "$cmd" in
+	update) cmd_update "$@" ;;
+	available) cmd_available "$@" ;;
+	install) cmd_install "$@" ;;
+	remove) cmd_remove "$@" ;;
+	list) cmd_list "$@" ;;
+	info) cmd_info "$@" ;;
+	*) usage ;;
+esac

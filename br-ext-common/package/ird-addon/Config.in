@@ -1,0 +1,18 @@
+config BR2_PACKAGE_IRD_ADDON
+	bool "ird-addon"
+	depends on BR2_PACKAGE_IRD_BASE_FILES
+	help
+	  OpenIRD: アドオン（実行時パッケージ）のインストーラ。
+
+	  アドオンリポジトリ（HTTPS 上の索引付き静的集合）から .ird を
+	  取得し、sha256 と Arch を確かめて永続 overlay に展開する。
+	  base（squashfs）には触れず、base が持つパスは上書きしない。
+	  受領記録はアドオンごとに /var/lib/ird-addon に置く。
+
+	  BusyBox に wget の HTTPS・awk・sha256sum・tar・gunzip が要る
+	  （board の busybox.fragment）。board.conf に ADDON_ARCH= が要る。
+
+	  形式と手順は docs/addon.md。
+
+comment "ird-addon needs ird-base-files (the overlay root)"
+	depends on !BR2_PACKAGE_IRD_BASE_FILES

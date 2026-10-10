@@ -6,6 +6,9 @@ CONFIG_NC_EXTRA=y
 CONFIG_STAT=y
 CONFIG_TIMEOUT=y
 CONFIG_USLEEP=y
+# ird-addon fetches add-ons over HTTPS.  This is BusyBox's own TLS: it does
+# not validate the server's certificate (docs/addon.md, section 4).
+CONFIG_FEATURE_WGET_HTTPS=y
 # The rescue shell takes the serial console as its controlling terminal
 CONFIG_CTTYHACK=y
 # telnetd stays in the binary for the rescue initramfs only (the recovery door
