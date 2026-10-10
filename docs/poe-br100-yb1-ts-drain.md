@@ -98,8 +98,10 @@
   共用で、**使うときはユーザ（とそのホストの担当セッション）に空けてもらう**。空きの確認は
   `pgrep -a recisdb | grep "device /dev/pxm1urvideo1"`（`pgrep -f` は確かめる ssh のシェル自身に
   当たる）。取り込みは `--no-decode`・カードリーダは使わない・照合の後に TS を消す。
-- 照合: `tools/host/tsref.py`（参照側）・`yb1-mem @file 0 <len> hashes`（YB1 側）・
-  `tools/host/tshashcmp.py`。中身はどちらのホストからも出さず、パケットごとの CRC-32 だけを運ぶ。
+- 照合: `tools/host/tsref.py`（どちらのホストでも TS を `pid cc crc32` のハッシュ列にする。
+  参照側、YB1 側＝recpt1 で録った TS のどちらにも使える）・`tools/host/tshashcmp.py`（2 本を
+  突き合わせて bit-exact/欠落/誤りを出す）。観察期は YB1 側を `yb1-mem @file 0 <len> hashes`
+  で出していた（同じ CRC 形式）。中身はどちらのホストからも出さず、パケットごとの CRC-32 だけを運ぶ。
 - 実機: `tools/yb1-fifodrain`（ドレイナー・`avwatch`）、`tools/yb1-cmd`（コマンドを積む・
   `next`/`auto` で続きから）、`tools/yb1-ioctl` の `trace`（ベンダの呼び出しをコマンドとして記録）、
   `tools/host/trace2cmd.py`、`yb1-mem`（`fifo`・`burn`・`locate`）、`yb1-mxl`。
@@ -113,3 +115,36 @@
 - **裏 CPU の FW の書き換え**（FIFO から DRAM へ全部運ばせる）。§1-1（ベンダバイナリを
   配布しない）・§1-3（逆アセは別セッション）との整合を先に詰める必要がある。
 - **ハードウェアタップ**（復調器 MXL683 と SoC の間の TS 線）。
+
+（この退避路は使わずに済んだ。§8 のとおり本線で段階 C の受け入れを通した。）
+
+## 8. 受け入れ検証（段階 C 完了の実証・2026-10-10）
+
+§4.1 のとおり段階 C の完了判定は「**未改造の recpt1/recisdb がこの chardev から録れること**」。
+本線（ird-tuner-yb1 を OpenIRD カーネルに載せた像＋OpenIRD rootfs）で、これを実機で通した。
+
+- **recpt1 クロスビルド**: `tools/host/build-recpt1.sh`（stz2012 版を pin した commit で取得し、
+  機種の Buildroot musl toolchain で **MIPS BE 静的**にビルド。libarib25 は入れない）。recpt1 の
+  ABI（`driver/pt1_ioctl.h`）はドライバの px4_drv 互換 ioctl と一致（`SET_CHANNEL _IOW(0x8D,…)`/
+  `START_REC`/`STOP_REC`/`GET_SIGNAL_STRENGTH`）＝スクリプトが機械で確かめる。配布物には含めない
+  （所有者が自機の検証に使う道具）。
+- **録れること**: 実機（NAND の OpenIRD カーネル＋OpenIRD rootfs）で
+  `recpt1 --device /dev/irdvideo0 <ch> <sec> <file>` が成立。ch27 で 10 秒＝103,786 パケット・
+  **連続性エラー 0・transport_error 0・同期不良 0**（188B 整列・先頭から 0x47）・C/N 29.2 dB。
+  起動は `/etc/init.d/S30tuner`（所有者機の mtd から FW を物理 `0x30000` に `dd` → csd.ko を
+  load/unload → `blur` の MXL MBIN を `ird-mbin` で取り出して driver の `firmware` に流す → `start`）。
+- **ブリッジ（TS サーバ/クライアント）**: `recpt1 --http <port> --device /dev/irdvideo0` で YB1 が
+  TS サーバ（daemon）になる。クライアントは `GET /<ch>[/<sid>]` で生 TS を octet-stream で受ける
+  （別ホストから ch27 取得を確認）。自作デーモンは要らず、両端が本物 recpt1。**ポートは引数必須**
+  （`--http` は省略できる既定ポートを持たない。recpt1 内蔵の定数は 12345）。EPGStation 既定の 8888 や
+  Mirakurun の 40772 と紛れないポートを選ぶ（例: 12345）。
+- **参照受信機とビット一致（再確認）**: 別ホスト .33 の PX-M1UR（recisdb 1.2.4・`--no-decode`
+  `--no-strip`）と YB1 で同じ地上波（ch24）を同時録画し、`tsref.py`→`tshashcmp.py` で突合。
+  重なった区間で、スクランブル済みの映像 PID `0x0111` が **device 先頭から 27,285 パケット連続で
+  bit-exact（missing 0）**、音声/データ `0x1003`/`0x1004`/`0x0181` も同様に連続一致。高エントロピーの
+  スクランブル列が連続一致する＝ドライバが放送 TS をバイトのまま出していることの実証（§87 の
+  観察期の一致を、出荷するドライバ＋本物 recpt1 で裏取り）。参照機は Mirakurun #2 と共用のため、
+  ホストの担当セッションに依頼して Mirakurun から外してもらい、使用後すぐ返した。TS 実体は双方の
+  ホストから出さず、照合後に消した。
+- **残件**: 録画窓を広く重ねた照合（今回は窓の重なりが小さく、重なり内は完全一致だが母数が小さい）、
+  ヌル抜き TS での上位（recpt1 系・Mirakurun）の相性、ドレイナーの頑健化（§4.2）。
