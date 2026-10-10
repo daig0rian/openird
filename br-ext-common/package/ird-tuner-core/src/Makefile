@@ -1,1 +1,1 @@
-obj-$(CONFIG_IRD_TUNER_CORE)	+= ird_chrdev.o ird_psi.o
+obj-$(CONFIG_IRD_TUNER_CORE)	+= ird_chrdev.o ird_psi.o ird_pidalloc.o

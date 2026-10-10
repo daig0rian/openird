@@ -10,7 +10,8 @@ SRC="$ROOT/br-ext-common/package/ird-tuner-core/src"
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 CC="${CC:-cc}"
-"$CC" -std=gnu11 -Wall -Wextra -Wno-unused-parameter -O2 \
-	-I "$HERE/shim" -I "$SRC" \
-	-o "$OUT/test_psi" "$HERE/test_psi.c" "$SRC/ird_psi.c"
+CFLAGS="-std=gnu11 -Wall -Wextra -Wno-unused-parameter -O2 -I $HERE/shim -I $SRC"
+$CC $CFLAGS -o "$OUT/test_psi"      "$HERE/test_psi.c"      "$SRC/ird_psi.c"
+$CC $CFLAGS -o "$OUT/test_pidalloc" "$HERE/test_pidalloc.c" "$SRC/ird_pidalloc.c"
 "$OUT/test_psi"
+"$OUT/test_pidalloc"

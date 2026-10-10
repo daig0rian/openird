@@ -38,6 +38,7 @@
 
 #include "ird_tuner.h"
 #include "ird_psi.h"
+#include "ird_pidalloc.h"
 #include "mxl683.h"
 #include "emma3sep_av.h"
 
@@ -145,37 +146,32 @@ static int group_set(int g, const u16 *want, int n)
 	return ret;
 }
 
-/* Bring the filters in line with what the PSI follower knows. */
+/* Bring the filters in line with what the PSI follower knows.
+ *
+ * G_LIGHT is the device whose FIFO the drainer taps, so PAT/CAT/PMT must
+ * land there or the follower never sees the tables.  G_HEAVY is the XDMA
+ * device, preferred for the elementary streams.  ird_pidalloc_run() enforces
+ * both, and drops in a defined order if 72 filters are not enough. */
 static int apply_pids(void)
 {
-	u16 light[2 * NFILT], heavy[2 * NFILT], want[NGROUP][NFILT];
-	int nl, nh, n[NGROUP] = { 0, 0 }, i, ret;
+	u16 light[2 * NFILT], heavy[2 * NFILT], must[2 + IRD_PSI_MAX_PROG];
+	int nl, nh, nm = 0, i, ret;
 	const struct ird_psi *p = yb.psi;
+	struct ird_pidalloc a;
 
 	ird_psi_pids(p, light, &nl, heavy, &nh, 2 * NFILT);
-	yb.dropped = 0;
-	/* each kind to its own device first; what does not fit, to the other.
-	 * The tables come first in `light', so they always stay on G_LIGHT. */
-	for (i = 0; i < nl; i++) {
-		int g = n[G_LIGHT] < NFILT ? G_LIGHT : G_HEAVY;
+	must[nm++] = 0x0000;			/* PAT  - must be tapped */
+	must[nm++] = 0x0001;			/* CAT  - must be tapped */
+	for (i = 0; i < p->npmt; i++)		/* every PMT - must be tapped */
+		must[nm++] = p->pmt_pid[i];
 
-		if (n[g] < NFILT)
-			want[g][n[g]++] = light[i];
-		else
-			yb.dropped++;
-	}
-	for (i = 0; i < nh; i++) {
-		int g = n[G_HEAVY] < NFILT ? G_HEAVY : G_LIGHT;
-
-		if (n[g] < NFILT)
-			want[g][n[g]++] = heavy[i];
-		else
-			yb.dropped++;
-	}
-	ret = group_set(G_LIGHT, want[G_LIGHT], n[G_LIGHT]);
+	ird_pidalloc_run(&a, NFILT, must, nm, heavy, nh, light, nl);
+	yb.dropped = a.dropped;
+	ret = group_set(G_LIGHT, a.g[0], a.n[0]);
 	if (!ret)
-		ret = group_set(G_HEAVY, want[G_HEAVY], n[G_HEAVY]);
+		ret = group_set(G_HEAVY, a.g[1], a.n[1]);
 
+	/* tap exactly the tables, now guaranteed to be on the tapped device */
 	emma3sep_tsfifo_tap_pid(0x0000);
 	emma3sep_tsfifo_tap_pid(0x0001);
 	for (i = 0; i < p->npmt; i++)
