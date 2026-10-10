@@ -27,6 +27,7 @@ openird/
 │       ├─ ird-config/      # UCI 相当 /etc/config/*
 │       ├─ ird-webui/       # 管理 UI
 │       ├─ ird-base-files/  # 共通 rootfs skeleton / init
+│       ├─ ird-addon/       # アドオン（実行時パッケージ）のインストーラ（docs/addon.md）
 │       └─ openwrt-mtd/     # OpenWrt の mtd（区画書き込み。commit 固定で取得）
 │
 ├─ br-ext-chip-renesas/     # Renesas EMMA3SEP（MIPS BE, 2.6.27）
@@ -40,9 +41,12 @@ openird/
 │   └─ package/ird-tuner-tc90532/
 │
 ├─ host/openird-mkimage/    # factory コンテナ生成（鍵は埋めず外から渡す）
+├─ host/ird-mkaddon/        # アドオン（.ird）と索引の生成。SDK にも入る
 ├─ scripts/build-kernel.sh  # 検証済みカーネル（mtd5 像）の再現ビルド（make kernel）
 ├─ scripts/fetch-buildroot.sh # pin した Buildroot の取得・検証・展開
+├─ scripts/make-sdk.sh      # アドオン作者向け SDK を固める（make sdk）
 ├─ tests/overlayfs/         # カーネルパッチの QEMU 機能テスト（make test-overlayfs）
+├─ tests/addon/             # アドオン機構のテスト（make test-addon）
 └─ docs/
 ```
 

@@ -227,9 +227,27 @@ SDK の tarball は GCC などの GPL バイナリを含む。**配るときは�
 
 ## 9. 実装状態
 
-すべて未実装（**specified**）。実装の段取り:
+| 段取り | 状態（2026-10-11） | 所在 |
+|---|---|---|
+| 1. `ird-addon` ＋ `.ird` 形式 ＋ 索引 | **実装済み・実機検証済み**（POE-BR100-YB1） | `br-ext-common/package/ird-addon`（emma3sep の defconfig で有効） |
+| 2. `make sdk` ＋ `ird-mkaddon` | **実装済み**（emma3sep で SDK を作り、別の場所へ展開してアドオンを作るところまで確認） | `scripts/make-sdk.sh`・`host/ird-mkaddon` |
+| 3. recpt1 を別リポジトリで `.ird` 化し、実機導入→再起動保持→`/dev/irdvideo0` から録画 | 未着手 | （アドオンリポジトリ＝別リポジトリ） |
 
-1. `ird-addon` ＋ `.ird` 形式 ＋ 索引パーサ（base の `ird-addon` ビルドオプション）。
-2. `make sdk`（toolchain＋sysroot の再配置 tarball）＋ `ird-mkaddon`。
-3. 最初のアドオン例として **recpt1 を別リポジトリ**（アドオンリポジトリ）で `.ird` 化し、
-   実機導入→再起動保持→`/dev/irdvideo0` から録画までを検証（§1 の永続 union に載る）。
+- テストは `make test-addon`（`tests/addon/`）: 作った `.ird` を偽の機器ツリー（base と、
+  その上の見え方）へ入れて、§2〜§5 の決まりを確かめる。`BUSYBOX=<パス>` を渡すと
+  `ird-addon` を BusyBox の ash とアプレットだけで走らせる（機器と同じ道具立て）。
+- **実機で確かめたこと**（2026-10-11・POE-BR100-YB1・`ird-addon` 入りの base を mtd3 に書いた上で）:
+  SDK の toolchain で作ったテスト用アドオンを `install <file> <sha256>` → 実行 → 電源の入れ直しを
+  跨いで残る（`S80…` も起動時に走る）→ `remove`。消したファイルの whiteout は残らない
+  （base に在るディレクトリの空の骨組みが upper に残るだけ）。機器からの HTTPS 取得
+  （BusyBox `wget`）も通る。
+- **実機でまだ見ていないこと**: HTTPS のリポジトリから名前で入れる流れ（`update` →
+  `install <name>`。ホストのテストでは `file://` で確認済み）、overlay が満杯のときの取り消し。
+  段取り 3 で確かめる。
+- 実機の時計は起動のたびに 1970 年から始まる（実測。時刻合わせをしていない）。導入・削除の
+  際にカーネルが `unionfs: new lower inode mtime` と出すことがあるが、導入・保持・削除の結果には
+  影響しなかった（upper が 1970 年・base が像のビルド時刻、という時刻の逆転が原因とみられる。未確認）。
+- fujitsu（mb86h61）は未対応: `ADDON_ARCH` をまだ決めていない（toolchain の選び方に依る）。
+  決めたら `board.conf`・`busybox.fragment`・defconfig の 3 か所。
+- **未決**: 索引の真正性（§4）。いまは証明書を検証しない HTTPS で、名前での導入は
+  リポジトリまでの経路を信頼している。
