@@ -85,11 +85,12 @@ static struct {
 
 	int draining, capturing;
 	int tuned;		/* a multiplex is locked and being followed */
-	unsigned int gen;	/* counts tunes: tells old tap packets apart */
 	u32 freq_khz;
 	struct ird_psi *psi;
 	int psi_done;
 	unsigned int dropped;	/* PIDs that found no filter, last time */
+	unsigned int filter_writes;	/* demultiplexer filter re-points, running */
+	struct ird_pidalloc alloc;	/* last placement, fed back for stickiness */
 	wait_queue_head_t psi_wq;
 	struct task_struct *psi_task;
 } yb;
@@ -110,10 +111,12 @@ static int filter_set(int g, int i, u16 pid)
 		yb.nfilt[g]++;
 	}
 	if (f->pid == pid)
-		return 0;
+		return 0;			/* already there: no gap on this PID */
 	ret = emma3sep_demux_filter_pid(f->handle, pid);
-	if (!ret)
+	if (!ret) {
 		f->pid = pid;
+		yb.filter_writes++;		/* a real re-point = a brief gap */
+	}
 	return ret;
 }
 
@@ -165,7 +168,10 @@ static int apply_pids(void)
 	for (i = 0; i < p->npmt; i++)		/* every PMT - must be tapped */
 		must[nm++] = p->pmt_pid[i];
 
-	ird_pidalloc_run(&a, NFILT, must, nm, heavy, nh, light, nl);
+	/* feed last time's placement back so surviving PIDs keep their device
+	 * across the staged discovery and version changes (fewer re-points) */
+	ird_pidalloc_run(&a, NFILT, must, nm, heavy, nh, light, nl, &yb.alloc);
+	yb.alloc = a;
 	yb.dropped = a.dropped;
 	ret = group_set(G_LIGHT, a.g[0], a.n[0]);
 	if (!ret)
@@ -185,16 +191,21 @@ static int psi_thread(void *unused)
 	static u8 pkt[188];
 
 	while (!kthread_should_stop()) {
-		unsigned int gen = yb.gen;
+		int changed, done;
 
 		if (emma3sep_tsfifo_tap_read(pkt, 200) <= 0)
 			continue;
 		mutex_lock(&yb.lock);
-		if (yb.tuned && gen == yb.gen) {
-			if (ird_psi_feed(yb.psi, pkt))
-				apply_pids();
-			if (!yb.psi_done && ird_psi_complete(yb.psi)) {
-				yb.psi_done = 1;
+		if (yb.tuned) {
+			changed = ird_psi_feed(yb.psi, pkt);
+			if (changed)
+				apply_pids();	/* re-point only the delta */
+			done = ird_psi_complete(yb.psi);
+			/* wake the tuner's wait on any table change or when the
+			 * current multiplex's completeness flips (a new PAT makes
+			 * it incomplete until its PMTs are read) */
+			if (changed || done != yb.psi_done) {
+				yb.psi_done = done;
 				wake_up(&yb.psi_wq);
 			}
 		}
@@ -233,7 +244,6 @@ static int yb1_open(struct ird_tuner *t)
 static void stop_following(void)
 {
 	yb.tuned = 0;
-	yb.gen++;
 	if (yb.draining) {
 		emma3sep_tsfifo_stop();
 		yb.draining = 0;
@@ -249,11 +259,21 @@ static void yb1_release(struct ird_tuner *t)
 
 static int yb1_tune(struct ird_tuner *t, u32 freq_khz)
 {
-	int ret, i, locked = 0;
+	int ret = 0, i, locked = 0, was_tuned, same;
+	u32 old_crc;
 
 	mutex_lock(&yb.lock);
-	yb.tuned = 0;
-	yb.gen++;
+	was_tuned = yb.tuned;
+	same = was_tuned && freq_khz == yb.freq_khz;
+
+	/* Already locked onto this exact channel and following it: the filter
+	 * table is already right, so do nothing -- no re-lock, no re-point.
+	 * (This is what makes a re-tune of the same channel free of glitches.) */
+	if (same && mxl683_locked(&yb.demod) == 1) {
+		mutex_unlock(&yb.lock);
+		return 0;
+	}
+
 	ret = mxl683_tune(&yb.demod, freq_khz);
 	/* lock takes 1.4 to 1.7 s where there is a signal; give it 3 s */
 	for (i = 0; i < 60 && !ret && !locked; i++) {
@@ -266,8 +286,8 @@ static int yb1_tune(struct ird_tuner *t, u32 freq_khz)
 		ret = -EAGAIN;
 	if (ret)
 		goto out;
-	yb.freq_khz = freq_khz;
 
+	/* find the FIFO slots once (needs packets flowing: filter 0 -> null) */
 	if (!emma3sep_tsfifo_slots(group[G_LIGHT].fifo) ||
 	    !emma3sep_tsfifo_slots(group[G_HEAVY].fifo)) {
 		if (yb.draining) {
@@ -279,32 +299,42 @@ static int yb1_tune(struct ird_tuner *t, u32 freq_khz)
 			goto out;
 	}
 
-	/* the new multiplex: start from the fixed PIDs and let the tables,
-	 * as they come in, name the rest */
-	ird_psi_reset(yb.psi);
-	emma3sep_tsfifo_tap_clear();
-	yb.psi_done = 0;
-	ret = apply_pids();
-	if (ret)
-		goto out;
+	/* Bootstrap once: set the fixed PIDs so PAT/CAT flow and are tapped,
+	 * and start draining.  After this the PSI follower keeps the filters up
+	 * to date on its own -- across a PMT version change (re-points only the
+	 * changed PIDs) and across a re-tune (PAT/CAT stay filtered, so a new
+	 * multiplex's PAT arrives and re-enumerates the rest). */
 	if (!yb.draining) {
+		ret = apply_pids();
+		if (ret)
+			goto out;
 		ret = emma3sep_tsfifo_start(FIFO_MASK, FIFO_XDMA);
 		if (ret)
 			goto out;
 		yb.draining = 1;
+		if (yb.capturing)
+			emma3sep_tsfifo_capture(1);
 	}
-	if (yb.capturing)
-		emma3sep_tsfifo_capture(1);	/* drop the old multiplex's */
-	yb.tuned = 1;
+
+	old_crc = yb.psi->pat_crc;
+	yb.freq_khz = freq_khz;
+	yb.tuned = 1;			/* let the follower run while we wait below */
+	mutex_unlock(&yb.lock);
+
+	if (same)
+		return 0;		/* re-locked the same multiplex: already followed */
+
+	/* A (possibly) new multiplex: wait until its PAT -- a new CRC -- and all
+	 * its PMTs have been read, so a reader that starts at once gets whole
+	 * programs.  The fixed PIDs were already filtered, so this needs no
+	 * teardown; the follower re-points only the delta. */
+	wait_event_timeout(yb.psi_wq,
+			   yb.psi->pat_valid && yb.psi->pat_crc != old_crc &&
+			   yb.psi_done, 3 * HZ);
+	return 0;
 out:
 	mutex_unlock(&yb.lock);
-	if (ret)
-		return ret;
-	/* The stream is complete only once the PMTs have been read (they come
-	 * about ten times a second).  Give that a moment, so that a reader
-	 * that starts right away gets whole programs from the start. */
-	wait_event_timeout(yb.psi_wq, yb.psi_done, HZ);
-	return 0;
+	return ret;
 }
 
 static int yb1_set_capture(struct ird_tuner *t, int on)
@@ -418,9 +448,9 @@ static ssize_t state_show(struct device *dev, struct device_attribute *attr,
 	len += sprintf(buf + len, "firmware %u bytes\n", (unsigned int)yb.fw_len);
 	if (yb.ready) {
 		len += sprintf(buf + len, "tuned %d freq_khz %u programs %d "
-			       "tables_read %d pids_without_filter %u\n",
+			       "tables_read %d pids_without_filter %u filter_writes %u\n",
 			       yb.tuned, yb.freq_khz, yb.psi->nprog,
-			       yb.psi_done, yb.dropped);
+			       yb.psi_done, yb.dropped, yb.filter_writes);
 		for (g = 0; g < NGROUP; g++) {
 			len += sprintf(buf + len, "fifo %d pids", group[g].fifo);
 			for (i = 0; i < yb.nfilt[g]; i++)

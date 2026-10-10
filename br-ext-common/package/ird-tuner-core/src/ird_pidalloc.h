@@ -41,10 +41,20 @@ struct ird_pidalloc {
  *   light    everything else to carry (SI, ECM, EMM).  Group 0 then group 1.
  * A PID already placed (e.g. a PMT PID that also appears in `light`) is
  * skipped.  PIDs that do not fit are counted in o->dropped.
+ *
+ * `prev` is the previous result, or NULL.  A PID that was in `prev` is kept on
+ * the same device when that is allowed and the device still has room, so that
+ * following a PMT/PAT version change (or the staged PAT->PMT->ES discovery, or
+ * a re-tune of the same multiplex) moves a PID between devices only when it
+ * really has to -- each move is a demultiplexer filter re-point, i.e. a brief
+ * gap on that PID.  Priority still wins: a kept low-priority PID is displaced
+ * if a higher-priority one needs its slot.  Passing `o` itself as `prev` is
+ * allowed (the caller may keep the result and feed it back next time).
  */
 void ird_pidalloc_run(struct ird_pidalloc *o, int per_group,
 		      const u16 *musttap, int nmust,
 		      const u16 *heavy, int nheavy,
-		      const u16 *light, int nlight);
+		      const u16 *light, int nlight,
+		      const struct ird_pidalloc *prev);
 
 #endif /* _IRD_PIDALLOC_H */

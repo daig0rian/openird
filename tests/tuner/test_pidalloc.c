@@ -40,7 +40,7 @@ static void test_basic(void)
 	u16 light[] = {0x0010, 0x0011, 0x0900, 0x0901};
 
 	printf("[pidalloc] basic: must on tapped, heavy on DMA, nothing dropped\n");
-	ird_pidalloc_run(&a, 36, must, 3, heavy, 3, light, 4);
+	ird_pidalloc_run(&a, 36, must, 3, heavy, 3, light, 4, NULL);
 	CHECK("within bounds", bounded(36));
 	CHECK("nothing dropped", a.dropped == 0 && a.musttap_dropped == 0);
 	CHECK("PAT on tapped (group 0)", in0(0x0000));
@@ -62,7 +62,7 @@ static void test_dedup(void)
 	int total;
 
 	printf("[pidalloc] de-duplicates PIDs that appear in several inputs\n");
-	ird_pidalloc_run(&a, 36, must, 3, heavy, 1, light, 5);
+	ird_pidalloc_run(&a, 36, must, 3, heavy, 1, light, 5, NULL);
 	total = a.n[0] + a.n[1];
 	CHECK("no double placement (6 distinct PIDs)", total == 6);
 	CHECK("PAT placed once on tapped only", in0(0x0000) && !in1(0x0000));
@@ -75,7 +75,7 @@ static void test_heavy_spill(void)
 	int i, in_dma = 0;
 
 	printf("[pidalloc] heavy overflow spills from DMA to the tapped device\n");
-	ird_pidalloc_run(&a, 4, must, 2, heavy, 6, NULL, 0);
+	ird_pidalloc_run(&a, 4, must, 2, heavy, 6, NULL, 0, NULL);
 	CHECK("within bounds (per_group 4)", bounded(4));
 	CHECK("nothing dropped (6 heavy + 2 must = 8 <= 8)", a.dropped == 0);
 	CHECK("must still on tapped", in0(0x0000) && in0(0x0001));
@@ -94,7 +94,7 @@ static void test_musttap_preserved(void)
 	printf("[pidalloc] a flood of light PIDs never pushes must-tap off the tapped device\n");
 	for (i = 0; i < 16; i++)
 		light[i] = 0x2000 + i;
-	ird_pidalloc_run(&a, 4, must, 3, heavy, 3, light, 16);
+	ird_pidalloc_run(&a, 4, must, 3, heavy, 3, light, 16, NULL);
 	CHECK("within bounds", bounded(4));
 	CHECK("all must-tap still on tapped device", in0(0x0000) && in0(0x0001) && in0(0x1000));
 	CHECK("no must-tap was dropped", a.musttap_dropped == 0);
@@ -108,10 +108,50 @@ static void test_musttap_overflow(void)
 	u16 must[] = {0x0000, 0x0001, 0x1000, 0x1001};
 
 	printf("[pidalloc] honest accounting when must-tap itself overflows\n");
-	ird_pidalloc_run(&a, 2, must, 4, NULL, 0, NULL, 0);
+	ird_pidalloc_run(&a, 2, must, 4, NULL, 0, NULL, 0, NULL);
 	CHECK("tapped device holds exactly per_group", a.n[0] == 2);
 	CHECK("two must-tap dropped", a.musttap_dropped == 2);
 	CHECK("must-tap never leaks onto the DMA device", a.n[1] == 0);
+}
+
+static void test_sticky(void)
+{
+	/* A PMT version change: audio removed, a new ES added.  Surviving PIDs
+	 * must stay on their previous device so no filter is re-pointed for
+	 * them; only the removed/added PIDs move. */
+	u16 must[] = {0x0000, 0x0001, 0x1000};
+	u16 heavy1[] = {0x0100, 0x0110, 0x01f0};		/* video, audio, pcr */
+	u16 heavy2[] = {0x0100, 0x01f0, 0x0120};		/* audio gone, 0x0120 new */
+	u16 light[] = {0x0010, 0x0900};
+	struct ird_pidalloc prev;
+
+	printf("[pidalloc] stickiness keeps survivors on their device across a version change\n");
+	ird_pidalloc_run(&a, 36, must, 3, heavy1, 3, light, 2, NULL);
+	prev = a;
+	/* record where the survivors were */
+	CHECK("v1 placed video/pcr on DMA", in1(0x0100) && in1(0x01f0));
+
+	ird_pidalloc_run(&a, 36, must, 3, heavy2, 3, light, 2, &prev);
+	CHECK("survivor video stays on its group", in1(0x0100) == 1);
+	CHECK("survivor pcr stays on its group", in1(0x01f0) == 1);
+	CHECK("survivor PAT stays on tapped", in0(0x0000));
+	CHECK("removed audio is gone", !in0(0x0110) && !in1(0x0110));
+	CHECK("new ES present", in1(0x0120) || in0(0x0120));
+
+	/* overflow stickiness: a heavy PID spilled to the tapped group last
+	 * time stays there rather than flipping to DMA. */
+	{
+		u16 m2[] = {0x0000, 0x0001};
+		u16 hv[] = {0x0100, 0x0101, 0x0102, 0x0103, 0x0104, 0x0105};
+		struct ird_pidalloc p1;
+
+		ird_pidalloc_run(&a, 4, m2, 2, hv, 6, NULL, 0, NULL);
+		p1 = a;				/* some heavy spilled to group 0 */
+		ird_pidalloc_run(&a, 4, m2, 2, hv, 6, NULL, 0, &p1);
+		CHECK("spilled-heavy placement is stable under stickiness",
+		      a.g[0][0] == p1.g[0][0] && a.g[0][1] == p1.g[0][1] &&
+		      a.g[0][2] == p1.g[0][2] && a.g[0][3] == p1.g[0][3]);
+	}
 }
 
 int main(void)
@@ -121,6 +161,7 @@ int main(void)
 	test_heavy_spill();
 	test_musttap_preserved();
 	test_musttap_overflow();
+	test_sticky();
 	printf(fails ? "\nFAIL: %d check(s) failed\n" : "\nok: all checks passed\n", fails);
 	return fails ? 1 : 0;
 }
