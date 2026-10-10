@@ -1,44 +1,53 @@
-# OpenIRD の feed（実行時パッケージ）
+# OpenIRD のアドオン（実行時パッケージ）と feed
 
-OpenIRD の像は不変（squashfs の RO ルート）。**feed は、像を焼き直さずに、実行中の
-機器へソフトを後から載せる仕組み**（OpenWrt の feed にならう）。追加分はすべて永続
-overlay に入り、base には一切触れない。
+OpenIRD の像は不変（squashfs の RO ルート）。**アドオン（add-on）は、像を焼き直さずに、
+実行中の機器へ後から載せるソフト**。追加分はすべて永続 overlay に入り、base には一切
+触れない。アドオンは **feed**（HTTPS のパッケージ配布元リポジトリ）から
+インストーラ `ird-feed` で導入する。
 
-この文書は **OpenIRD 貢献者**（feed 機構を実装する側）と **外部 feed の作者**
-（パッケージを作って配る側）向けの設計仕様。recpt1 のような chardev 契約の「上」の
-ソフトは、この仕組みで載せる。
+この文書は **OpenIRD 貢献者**（アドオン機構を実装する側）と **アドオン作者**
+（パッケージを作って feed で配る側）向けの設計仕様。recpt1 のような chardev 契約の
+「上」のソフトは、アドオンとして載せる。
 
-## 0. 位置づけとスコープ
+> **用語を分けている理由（重要）**: OpenWrt は単一の .ipk/opkg の上で `y`/`M` を振るだけ
+> なので「feed」のパッケージはビルド時にも実行時にも**倒せる（互換がある）**。OpenIRD は
+> Buildroot でパッケージマネージャを持たず、**ビルド時と実行時はまったく別の注入機構で
+> 互換が無い**。そこで両者に別名を与える — ビルド時＝**ビルドオプション**、実行時＝
+> **アドオン**。OpenWrt の「feed」という一語を両者の傘に使わない（使うと「片方へ回せる」
+> という誤解＝事故を招く）。OpenIRD では **`feed` は『アドオンの配布元 repo』の意味だけ**で
+> 使う（opkg の distfeed に相当）。
 
-feed は 2 層ある。混同しない。
+## 0. 2つの注入機構（互換なし・別物）
 
-| 層 | いつ | どこ | 例 |
-|---|---|---|---|
-| **build-time feed** | 像のビルド時 | `BR2_EXTERNAL` の package（base の一部として焼く） | `ird-tuner-*`・`ird-webui` |
-| **runtime feed（本書）** | 実行中の機器 | 永続 overlay に後載せ | recpt1 等・chardev の上 |
+| 機構 | 名前 | いつ／どこ | 選び方 | 例 |
+|---|---|---|---|---|
+| build-time | **ビルドオプション** | 像のビルド時に焼く（base の一部） | `BR2_EXTERNAL` の package を defconfig で選択 | `ird-tuner-*`・`ird-webui` |
+| runtime | **アドオン** | 実行中の機器・永続 overlay に後載せ | feed から `ird-feed` で導入 | recpt1 等・chardev の上 |
 
-- **feed の「機構」＝ OpenIRD スコープ内**（base が用意する土台）: パッケージ形式・
-  索引形式・インストーラ `ird-feed`・SDK・置き場所の規約。実装も仕様も本リポジトリ。
-- **feed の「中身／リポジトリ」＝ スコープ外**（recpt1 等）: 別リポジトリ。OpenIRD は
-  規約だけ定め、何を載せるかは決めない（CLAUDE.md §4.1）。
-- 素の OpenIRD 像単体では chardev はあるが読む者がいない。読む者（recpt1 等）は
-  runtime feed で載せる＝設計どおり。
+- **機構はスコープ内**（base／ホストが用意する土台）: アドオン形式（`.ird`）・feed の索引形式・
+  インストーラ `ird-feed`・SDK・置き場所の規約。実装も仕様も本リポジトリ。
+- **アドオンの中身／feed（repo）はスコープ外**（recpt1 等）: 別リポジトリ。OpenIRD は規約だけ
+  定め、何を載せるかは決めない（CLAUDE.md §4.1）。
+- 素の OpenIRD 像単体では chardev はあるが読む者がいない。読む者（recpt1 等）はアドオンで
+  載せる＝設計どおり。
+- ビルドオプションの詳細は Buildroot/`BR2_EXTERNAL` の流儀そのもの（[architecture.md](architecture.md)）。
+  本書は**アドオンと feed**（実行時側）を規定する。
 
 ## 1. 前提＝永続 union（検証済み）
 
 ルートは **squashfs（RO, lower）＋ overlay（RW, upper）の union**。
 - emma3sep（2.6.27）は **unionfs ＋ mtd9 の yaffs2** を upper（サブディレクトリ
   `openird/overlay/`）、fujitsu（2.6.31）は **overlayfs**。切り替えは preinit
-  （`openird-preinit`）が自動（`docs/kernel-overlayfs.md`）。
-- **feed は overlay にだけ書く。base（squashfs）には触れない。**
-- **忘却しても安全に**: overlay のサブツリーを wipe すれば全 feed が消え、pristine
+  （`openird-preinit`）が自動（[kernel-overlayfs.md](kernel-overlayfs.md)）。
+- **アドオンは overlay にだけ書く。base（squashfs）には触れない。**
+- **忘却しても安全に**: overlay のサブツリーを wipe すれば全アドオンが消え、pristine
   base に戻る（＝ factory reset）。overlay が唯一の可変状態。
 - emma3sep の union 永続は cold reboot を跨いで実機確認済み
   （`/etc/init.d`・`/usr/bin` への追加が残存）。
 
-## 2. パッケージ形式（軽量バンドル）
+## 2. アドオンの形式（軽量バンドル）
 
-1 パッケージ = 1 ファイル **`<name>_<version>_<arch>.ird`**（gzip 圧縮 tar）。中身:
+1 アドオン = 1 ファイル **`<name>_<version>_<arch>.ird`**（gzip 圧縮 tar）。中身:
 
 ```
 manifest                 # key=value のメタデータ
@@ -51,21 +60,21 @@ preremove                # 任意: 削除前に走らせる sh
 
 | Key | 要/任 | 意味 |
 |---|---|---|
-| `Package` | 要 | パッケージ名 |
+| `Package` | 要 | アドオン名 |
 | `Version` | 要 | 版（暦 or 上流版＋pin。一意であればよい） |
 | `Arch` | 要 | SDK が定める target id（例 `emma3sep-mipseb-musl`）。不一致は拒否 |
 | `Requires-OpenIRD` | 任 | base の互換範囲（ABI が変わる更新に備えた予約） |
-| `Depends` | 任 | 将来拡張の予約。**当面は使わない**（パッケージは自己完結前提） |
+| `Depends` | 任 | 将来拡張の予約。**当面は使わない**（アドオンは自己完結前提） |
 | `Description` | 任 | 一行説明 |
 
 - **自己完結が前提**（静的リンク、または必要な lib を `root/` に同梱）＝当面は依存解決を
-  しない。`Depends` は索引・形式に場所だけ用意しておく。
+  しない。`Depends` は形式に場所だけ用意しておく。
 - `root/` は `/` に重ねる。**base のファイルを上書きしない**こと（新規追加のみ）。
   上書き（copy-up）は `remove` の意味が濁る（whiteout と base 復帰の整合）ので避ける。
 - 常駐サービスは `root/etc/init.d/SxxNAME` に置く（BusyBox init が次回起動で走らせる。
   即時起動は `postinstall` で `SxxNAME start` を呼ぶ）。
 
-## 3. 索引（feed リポジトリ側・スコープ外の形式だけ規定）
+## 3. feed（配布元）の索引
 
 feed = HTTPS で配る 1 ディレクトリ。索引ファイル **`Packages`**（空行区切りのスタンザ、
 Debian/opkg 風の最小形）:
@@ -80,16 +89,18 @@ Size: 285280
 Description: ISDB-T/S recorder (px4_drv/pt1 ABI client)
 ```
 
-1 スタンザ = 1 バンドル。**`SHA256` が信頼アンカー。** 索引・バンドルの中身は OpenIRD が
+1 スタンザ = 1 アドオン。**`SHA256` が信頼アンカー。** feed とアドオンの中身は OpenIRD が
 決めない（スコープ外）。この形式に従って配るだけ。
 
 ## 4. 検証（sha256 pin ＋ HTTPS）
 
-- 取得は **HTTPS**。バンドルは索引（または CLI 引数）の **SHA256 と照合してから**展開。
+- 取得は **HTTPS**。アドオンは索引（または CLI 引数）の **SHA256 と照合してから**展開。
 - 署名鍵は持たない（鍵の台帳・配布・失効管理を増やさない）。sha256 pin はリポジトリ
   共通の規律（toolchain・Buildroot 等と同じ）。
 
 ## 5. インストーラ `ird-feed`（base 同梱・スコープ内）
+
+feed からアドオンを導入／削除する道具。
 
 | コマンド | 動作 |
 |---|---|
@@ -107,7 +118,7 @@ Description: ISDB-T/S recorder (px4_drv/pt1 ABI client)
 - 展開は通常のファイルパスへ書く（union が overlay に回す）。base には書かない。
 - Arch 不一致・SHA256 不一致・base ファイルの上書きは拒否。
 
-## 6. SDK（外部 feed のビルド土台・スコープ内）
+## 6. SDK（アドオンのビルド土台・スコープ内）
 
 ```
 make sdk BOARD=<board>   ->  openird-sdk-<board>-<ver>.tar.gz
@@ -118,31 +129,31 @@ make sdk BOARD=<board>   ->  openird-sdk-<board>-<ver>.tar.gz
   （headers／libs）。Buildroot の SDK 再配置機構を使う（正確な Buildroot 側の成果物名は
   実装時に確認）。
 - `sdk.env`（`CC` prefix・`SYSROOT`・`ARCH`=manifest の `Arch` に使う id）。
-- `ird-pkg`（staging ディレクトリ → `.ird` バンドルを生成するホストツール）。
+- `ird-pkg`（staging ディレクトリ → `.ird` アドオンを生成するホストツール）。
 - README。
 
-外部 feed は OpenIRD/Buildroot ツリー無しで、**ABI/libc 整合のまま**パッケージを作れる。
+アドオン作者は OpenIRD/Buildroot ツリー無しで、**ABI/libc 整合のまま**アドオンを作れる。
 `tools/host/build-recpt1.sh` が使っている toolchain 依存を、これで正式化する
 （SDK があれば build-recpt1.sh は SDK を指すだけになる）。Arch id は SDK が定義し、
 manifest の `Arch` と一致必須。
 
 ## 7. ライフサイクルと sysupgrade
 
-- 像更新（sysupgrade）は overlay を**既定で保持**（設定・feed が残る）。ABI 非互換な
+- 像更新（sysupgrade）は overlay を**既定で保持**（設定・アドオンが残る）。ABI 非互換な
   更新は `Arch` / `Requires-OpenIRD` で弾く。
-- factory 導入・overlay wipe で feed は全消え（safe to forget）。
+- factory 導入・overlay wipe でアドオンは全消え（safe to forget）。
 
 ## 8. ライセンス / clean-room
 
-- 機構（`ird-feed`・SDK・`.ird` 形式・索引形式）＝ OpenIRD（GPL-2.0）。clean-room の
+- 機構（`ird-feed`・SDK・`.ird` 形式・feed の索引形式）＝ OpenIRD（GPL-2.0）。clean-room の
   逆アセ対象ではない（独自設計）。
-- feed の中身＝外部・各自のライセンス。OpenIRD 配布物には含めない。
+- アドオンの中身・feed（repo）＝外部・各自のライセンス。OpenIRD 配布物には含めない。
 
 ## 9. 実装状態
 
 すべて未実装（**specified**）。実装の段取り:
 
-1. `ird-feed` ＋ `.ird` 形式 ＋ 索引パーサ（base の `ird-feed` パッケージ）。
+1. `ird-feed` ＋ `.ird` 形式 ＋ feed 索引パーサ（base の `ird-feed` ビルドオプション）。
 2. `make sdk`（toolchain＋sysroot の再配置 tarball）＋ `ird-pkg`。
-3. 最初の外部 feed 例として **recpt1 を別リポジトリで** `.ird` 化し、実機導入→
+3. 最初のアドオン例として **recpt1 を別リポジトリの feed で** `.ird` 化し、実機導入→
    再起動保持→`/dev/irdvideo0` から録画までを検証（§1 の永続 union に載る）。
