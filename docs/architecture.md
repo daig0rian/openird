@@ -68,7 +68,7 @@ openird/
 | factory / sysupgrade 分離 | ◎ | factory=`openird-mkimage` / sysupgrade=ネイティブ |
 | イメージ命名 | ◎ | `openird-<ver>-<target>-<device>-{factory,sysupgrade}.bin` |
 | UCI 設定レイヤ | ○（語彙） | `ird-config` を自前実装 |
-| package feed | ○（語彙を2分割） | build-time=**ビルドオプション**（`BR2_EXTERNAL` の package・defconfig 選択・像に焼く）／runtime=**アドオン**（`.ird` を feed から `ird-feed` で overlay に後載せ）。非互換の別機構＝別名（[docs/feed.md](feed.md)） |
+| package feed | ○（語彙を2分割・feed 語は不採用） | build-time=**ビルドオプション**（`BR2_EXTERNAL` の package・defconfig 選択・像に焼く）／runtime=**アドオン**（`.ird` をアドオンリポジトリから `ird-addon` で overlay に後載せ）。非互換の別機構（[docs/addon.md](addon.md)） |
 | DCO / パッチ流儀 | ◎ | CONTRIBUTING.md で採用 |
 | OpenWrt ビルド本体 | ✕ | 上流 Buildroot を使う（古い非 DT カーネルのため） |
 | LuCI | ✕ | 軽量 `ird-webui`（BE MIPS / 256MB 制約） |

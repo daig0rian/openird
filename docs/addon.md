@@ -1,37 +1,39 @@
-# OpenIRD のアドオン（実行時パッケージ）と feed
+# OpenIRD のアドオン（実行時パッケージ）
 
 OpenIRD の像は不変（squashfs の RO ルート）。**アドオン（add-on）は、像を焼き直さずに、
 実行中の機器へ後から載せるソフト**。追加分はすべて永続 overlay に入り、base には一切
-触れない。アドオンは **feed**（HTTPS のパッケージ配布元リポジトリ）から
-インストーラ `ird-feed` で導入する。
+触れない。アドオンは **アドオンリポジトリ**（HTTPS 上の索引付き静的集合）から
+インストーラ `ird-addon` で導入する。
 
 この文書は **OpenIRD 貢献者**（アドオン機構を実装する側）と **アドオン作者**
-（パッケージを作って feed で配る側）向けの設計仕様。recpt1 のような chardev 契約の
-「上」のソフトは、アドオンとして載せる。
+（アドオンを作って配る側）向けの設計仕様。recpt1 のような chardev 契約の「上」の
+ソフトは、アドオンとして載せる。
 
-> **用語を分けている理由（重要）**: OpenWrt は単一の .ipk/opkg の上で `y`/`M` を振るだけ
-> なので「feed」のパッケージはビルド時にも実行時にも**倒せる（互換がある）**。OpenIRD は
-> Buildroot でパッケージマネージャを持たず、**ビルド時と実行時はまったく別の注入機構で
-> 互換が無い**。そこで両者に別名を与える — ビルド時＝**ビルドオプション**、実行時＝
-> **アドオン**。OpenWrt の「feed」という一語を両者の傘に使わない（使うと「片方へ回せる」
-> という誤解＝事故を招く）。OpenIRD では **`feed` は『アドオンの配布元 repo』の意味だけ**で
-> 使う（opkg の distfeed に相当）。
+> **OpenWrt の「feed」という語は使わない（重要）**: OpenWrt は単一の .ipk/opkg の上で
+> `y`/`M` を振るだけなので「feed」のパッケージはビルド時にも実行時にも**倒せる（互換が
+> ある）**。OpenIRD は Buildroot でパッケージマネージャを持たず、**ビルド時と実行時は
+> まったく別の注入機構で互換が無い**。一語「feed」を両者の傘に使うと「片方へ回せる」と
+> いう誤解＝事故を招くので、OpenIRD は feed という語を**一切使わず**、別名を与える —
+> ビルド時＝**ビルドオプション**、実行時＝**アドオン**、その配布元＝**アドオンリポジトリ**。
+> （OpenIPC 等の Buildroot 外部ツリー系は注入経路がビルド時 1 本だけで、そもそも feed の
+> 語彙を持ち込んでいない。OpenIRD の実行時アドオンはそれより踏み込んだ領域で、継ぐべき
+> 既存語彙が無いので自前で命名する。）
 
 ## 0. 2つの注入機構（互換なし・別物）
 
 | 機構 | 名前 | いつ／どこ | 選び方 | 例 |
 |---|---|---|---|---|
 | build-time | **ビルドオプション** | 像のビルド時に焼く（base の一部） | `BR2_EXTERNAL` の package を defconfig で選択 | `ird-tuner-*`・`ird-webui` |
-| runtime | **アドオン** | 実行中の機器・永続 overlay に後載せ | feed から `ird-feed` で導入 | recpt1 等・chardev の上 |
+| runtime | **アドオン** | 実行中の機器・永続 overlay に後載せ | アドオンリポジトリから `ird-addon` で導入 | recpt1 等・chardev の上 |
 
-- **機構はスコープ内**（base／ホストが用意する土台）: アドオン形式（`.ird`）・feed の索引形式・
-  インストーラ `ird-feed`・SDK・置き場所の規約。実装も仕様も本リポジトリ。
-- **アドオンの中身／feed（repo）はスコープ外**（recpt1 等）: 別リポジトリ。OpenIRD は規約だけ
-  定め、何を載せるかは決めない（CLAUDE.md §4.1）。
+- **機構はスコープ内**（base／ホストが用意する土台）: アドオン形式（`.ird`）・リポジトリの
+  索引形式・インストーラ `ird-addon`・SDK・置き場所の規約。実装も仕様も本リポジトリ。
+- **アドオンの中身／アドオンリポジトリはスコープ外**（recpt1 等）: 別リポジトリ。OpenIRD は
+  規約だけ定め、何を載せるかは決めない（CLAUDE.md §4.1）。
 - 素の OpenIRD 像単体では chardev はあるが読む者がいない。読む者（recpt1 等）はアドオンで
   載せる＝設計どおり。
 - ビルドオプションの詳細は Buildroot/`BR2_EXTERNAL` の流儀そのもの（[architecture.md](architecture.md)）。
-  本書は**アドオンと feed**（実行時側）を規定する。
+  本書は**アドオンとアドオンリポジトリ**（実行時側）を規定する。
 
 ## 1. 前提＝永続 union（検証済み）
 
@@ -74,10 +76,10 @@ preremove                # 任意: 削除前に走らせる sh
 - 常駐サービスは `root/etc/init.d/SxxNAME` に置く（BusyBox init が次回起動で走らせる。
   即時起動は `postinstall` で `SxxNAME start` を呼ぶ）。
 
-## 3. feed（配布元）の索引
+## 3. アドオンリポジトリの索引
 
-feed = HTTPS で配る 1 ディレクトリ。索引ファイル **`Packages`**（空行区切りのスタンザ、
-Debian/opkg 風の最小形）:
+アドオンリポジトリ = HTTPS で配る 1 ディレクトリ（静的ファイルでよい。GitHub Pages・S3・
+nginx 等）。索引ファイル **`Packages`**（空行区切りのスタンザ、Debian/opkg 風の最小形）:
 
 ```
 Package: recpt1
@@ -89,8 +91,9 @@ Size: 285280
 Description: ISDB-T/S recorder (px4_drv/pt1 ABI client)
 ```
 
-1 スタンザ = 1 アドオン。**`SHA256` が信頼アンカー。** feed とアドオンの中身は OpenIRD が
-決めない（スコープ外）。この形式に従って配るだけ。
+1 スタンザ = 1 アドオン。**`SHA256` が信頼アンカー。** 索引に載るアドオンは 1 個でも多数でも
+よい（＝「名前で引ける集合」）。リポジトリとアドオンの中身は OpenIRD が決めない
+（スコープ外）。この形式に従って配るだけ。
 
 ## 4. 検証（sha256 pin ＋ HTTPS）
 
@@ -98,22 +101,22 @@ Description: ISDB-T/S recorder (px4_drv/pt1 ABI client)
 - 署名鍵は持たない（鍵の台帳・配布・失効管理を増やさない）。sha256 pin はリポジトリ
   共通の規律（toolchain・Buildroot 等と同じ）。
 
-## 5. インストーラ `ird-feed`（base 同梱・スコープ内）
+## 5. インストーラ `ird-addon`（base 同梱・スコープ内）
 
-feed からアドオンを導入／削除する道具。
+アドオンリポジトリからアドオンを導入／削除する道具。
 
 | コマンド | 動作 |
 |---|---|
-| `ird-feed update` | `feeds.conf` の各 feed から `Packages` を取得し overlay にキャッシュ |
-| `ird-feed install <pkg>` | 索引から解決→取得→SHA256 照合→Arch 検査→`root/` を `/` に展開→receipt 記録→`postinstall` |
-| `ird-feed install <url> <sha256>` | 索引を介さず 1 本を直接（one-off） |
-| `ird-feed remove <pkg>` | `preremove`→receipt の files を消す |
-| `ird-feed list` / `info <pkg>` | 導入済み一覧／詳細 |
+| `ird-addon update` | `addons.conf` の各リポジトリから `Packages` を取得し overlay にキャッシュ |
+| `ird-addon install <name>` | 索引から解決→取得→SHA256 照合→Arch 検査→`root/` を `/` に展開→receipt 記録→`postinstall` |
+| `ird-addon install <url> <sha256>` | 索引を介さず 1 本を直接（one-off。リポジトリ不要） |
+| `ird-addon remove <name>` | `preremove`→receipt の files を消す |
+| `ird-addon list` / `info <name>` | 導入済み一覧／詳細 |
 
-- 設定 `/etc/openird/feeds.conf`（feed URL 群）。**base 既定は空**（スコープ外の URL を
-  像に焼かない）。所有者が feed を足す。
-- receipt `/var/lib/ird-feed/<pkg>.{manifest,files}`（overlay 上）。**中央 DB ではなく
-  per-package の受領記録**で、`remove` を正確にするためだけに持つ。overlay wipe で一緒に
+- 設定 `/etc/openird/addons.conf`（アドオンリポジトリの URL 群）。**base 既定は空**
+  （スコープ外の URL を像に焼かない）。所有者がリポジトリを足す。
+- receipt `/var/lib/ird-addon/<name>.{manifest,files}`（overlay 上）。**中央 DB ではなく
+  per-addon の受領記録**で、`remove` を正確にするためだけに持つ。overlay wipe で一緒に
   消える＝台帳を増やさない。
 - 展開は通常のファイルパスへ書く（union が overlay に回す）。base には書かない。
 - Arch 不一致・SHA256 不一致・base ファイルの上書きは拒否。
@@ -129,7 +132,7 @@ make sdk BOARD=<board>   ->  openird-sdk-<board>-<ver>.tar.gz
   （headers／libs）。Buildroot の SDK 再配置機構を使う（正確な Buildroot 側の成果物名は
   実装時に確認）。
 - `sdk.env`（`CC` prefix・`SYSROOT`・`ARCH`=manifest の `Arch` に使う id）。
-- `ird-pkg`（staging ディレクトリ → `.ird` アドオンを生成するホストツール）。
+- `ird-mkaddon`（staging ディレクトリ → `.ird` アドオンを生成するホストツール）。
 - README。
 
 アドオン作者は OpenIRD/Buildroot ツリー無しで、**ABI/libc 整合のまま**アドオンを作れる。
@@ -145,15 +148,15 @@ manifest の `Arch` と一致必須。
 
 ## 8. ライセンス / clean-room
 
-- 機構（`ird-feed`・SDK・`.ird` 形式・feed の索引形式）＝ OpenIRD（GPL-2.0）。clean-room の
-  逆アセ対象ではない（独自設計）。
-- アドオンの中身・feed（repo）＝外部・各自のライセンス。OpenIRD 配布物には含めない。
+- 機構（`ird-addon`・`ird-mkaddon`・SDK・`.ird` 形式・索引形式）＝ OpenIRD（GPL-2.0）。
+  clean-room の逆アセ対象ではない（独自設計）。
+- アドオンの中身・アドオンリポジトリ＝外部・各自のライセンス。OpenIRD 配布物には含めない。
 
 ## 9. 実装状態
 
 すべて未実装（**specified**）。実装の段取り:
 
-1. `ird-feed` ＋ `.ird` 形式 ＋ feed 索引パーサ（base の `ird-feed` ビルドオプション）。
-2. `make sdk`（toolchain＋sysroot の再配置 tarball）＋ `ird-pkg`。
-3. 最初のアドオン例として **recpt1 を別リポジトリの feed で** `.ird` 化し、実機導入→
-   再起動保持→`/dev/irdvideo0` から録画までを検証（§1 の永続 union に載る）。
+1. `ird-addon` ＋ `.ird` 形式 ＋ 索引パーサ（base の `ird-addon` ビルドオプション）。
+2. `make sdk`（toolchain＋sysroot の再配置 tarball）＋ `ird-mkaddon`。
+3. 最初のアドオン例として **recpt1 を別リポジトリ**（アドオンリポジトリ）で `.ird` 化し、
+   実機導入→再起動保持→`/dev/irdvideo0` から録画までを検証（§1 の永続 union に載る）。
