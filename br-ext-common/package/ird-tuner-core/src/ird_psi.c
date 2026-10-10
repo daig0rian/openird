@@ -399,7 +399,7 @@ void ird_psi_pids(const struct ird_psi *p, u16 *light, int *nlight,
 	struct pidlist l = { light, heavy, 0, 0, max };
 	int i, j, pass;
 
-	for (i = 0; i < ARRAY_SIZE(fixed_pids); i++)
+	for (i = 0; i < (int)ARRAY_SIZE(fixed_pids); i++)
 		pidlist_add(&l, fixed_pids[i], 0);
 	pidlist_add(&l, p->nit_pid, 0);
 	for (i = 0; i < p->npmt; i++)
