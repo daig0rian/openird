@@ -96,6 +96,11 @@ tools/yb1-mmac/Module.*
 tools/yb1-mmac/modules.order
 tools/yb1-mmac/.*.cmd
 tools/yb1-mmac/.tmp_versions/
+tools/yb1-bhifwatch/*.ko
+tools/yb1-bhifwatch/*.o
+tools/yb1-bhifwatch/*.mod.c
+tools/yb1-bhifwatch/Module.*
+tools/yb1-bhifwatch/modules.order
 tools/yb1-bhifwatch/.*.cmd
 tools/yb1-bhifwatch/.tmp_versions/
 tools/yb1-fifodrain/*.ko

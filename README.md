@@ -113,7 +113,7 @@ BMMPX1301 と同じ SoC の、地上・BS・CS の 3 波機です。純正の更
 
 ## ライセンス
 
-リポジトリ全体が GPL-2.0-only です（各ファイルの SPDX 識別子と [CONTRIBUTING.md](CONTRIBUTING.md) §1）。`LICENSE` ファイルはまだ置いておらず、リポジトリの公開までに設置します。
+リポジトリ全体が GPL-2.0-only です。全文は [LICENSE](LICENSE) にあります。ファイルごとの表記は SPDX 識別子で行います（[CONTRIBUTING.md](CONTRIBUTING.md) §1）。
 
 ## OpenWrt / OpenIPC との関係
 
