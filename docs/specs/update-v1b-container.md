@@ -167,8 +167,8 @@ factory.bin（外側コンテナ, <FAMILY>_UPDATE_v1b）
    - `0x38` = SHA-1(暗号本体)  ← **最後に計算**
    - `0x20`/`0x30` は**任意の値でよい**（判定に使われない・§7 U3）
    - `0x4c`–`0x14b` をゼロ埋め
-7. 自前 HTTP サーバから配信し、UPnP `X_UpdateFirmware(download, URL)` で投入（§6.10–6.12 に
-   再現手順あり。DNS 詐称も u-boot も不要）。
+7. 自前 HTTP サーバから配信し、UPnP `X_UpdateFirmware(download, URL)` で投入（手順は
+   [emma3sep-upnp-update.md](emma3sep-upnp-update.md)。DNS 詐称も u-boot も不要）。
 
 **OpenIRD の制約**: factory コンテナに含めてよいのは **kernel と rootfs に相当する区画のみ**。
 vendor firmware / CAS / MAC 区画は温存する（全消し禁止）。
