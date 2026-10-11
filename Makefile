@@ -7,7 +7,8 @@
 #   make test-overlayfs BOARD=<device> … overlayfs カーネルパッチの QEMU 機能テスト（TEST_ARGS="-n 5" 等）
 #   make test-kabi BOARD=<device>      … ベンダ製 .ko と構造体レイアウトが互換かを確かめる
 #   make sdk BOARD=<device>          … アドオン作者向け SDK（toolchain＋sysroot＋ird-mkaddon）
-#   make test-addon                  … アドオン機構（ird-mkaddon / ird-addon）のテスト
+#   make release BOARD=<device>      … リリース物（SDK・ソース一式・SHA256SUMS）を揃える（docs/release.md）
+#   make test-addon                 … アドオン機構（ird-mkaddon / ird-addon）のテスト
 #   make test-fwup                   … openird-fwup（UPnP 投入クライアント）のテスト
 #   make hooks                       … git フック/テンプレートを有効化
 #
@@ -32,7 +33,7 @@ BR_MAKE = env PATH="$(BR_PATH)" BR2_DL_DIR="$(ROOT)/dl" \
 
 .DEFAULT_GOAL := $(if $(BOARD),all,help)
 
-.PHONY: help list-boards all kernel sdk test-overlayfs test-kabi test-mkimage test-fwup test-tuner test-addon menuconfig linux-menuconfig savedefconfig clean distclean hooks check-buildroot check-board
+.PHONY: help list-boards all kernel sdk release test-overlayfs test-kabi test-mkimage test-fwup test-tuner test-addon menuconfig linux-menuconfig savedefconfig clean distclean hooks check-buildroot check-board
 
 help:
 	@echo "OpenIRD — make list-boards | make BOARD=<device> [menuconfig|clean]"
@@ -44,6 +45,7 @@ help:
 	@echo "     make test-fwup … openird-fwup の自己完結テスト (BOARD 不要・偽の機器を 127.0.0.1 に立てる)"
 	@echo "     make test-tuner … tuner-core の PID 列挙のホスト単体テスト (BOARD 不要)"
 	@echo "     make sdk BOARD=<device> … アドオン作者向け SDK (docs/addon.md)"
+	@echo "     make release BOARD=<device> … リリース物を揃える (版のタグを打った clean な clone で・docs/release.md)"
 	@echo "     make test-addon … アドオン機構のテスト (BOARD 不要・要 Linux/WSL)"
 	@$(MAKE) -s list-boards
 
@@ -81,6 +83,16 @@ kernel: check-board
 sdk: all
 	$(BR_MAKE) prepare-sdk
 	@$(ROOT)/scripts/make-sdk.sh $(BOARD)
+
+# リリース物を output/release/<版>/ に揃える: SDK・対応するソース一式（Buildroot の legal-info）・
+# SHA256SUMS。版のタグを打った、変更の無い git checkout でだけ通る。増分ビルドの残りを入れない
+# よう、その機種の output を消して最初からビルドする（docs/release.md）。
+release: check-board
+	@$(ROOT)/scripts/make-release.sh --check
+	rm -rf "$(O)"
+	$(MAKE) BOARD=$(BOARD) sdk
+	$(BR_MAKE) legal-info
+	@$(ROOT)/scripts/make-release.sh $(BOARD)
 
 # アドオン機構（host/ird-mkaddon と ird-addon）の自己完結テスト（要 Linux/WSL・python3）
 test-addon:

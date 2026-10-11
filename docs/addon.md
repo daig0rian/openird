@@ -187,10 +187,15 @@ Description: ISDB-T/S recorder (px4_drv/pt1 ABI client)
 ## 6. SDK（アドオンのビルド土台・スコープ内）
 
 ```
-make sdk BOARD=<board>   ->  output/<board>/images/openird-sdk-<board>-<ver>.tar.gz
+make sdk BOARD=<board>   ->  output/<board>/images/openird-sdk-<ver>-<arch-id>.<host>.tar.xz
+                             例 openird-sdk-26.10-emma3sep-mipseb-musl.Linux-x86_64.tar.xz
 ```
 
-中身（展開すると `openird-sdk-<board>-<ver>/`）:
+**SDK の単位は機種ではなく Arch id**（＝アドオンの互換の単位。同じ Arch id の機種は 1 本を
+共用する）。`<board>` は、その Arch id の toolchain と sysroot を作るビルド元。`<ver>` は版の
+タグからの `git describe`、`<host>` は toolchain が動くホストの種類。
+
+中身（展開すると `openird-sdk-<ver>-<arch-id>/`）:
 - 再配置可能な **musl クロス toolchain**＋ **target sysroot**（headers／libs）＝ Buildroot の
   `output/<board>/host` そのもの。再配置は Buildroot の仕組みに任せる（`prepare-sdk` が
   `relocate-sdk.sh` を置く。展開した先で 1 回走らせる）。
@@ -210,8 +215,28 @@ make sdk BOARD=<board>   ->  output/<board>/images/openird-sdk-<board>-<ver>.tar
 （SDK があれば build-recpt1.sh は SDK を指すだけになる）。Arch id は機種の `board.conf` の
 `ADDON_ARCH=` が定義し（§2）、SDK はそれを `IRD_ARCH` として渡す。manifest の `Arch` と一致必須。
 
-SDK の tarball は GCC などの GPL バイナリを含む。**配るときは対応するソースの提供が要る**
-（Buildroot の `legal-info` が集める）。
+### 6.1 配布（リリース）
+
+SDK は**リリースごとに、本体リポジトリの GitHub Releases に置く**（作り方は
+[release.md](release.md)）。1 つのリリース（タグ `v<ver>`）に、Arch id ごとに:
+
+| ファイル | 中身 |
+|---|---|
+| `openird-sdk-<ver>-<arch-id>.Linux-x86_64.tar.xz` | SDK |
+| `openird-<ver>-<arch-id>-sources.tar` | 対応するソース一式（SDK は GCC などの GPL バイナリを含むので、同じ場所に置く。Buildroot の `legal-info`） |
+| `SHA256SUMS` | そのリリースの全ファイルの sha256 |
+
+- **使う側（アドオンのリポジトリ）は URL と sha256 を pin する**（本体が Buildroot や
+  toolchain を pin するのと同じ規律。署名鍵は持たない）:
+  ```
+  https://github.com/daig0rian/openird/releases/download/v<ver>/openird-sdk-<ver>-<arch-id>.Linux-x86_64.tar.xz
+  ```
+  リポジトリが private の間は、読み取り権限のある者が `gh release download v<ver>` で取る。
+- **SDK の版は出自の記録で、互換の条件ではない。** アドオンが動くかどうかは Arch id で決まる
+  （自己完結＝静的リンクが前提）。新しいリリースが出ても、Arch id が同じなら、古い SDK で
+  作ったアドオンを作り直す必要は無い。
+- 配るファイルは正本ではなく便宜。正本はタグで、`make sdk` でいつでも作り直せる
+  （ビット単位の一致は保証しない）。
 
 ## 7. ライフサイクルと sysupgrade
 

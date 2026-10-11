@@ -7,7 +7,11 @@
 #
 # 前提: `make BOARD=<BOARD>` と Buildroot の `prepare-sdk` が済んでいること
 #       （output/<BOARD>/host に relocate-sdk.sh がある。Makefile がこの順で呼ぶ）。
-# 出力: output/<BOARD>/images/openird-sdk-<BOARD>-<ver>.tar.gz
+# 出力: output/<BOARD>/images/openird-sdk-<ver>-<arch-id>.<host>.tar.xz
+#       （例 openird-sdk-26.10-emma3sep-mipseb-musl.Linux-x86_64.tar.xz）
+#
+# SDK の単位は機種ではなく Arch id（＝アドオンの互換の単位。同じ Arch id の機種は 1 本を
+# 共用する）。BOARD は、その Arch id の toolchain と sysroot を作るビルド元。
 #
 # 中身は Buildroot の host ツリー（再配置できる cross toolchain と target の sysroot）に
 #   sdk.env          IRD_ARCH / CROSS_COMPILE / CC / SYSROOT
@@ -40,9 +44,14 @@ IRD_ARCH="$(sed -n 's/^ADDON_ARCH=//p' "$CONF" 2>/dev/null | head -n 1)"
 [ -n "$IRD_ARCH" ] || {
 	echo "✗ $CONF に ADDON_ARCH= が無い（この機種はアドオンの Arch id を決めていない）"; exit 1; }
 
-VER="$(git -C "$ROOT" describe --always --dirty 2>/dev/null || echo unknown)"
-NAME="openird-sdk-$BOARD-$VER"
-OUT="$O/images/$NAME.tar.gz"
+# 版 = 版のタグ（vYY.MM…）からの git describe。タグの上なら "26.10"、先へ進むと
+# "26.10-3-g<commit>"、タグが無ければ commit だけ。git の checkout でなければ unknown。
+VER="$(git -C "$ROOT" describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo unknown)"
+VER="${VER#v}"
+# toolchain はビルドしたホスト用のバイナリなので、ホストの種類を名前に出す
+HOSTOS="$(uname -s)-$(uname -m)"
+NAME="openird-sdk-$VER-$IRD_ARCH"
+OUT="$O/images/$NAME.$HOSTOS.tar.xz"
 
 EXTRA="$(mktemp -d)"
 trap 'rm -rf "$EXTRA"' EXIT
@@ -50,7 +59,7 @@ mkdir -p "$EXTRA/bin"
 install -m 0755 "$ROOT/host/ird-mkaddon/ird_mkaddon.py" "$EXTRA/bin/ird-mkaddon"
 
 cat > "$EXTRA/sdk.env" <<EOF
-# OpenIRD SDK ($BOARD, $VER) - source this file:
+# OpenIRD SDK $VER for $IRD_ARCH (built from $BOARD) - source this file:
 #     . <SDK directory>/sdk.env
 # bash and zsh find the SDK directory themselves; in another shell set
 # OPENIRD_SDK=<SDK directory> first.  Run ./relocate-sdk.sh once after
@@ -75,22 +84,23 @@ export PATH="\$OPENIRD_SDK/bin:\$PATH"
 EOF
 
 cat > "$EXTRA/README.md" <<EOF
-# OpenIRD SDK — $BOARD ($VER)
+# OpenIRD SDK $VER — $IRD_ARCH
 
 OpenIRD の**アドオン**（実行中の機器に後から載せるソフト。\`.ird\`）を、OpenIRD や
 Buildroot のツリー無しで作るための土台。形式と決まりは OpenIRD の \`docs/addon.md\`。
 
 | | |
 |---|---|
-| 機種 (BOARD) | \`$BOARD\` |
 | Arch id（manifest の \`Arch\`） | \`$IRD_ARCH\` |
+| 版 | \`$VER\`（ビルド元の機種: \`$BOARD\`） |
+| ホスト | \`$HOSTOS\` |
 | cross toolchain | \`bin/$TUPLE-gcc\` ほか（musl） |
 | sysroot（target の headers / libs） | \`$TUPLE/sysroot\` |
 
 ## 使い方
 
 \`\`\`
-tar xzf $NAME.tar.gz
+tar xJf $NAME.$HOSTOS.tar.xz
 cd $NAME
 ./relocate-sdk.sh          # 展開した場所に合わせる（場所を移したら、もう一度）
 . ./sdk.env                # IRD_ARCH / CROSS_COMPILE / CC / SYSROOT と PATH
@@ -126,13 +136,13 @@ ird-mkaddon index repo              # → repo/Packages（索引）
 EOF
 
 mkdir -p "$O/images"
-echo "→ $NAME.tar.gz（host $(du -sh "$HOST" | cut -f1)）"
+echo "→ $NAME.$HOSTOS.tar.xz（host $(du -sh "$HOST" | cut -f1)）"
 # 名前の先頭の "." を SDK のディレクトリ名に替える。S = symlink の指す先には適用しない
-tar -czf "$OUT.tmp" --owner=0 --group=0 --numeric-owner \
+XZ_OPT="-T0 -6" tar -cJf "$OUT.tmp" --owner=0 --group=0 --numeric-owner \
 	--transform="s#^\.#$NAME#S" \
 	-C "$HOST" . -C "$EXTRA" .
 mv "$OUT.tmp" "$OUT"
 
 echo "✓ $OUT ($(stat -c%s "$OUT") B)"
-echo "  Arch id: $IRD_ARCH   toolchain: $TUPLE"
+echo "  Arch id: $IRD_ARCH   toolchain: $TUPLE   host: $HOSTOS"
 echo "  sha256:  $(sha256sum "$OUT" | cut -d' ' -f1)"
