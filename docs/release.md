@@ -27,7 +27,8 @@ sysupgrade イメージはまだ無い。
    git tag -a v26.10 -m "OpenIRD 26.10"
    git push origin v26.10
    ```
-2. **build ジョブ**（自動）: タグの commit を、公開しているリポジトリから取り直してビルドする。
+2. **build ジョブ**（自動）: タグの commit を、公開しているリポジトリから取り直して、テスト
+   （`make test-mkimage test-fwup test-tuner test-addon`）を通してからビルドする。
    SDK・ソース一式（`make release`）、カーネル（`make kernel`）、rootfs。鍵の要らないところまでの
    factory の検査（`make factory FACTORY_ARGS=--payload-only`）もここで通す。
    このジョブは鍵も、リリースを書く権限も持たない。

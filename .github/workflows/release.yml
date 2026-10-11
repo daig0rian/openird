@@ -72,6 +72,17 @@ jobs:
           fi
           git log -1 --format='%H %s'
 
+      - name: Tests
+        working-directory: ${{ env.TREE }}
+        run: |
+          set -eu
+          # AES の層のテストは pycryptodome が無いと飛ばされる。factory ジョブと同じ、
+          # ハッシュで固定した wheel を入れて走らせる
+          python3 -m pip install --disable-pip-version-check --require-hashes --no-deps \
+            --only-binary=:all: --target "$RUNNER_TEMP/pydeps" \
+            -r host/openird-mkimage/requirements-factory.txt
+          PYTHONPATH="$RUNNER_TEMP/pydeps" make test-mkimage test-fwup test-tuner test-addon
+
       - name: Build (SDK, corresponding sources, rootfs)
         working-directory: ${{ env.TREE }}
         run: |
