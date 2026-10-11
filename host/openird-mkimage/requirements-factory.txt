@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# factory イメージを CI で作るときの依存（.github/workflows/release.yml の factory ジョブ）。
+# 更新用の鍵と同じジョブで動くコードなので、版だけでなくファイルのハッシュまで固定する:
+#
+#   python3 -m pip install --require-hashes --no-deps --only-binary=:all: \
+#       --target <dir> -r requirements-factory.txt
+#
+# 入れているのは Linux x86_64 用の wheel 1 つ（cp37-abi3＝Python 3.7 以降で共通）。
+# 版を上げるときは、PyPI に出てから日のたった版を選び、PyPI の JSON
+# （https://pypi.org/pypi/pycryptodome/<版>/json）の sha256 と照合して書き換える。
+# 手元で使うときは、openird_mkimage.py の先頭の宣言（PEP 723）を uv が解決する。
+pycryptodome==3.23.0 \
+    --hash=sha256:c8987bd3307a39bc03df5c8e0e3d8be0c4c3518b7f044b0f4c15d1aa78f52575

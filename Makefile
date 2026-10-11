@@ -8,6 +8,7 @@
 #   make test-kabi BOARD=<device>      … ベンダ製 .ko と構造体レイアウトが互換かを確かめる
 #   make sdk BOARD=<device>          … アドオン作者向け SDK（toolchain＋sysroot＋ird-mkaddon）
 #   make release BOARD=<device>      … リリース物（SDK・ソース一式・SHA256SUMS）を揃える（docs/release.md）
+#   make factory BOARD=<device>      … factory イメージ（純正の更新機構に渡すコンテナ。要 鍵・docs/release.md）
 #   make test-addon                 … アドオン機構（ird-mkaddon / ird-addon）のテスト
 #   make test-fwup                   … openird-fwup（UPnP 投入クライアント）のテスト
 #   make hooks                       … git フック/テンプレートを有効化
@@ -33,7 +34,7 @@ BR_MAKE = env PATH="$(BR_PATH)" BR2_DL_DIR="$(ROOT)/dl" \
 
 .DEFAULT_GOAL := $(if $(BOARD),all,help)
 
-.PHONY: help list-boards all kernel sdk release test-overlayfs test-kabi test-mkimage test-fwup test-tuner test-addon menuconfig linux-menuconfig savedefconfig clean distclean hooks check-buildroot check-board
+.PHONY: help list-boards all kernel sdk release factory test-overlayfs test-kabi test-mkimage test-fwup test-tuner test-addon menuconfig linux-menuconfig savedefconfig clean distclean hooks check-buildroot check-board
 
 help:
 	@echo "OpenIRD — make list-boards | make BOARD=<device> [menuconfig|clean]"
@@ -46,6 +47,7 @@ help:
 	@echo "     make test-tuner … tuner-core の PID 列挙のホスト単体テスト (BOARD 不要)"
 	@echo "     make sdk BOARD=<device> … アドオン作者向け SDK (docs/addon.md)"
 	@echo "     make release BOARD=<device> … リリース物を揃える (版のタグを打った clean な clone で・docs/release.md)"
+	@echo "     make factory BOARD=<device> … factory イメージを作る (先に make BOARD=… と make kernel。要 鍵・docs/release.md)"
 	@echo "     make test-addon … アドオン機構のテスト (BOARD 不要・要 Linux/WSL)"
 	@$(MAKE) -s list-boards
 
@@ -93,6 +95,12 @@ release: check-board
 	$(MAKE) BOARD=$(BOARD) sdk
 	$(BR_MAKE) legal-info
 	@$(ROOT)/scripts/make-release.sh $(BOARD)
+
+# factory イメージ＝純正の更新機構に渡すコンテナ（docs/release.md）。先に make BOARD=…（rootfs）と
+# make kernel を通しておく。鍵は openird-mkimage の決まりどおり、ファイルのパスで渡す。
+# FACTORY_ARGS で scripts/make-factory.sh の引数を足せる（--payload-only＝鍵不要、--outdir など）。
+factory: check-board
+	@$(ROOT)/scripts/make-factory.sh $(BOARD) $(FACTORY_ARGS)
 
 # アドオン機構（host/ird-mkaddon と ird-addon）の自己完結テスト（要 Linux/WSL・python3）
 test-addon:

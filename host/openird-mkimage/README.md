@@ -60,6 +60,10 @@ uv run --no-project python openird_mkimage.py <cmd> ...   # 依存不要のコ�
 | `repack-factory <in> <out>` | 要 | 純正コンテナを組み直す。`--rebuild none/zipcrypto/all` でどの層から自前にするかを選べる。`--replace NAME=PATH` でペイロードの 1 点を差し替え（書き込み固定長を超えたら hard error） |
 | `pack-factory <board> <out> [--kernel K] [--rootfs R] [--fw-version X.Y.Z] [--payload-only]` | 要（`--payload-only` は不要） | OpenIRD の kernel / rootfs から factory コンテナを作る。渡されたイメージが機種の契約（uImage の形・squashfs の版・書き込み固定長・ブートローダの展開余裕）に合うかを検査し、`write.sh` を仕様どおり生成する。書くのは kernel と rootfs だけで、ほかの区画には触れない。`--payload-only` は暗号層を被せないペイロード ZIP だけを出す |
 
+ビルド済みのカーネルと rootfs から factory イメージを作るのは `make factory BOARD=<board>`
+（`scripts/make-factory.sh`。版と機種から出力名を決めて `pack-factory` を呼ぶ）。リリースでは
+GitHub Actions が同じスクリプトを使う（[docs/release.md](../../docs/release.md)）。
+
 `repack-factory --rebuild none` は原本とバイト一致する（ヘッダと AES 層の回帰テストになる）。
 `--replace` で差し替えた場合、自己検証は「差し替えなかった点は原本とバイト一致」「差し替えた点は
 渡したファイルと一致」を別々に確かめる。
