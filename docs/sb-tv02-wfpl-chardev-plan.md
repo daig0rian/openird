@@ -84,7 +84,7 @@ Dione の復号後の出力だけ。∴ 生 TS は復調器→Dione の基板配
 
 ### A. ベンダの基準列を取り切る（vendor-base＋トレーサ）
 
-ベンダ像に戻したので、以前の観察で差として入っていたもの（chroot サンドボックスで `fdlclkpwr` を外したこと、
+ベンダイメージに戻したので、以前の観察で差として入っていたもの（chroot サンドボックスで `fdlclkpwr` を外したこと、
 旧 rig の自前カーネル・書き換えた slot）が無い。
 USB ディスクに `openird/trace` を置けば `dione_server` が `fapex_trace.so` の下で起動する。
 

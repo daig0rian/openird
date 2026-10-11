@@ -5,7 +5,7 @@
 # requires-python = ">=3.9"
 # dependencies = []
 # ///
-"""openird-fwup - emma3sep 系のベンダ像へ、更新コンテナを UPnP で投入する。
+"""openird-fwup - emma3sep 系のベンダイメージへ、更新コンテナを UPnP で投入する。
 
 PC でコンテナを HTTP 配信し、機器の無認証 UPnP action X_UpdateFirmware にその URL を
 渡す。機器が自分で取りに来て、検証・書き込み・再起動まで進む。通信は PC と機器の間
@@ -566,7 +566,7 @@ def watch(feed, settle, idle, port):
         return EXIT_REJECTED
     if completed:
         out.say("✓ 受理: GET 1 回のあと %g 秒取りに来ない＝機器は書き込みに進んだ" % settle)
-        out.say("  起動と中身は別に確かめる（シリアルのブートログ、像に入れた目印）")
+        out.say("  起動と中身は別に確かめる（シリアルのブートログ、イメージに入れた目印）")
         return EXIT_OK
     if requests:
         out.say("✗ 未到達: リクエストは来たが、%g 秒のあいだに GET を送り切れていない" % idle)

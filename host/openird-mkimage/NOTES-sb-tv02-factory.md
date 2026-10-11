@@ -10,7 +10,7 @@ libooter のシリアルシェルから root で起動し、機器上のツー�
 
 1. `openird_mkimage.py pack-kernel` … 生カーネル `Image` を RDHB で梱包 → mtd5
    （形式: [rdhb-kernel-container.md](../../docs/specs/rdhb-kernel-container.md)）
-2. `openird_mkimage.py pack-rootfs` … squashfs を検査して rootfs 区画の像に → mtd6
+2. `openird_mkimage.py pack-rootfs` … squashfs を検査して rootfs 区画のイメージに → mtd6
 3. 機器上で `mtd write`（OpenIRD の rootfs に同梱）で書き込む
    — 区画レイアウトと導入順は
    [board/mb86h61/README.md](../../br-ext-chip-fujitsu/board/mb86h61/README.md)
@@ -30,7 +30,7 @@ libooter のシリアルシェルから root で起動し、機器上のツー�
 ## 解決済み（記録）
 
 - **RDHB カーネル容器**（旧 H1）… 実機ダンプの構造読みで同定し、`pack-kernel` を実装。
-  実機 mtd5 の像を展開 → 再梱包 → 再展開して元と byte 一致、ヘッダの size/load/name も一致。
+  実機 mtd5 のイメージを展開 → 再梱包 → 再展開して元と byte 一致、ヘッダの size/load/name も一致。
 - **RDHB `0x08` のチェックサム**（旧 H1b）… **libooter は検証しない**。`0x08=0` で梱包した
   自前カーネルが実機で起動することを確認（2026-09-13）。アルゴリズムの特定は不要になった。
 - **rootfs が区画に収まるか**（旧 H7）… 収まる。実測で本番 rootfs 2.02MB（区画 5MB）、

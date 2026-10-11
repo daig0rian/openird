@@ -93,7 +93,7 @@ console=ttyAMA0,115200 root=/dev/mtdblock6 rw ip=none mac_adrs=XX:XX:XX:XX:XX:XX
 
 MD5 は squashfs の実データ（約 4.0MB）ではなく、末尾の 0xFF を含む**区画全体**に
 対するもの。∴ slot0/slot1 を 1 バイトでも変えるとこの値と合わなくなる（`slot_selector`
-がそれをどう扱うかは未確認。ベンダ像へ戻す `tools/vendor-base` が slot をダンプの
+がそれをどう扱うかは未確認。ベンダイメージへ戻す `tools/vendor-base` が slot をダンプの
 バイトのまま書くのはこのため）。
 
 slot info が記述しているのは app 層の slot0/slot1 で、libooter のカーネル選択

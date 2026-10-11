@@ -123,7 +123,7 @@ def _pack_kernel_uimage(a, b):
     if raw[:2] == b"\x1f\x8b" or raw[:4] == b"\x7fELF":
         sys.exit("✗ 入力は objcopy -O binary した *非圧縮* の vmlinux.bin を渡してください。")
     if not (load <= entry < load + len(raw)):
-        sys.exit("✗ entry 0x%08x が像の範囲 0x%08x+%dB の外です。" % (entry, load, len(raw)))
+        sys.exit("✗ entry 0x%08x がイメージの範囲 0x%08x+%dB の外です。" % (entry, load, len(raw)))
     img = images.build_uimage(images.gzip_deterministic(raw), spec, load, entry)
     im = _factory_image(b, "vmlinux.img")
     cap = h(im["write_len"]) if im else h(part_by_mtd(b, 2)["size"])
@@ -153,13 +153,13 @@ def cmd_pack_kernel(a):
     cksum = h(a.cksum) if a.cksum else 0
     img = rdhb.build(image, load, a.name, cksum)
     if len(img) > cap:
-        sys.exit("✗ RDHB 像 %dB > mtd5 容量 %dB。" % (len(img), cap))
+        sys.exit("✗ RDHB イメージ %dB > mtd5 容量 %dB。" % (len(img), cap))
     # 自己検証: 生成物を展開し直して元 Image と一致するか
     if rdhb.inflate(img) != image:
         sys.exit("✗ 内部エラー: 再展開が元 Image と不一致。")
     with open(a.outfile, "wb") as f:
         f.write(img)
-    print("✓ RDHB 像: %dB (%d%% of mtd5 %dB) → %s"
+    print("✓ RDHB イメージ: %dB (%d%% of mtd5 %dB) → %s"
           % (len(img), 100 * len(img) // cap, cap, a.outfile))
     print("  load=entry=0x%08x  name=%r  展開後=%dB" % (load, a.name, len(image)))
     if cksum == 0:
@@ -227,7 +227,7 @@ def cmd_flash_script(a):
         lines += write(6, a.rootfs)
     if a.kernel:
         lines += [
-            "# kernel 像は RDHB 梱包済(pack-kernel)。mtd5 は単一面＝書く前に全ダンプでバックアップ。",
+            "# kernel イメージは RDHB 梱包済(pack-kernel)。mtd5 は単一面＝書く前に全ダンプでバックアップ。",
         ] + write(5, a.kernel)
     if a.firstaid:
         lines += write(8, a.firstaid)
@@ -591,9 +591,9 @@ def a_times(r):
 
 
 def _factory_entries(b, kernel, rootfs, label):
-    """factory のペイロードに入れるもの: 渡された像・生成した write.sh・目印。
+    """factory のペイロードに入れるもの: 渡されたイメージ・生成した write.sh・目印。
 
-    像は機種の契約（uImage の形・squashfs の版・書き込み固定長）に合うものだけを通す。
+    イメージは機種の契約（uImage の形・squashfs の版・書き込み固定長）に合うものだけを通す。
     同梱しなかった区画は機器側で消去も書き込みもされない。
     """
     fac = b["factory"]
@@ -603,7 +603,7 @@ def _factory_entries(b, kernel, rootfs, label):
             continue
         im = _factory_image(b, name)
         if not im or not im.get("openird"):
-            sys.exit("✗ %s はこの機種で OpenIRD が書く像ではありません。" % name)
+            sys.exit("✗ %s はこの機種で OpenIRD が書くイメージではありません。" % name)
         with open(path, "rb") as f:
             data = f.read()
         if len(data) > h(im["write_len"]):
@@ -642,7 +642,7 @@ def cmd_pack_factory(a):
     b = load_board(a.board)
     fac = b.get("factory", {})
     if fac.get("container") != "v1b" or "payload_name" not in fac:
-        sys.exit("✗ %s の factory 像はまだ作れません（ボード定義に書き込み側の値が無い）。" % a.board)
+        sys.exit("✗ %s の factory イメージはまだ作れません（ボード定義に書き込み側の値が無い）。" % a.board)
     if not a.kernel and not a.rootfs:
         sys.exit("✗ --kernel / --rootfs の少なくとも一方が要ります。")
     try:
@@ -701,7 +701,7 @@ def main():
     p.add_argument("board")
     p.set_defaults(fn=cmd_partitions)
 
-    p = sub.add_parser("pack-rootfs", help="squashfs を rootfs 区画の像として検証・出力")
+    p = sub.add_parser("pack-rootfs", help="squashfs を rootfs 区画のイメージとして検証・出力")
     p.add_argument("board")
     p.add_argument("infile")
     p.add_argument("outfile")
@@ -719,7 +719,7 @@ def main():
     p.add_argument("--cksum", help="0x08 チェックサム(既定 0=HOLD H1b)")
     p.set_defaults(fn=cmd_pack_kernel)
 
-    p = sub.add_parser("unpack-kernel", help="RDHB 像を検証・展開（生 Image 取り出し）")
+    p = sub.add_parser("unpack-kernel", help="RDHB イメージを検証・展開（生 Image 取り出し）")
     p.add_argument("infile")
     p.add_argument("outfile", nargs="?")
     p.set_defaults(fn=cmd_unpack_kernel)

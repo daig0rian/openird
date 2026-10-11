@@ -1,6 +1,6 @@
 # ビルド手順（再現ビルド）
 
-clone した人が、検証済みの像を再現するための手順。**カーネル**（`mtd5.img`）と
+clone した人が、検証済みのイメージを再現するための手順。**カーネル**（`mtd5.img`）と
 **rootfs**（本番＋復旧用の 2 種）を、pin した外部ソースから再現できる。
 
 ## 対応状況
@@ -61,7 +61,7 @@ make kernel BOARD=mb86h61_softbank_sb-tv02-wfpl
 6. `openird-mkimage pack-kernel` で RDHB 梱包 → `output/<BOARD>/mtd5.img`
 
 ## 出力と実機への適用
-- `output/<BOARD>/mtd5.img` … libooter が起動できる RDHB カーネル像。
+- `output/<BOARD>/mtd5.img` … libooter が起動できる RDHB カーネルイメージ。
 - 実機への書き込み手順は `br-ext-chip-fujitsu/board/mb86h61/README.md`（区画・導入順・
   復旧）と `host/openird-mkimage`（`flash-script`）を参照。
   **mtd5 は単一面のため、SPI クリップの復旧手段を用意してから書くこと。**

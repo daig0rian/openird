@@ -77,7 +77,7 @@
      （§87.1）。運ぶなら周期を詰めるか、ヌルだけ別の扱い（数えて作り直す等）にする。当面は
      ヌル抜きの TS を出す。
 3. **OpenIRD 自身のカーネル・rootfs に載せる**: ここまでの試験はすべてベンダのカーネル
-   （2.6.27.39）の上。YB1 の OpenIRD 像（GPL カーネルの再ビルド・rootfs を squashfs 3.1BE で・
+   （2.6.27.39）の上。YB1 の OpenIRD イメージ（GPL カーネルの再ビルド・rootfs を squashfs 3.1BE で・
    `pack-factory`）は段階 A 側の残件で、その上でドレイナーとコマンド経路を動かす。
 4. **CPU**（系全体 約 31%）: 最新の 1 本を 1 周期待たずに済めば周期を延ばせる、SRAM に単調に
    増える到着の計数があれば走査を 1 語にできる（どちらも観察が先・§78.6）。
@@ -121,7 +121,7 @@
 ## 8. 受け入れ検証（段階 C 完了の実証・2026-10-10）
 
 §4.1 のとおり段階 C の完了判定は「**未改造の recpt1/recisdb がこの chardev から録れること**」。
-本線（ird-tuner-yb1 を OpenIRD カーネルに載せた像＋OpenIRD rootfs）で、これを実機で通した。
+本線（ird-tuner-yb1 を OpenIRD カーネルに載せたイメージ＋OpenIRD rootfs）で、これを実機で通した。
 
 - **recpt1 クロスビルド**: `tools/host/build-recpt1.sh`（stz2012 版を pin した commit で取得し、
   機種の Buildroot musl toolchain で **MIPS BE 静的**にビルド。libarib25 は入れない）。recpt1 の

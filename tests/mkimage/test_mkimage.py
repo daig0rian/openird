@@ -373,7 +373,7 @@ def test_rdhb():
     f = rdhb.fields(img)
     check("load = entry", f["load"] == f["entry"] == 0x42E08000, spec="rdhb-kernel-container")
     check("展開後長の語が一致", f["uncomp_div4"] * 4 == len(image))
-    # 長さは 4 バイト単位の語で入る（端数は切り捨て）。観察した純正像もそうなっている。
+    # 長さは 4 バイト単位の語で入る（端数は切り捨て）。観察した純正イメージもそうなっている。
     check("総長の語が一致（語単位・端数切り捨て）", f["total_div4"] == len(img) // 4,
           "0x%x != 0x%x" % (f["total_div4"], len(img) // 4))
     check("ペイロード長の語が一致（同上）",
@@ -468,7 +468,7 @@ def test_samples():
 
 def test_uimage_decompress_budget():
     """起動する uImage の上限は書き込み長ではなく load - nboot_load（spec §2.1）。
-    ブートローダは nboot_load に置いた圧縮像を load へ gunzip 展開するので、uImage が
+    ブートローダは nboot_load に置いた圧縮イメージを load へ gunzip 展開するので、uImage が
     その差を超えると展開が自分の未読ソースを潰して起動しない。pack-kernel はこれを弾く。"""
     print("[uimage] 展開余裕（gunzip の自己上書き）")
     b = load_board("poe-br100-yb1")

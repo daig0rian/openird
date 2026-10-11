@@ -44,7 +44,7 @@ NAND へ書く**までの手順。OpenIRD の factory 経路は「どの区画�
 - 各区画は不良ブロック用に 2.5MB の余裕を持たされている＝ **size と §2 の書き込み固定長は
   一致しない**（例: mtd3 は size 9.0MB に対し書き込み長 6.5MB）。
 - **ダンプとの突き合わせ**（2026-09-20）: 生 NAND ダンプは 2048B ページ＋64B OOB の形式
-  （65536 ページ＝138,412,032B）。OOB を剥がした論理像で、uImage マジックが `0x600000` に、
+  （65536 ページ＝138,412,032B）。OOB を剥がした論理イメージで、uImage マジックが `0x600000` に、
   squashfs マジックが `0xA80000` / `0x1380000` / `0x2F00000` に、いずれも上表どおり現れる。
   mtd1 の最終ブロック `0x5E0000` だけが使用中＝「MAC は mtd1 の最終ブロック」（§3.1）と整合。
 - **kernel の uImage 契約**（同ダンプ実測）: Legacy uImage / os=linux / arch=mips / type=kernel /
@@ -52,7 +52,7 @@ NAND へ書く**までの手順。OpenIRD の factory 経路は「どの区画�
 - **rootfs の squashfs は 3.1 ビッグエンディアン**（マジック `sqsh`）。ベンダカーネルの
   squashfs は in-tree（4.0・2.6.29〜）ではなく patch 版 3.1
   （GPL `fs/squashfs/{inode.c,squashfs2_0.c}`・`include/linux/squashfs_fs.h` の
-  `SQUASHFS_MAJOR 3` / `SQUASHFS_MINOR 1`）。mtd4/mtd5 の像も同じ。
+  `SQUASHFS_MAJOR 3` / `SQUASHFS_MINOR 1`）。mtd4/mtd5 のイメージも同じ。
   → **Buildroot の mksquashfs は 4.x ＝ 3.1BE を作れない**。OpenIRD の rootfs をどちらの
   形式で作るかは §6 の未決事項。
 

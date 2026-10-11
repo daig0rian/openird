@@ -2,7 +2,7 @@
 
 保守者向け。リリース＝**版のタグ**と、そのタグからビルドした配布物を GitHub Releases に
 置いたもの。いま置くのは、アドオン作者向けの **SDK** と、その**対応するソース一式**
-（[addon.md](addon.md) §6.1）。像（factory / sysupgrade）はまだ載せない（factory は所有者の
+（[addon.md](addon.md) §6.1）。イメージ（factory / sysupgrade）はまだ載せない（factory は所有者の
 鍵が要る。配り方は別に決める）。
 
 ## 版とタグ

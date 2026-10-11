@@ -1,11 +1,11 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0-only
 # Copyright (C) 2026 OpenIRD contributors
-# ベンダ rootfs 像に「root シェルへの入口」だけを足して、同じ形式で梱包し直す。
+# ベンダ rootfs イメージに「root シェルへの入口」だけを足して、同じ形式で梱包し直す。
 #
 #   使い方: tools/vendor-rootfs/mkshell.sh <in.img> <out.img> [--tty "ttyS0 ttyS1"]
 #           [--no-telnetd] [--tag TEXT] [--observe DIR]
-#           --tag は生存確認メッセージに識別子を入れる（どの像が載っているかを実機で測る用）
+#           --tag は生存確認メッセージに識別子を入れる（どのイメージが載っているかを実機で測る用）
 #           --observe は段階 B の観察用に 3 点を足す（DIR の中身を /opt/openird へ、
 #             /etc/securetty に pts/0..9、LD_PRELOAD のゲート。詳細は下）
 #   前提:   Linux/WSL・fakeroot・scripts/fetch-squashfs3.sh でビルドした mksquashfs
@@ -77,7 +77,7 @@ command -v unsquashfs >/dev/null || { echo "✗ unsquashfs がありません（
 
 # 元イメージの形式を読み取って、同じ形で梱包し直せるようにする
 INFO=$(unsquashfs -s "$IN" 2>&1)
-echo "$INFO" | grep -q "big endian" || { echo "✗ BE の squashfs ではありません（この機種の像ではない？）"; exit 1; }
+echo "$INFO" | grep -q "big endian" || { echo "✗ BE の squashfs ではありません（この機種のイメージではない？）"; exit 1; }
 BLK=$(echo "$INFO" | sed -n 's/^Block size \([0-9]*\)$/\1/p')
 [ -n "$BLK" ] || { echo "✗ ブロックサイズを読めません"; exit 1; }
 echo "元イメージ: BE squashfs 3.x / block $BLK / $(stat -c%s "$IN") B"

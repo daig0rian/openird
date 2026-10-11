@@ -3,7 +3,7 @@
 #
 # SB-TV06-WRIP (POE-BR310L-SB1) 版の段階 C リグフック。
 # デバイス上の /app/setting/openird-pre.sh として置く。mkshell.sh --observe で
-# 作った像が /etc/init.d/rcS から setup.sh の直前に source する。/app/setting は
+# 作ったイメージが /etc/init.d/rcS から setup.sh の直前に source する。/app/setting は
 # yaffs2 rw で再起動を跨ぐので、実験の入切は焼き直し無しにフラグで切り替えられる。
 #
 # ★ この機種はカーネル console が無く（cmdline に console= 無し）、シリアルに

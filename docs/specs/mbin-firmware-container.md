@@ -168,7 +168,7 @@ scripts/extract-mbin.py <blur> [-o out.mbin]
   は squashfs がマウント済みなので**普通のファイルとして読める**。ホストで行うなら
   factory コンテナから取り出した `app_bin.img`（squashfs 3.1 BE）を
   `output/host/squashfs3/unsquashfs` で展開する（[BUILDING.md](../BUILDING.md)）。
-- **圧縮された squashfs 像や生 NAND ダンプを直接走査しても見つからない**（実測で確認）。
+- **圧縮された squashfs イメージや生 NAND ダンプを直接走査しても見つからない**（実測で確認）。
   必ず展開後の `blur` を対象にすること。
 
 ## 7. チップへの転送（I2C・2026-09-22 実測で確定）

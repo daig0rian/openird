@@ -1,6 +1,6 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0-only
-# SB-TV02-WFPL を「ベンダ純正＋telnet」の観察土台に戻すための像を、所有者の全ダンプから作る。
+# SB-TV02-WFPL を「ベンダ純正＋telnet」の観察土台に戻すためのイメージを、所有者の全ダンプから作る。
 #
 #   scripts/build-vendor-base.sh [--dump FILE] [--out DIR] [--work DIR]
 #
@@ -11,12 +11,12 @@
 #   xfer-rootfs.bin       移行用。OpenIRD 区画表の mtd6（5MB）へ書く分
 #   xfer-rootfs_data.bin  移行用。OpenIRD 区画表の mtd7（7MB）へ書く分
 #                         （OpenIRD の mtd8 = firstaid の 1MB は、ベンダ配置では slot1 の
-#                          末尾の未使用域＝0xFF。erase するだけでよいので像は作らない）
+#                          末尾の未使用域＝0xFF。erase するだけでよいのでイメージは作らない）
 #   vendor-rootfs.bin     ベンダ区画の rootfs（mtd6）1MB 分。0xFF 埋め。rootfs だけを焼き直すとき用
 #   expected.md5          書いた後に実機の md5sum と突き合わせる値（区画表 2 通り）
 #
 # 方針:
-#   - ベンダの像はカーネル・slot0・slot1 ともダンプのバイトのまま。変えるのは rcS への
+#   - ベンダのイメージはカーネル・slot0・slot1 ともダンプのバイトのまま。変えるのは rcS への
 #     差し込みと、それに伴う rootfs の再梱包だけ。
 #   - slot info（mtd2/mtd9）には slot0/slot1 の 6MB 全体の MD5 が入っている（下で検査）。
 #     ∴ slot は 1 バイトも変えない。変えると slot_selector の整合検査に掛かる。
@@ -120,7 +120,7 @@ s=$(stat -c%s "$OUT/base-rootfs.sqfs")
 [ "$s" -le $R_SIZE ] || { echo "✗ base-rootfs.sqfs $s > ベンダ rootfs 区画 $R_SIZE"; exit 1; }
 echo "  ✓ base-rootfs.sqfs $s bytes（ベンダ rootfs 区画 1MB・余裕 $((R_SIZE - s))）"
 
-echo "=== 書き込み用の像 ==="
+echo "=== 書き込み用のイメージ ==="
 cp "$WORK/vendor-kernel.bin" "$OUT/vendor-kernel.bin"
 # ベンダ配置の 0x2C0000〜0xFBFFFF（rootfs 1MB + slot0 6MB + slot1 6MB）
 { cat "$OUT/base-rootfs.sqfs"; ff $((R_SIZE - s)); cat "$WORK/slot0.img" "$WORK/slot1.img"; } > "$WORK/region.bin"

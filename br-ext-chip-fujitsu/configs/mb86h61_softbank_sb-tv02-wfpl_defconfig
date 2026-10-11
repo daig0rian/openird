@@ -5,7 +5,7 @@
 # 段階A v1 の中身: overlayfs root（squashfs mtd6 + jffs2 mtd7）／SSH(dropbear)／
 # ネットワーク／mtd。チューナは段階C（Milestone 2）で足す。
 # Milestone 1 の間は観察用ツール（strace / tcpdump / gdbserver）も入れている。
-# カーネルは別建て（make kernel BOARD=…＝検証済み像の再現ビルド）。区画は
+# カーネルは別建て（make kernel BOARD=…＝検証済みイメージの再現ビルド）。区画は
 # board/mb86h61/kernel/patches/0015-*.patch のレイアウト。
 
 # --- アーキテクチャ / toolchain（Bootlin 公式 fragment のとおり） ---
@@ -64,7 +64,7 @@ BR2_PACKAGE_TCPDUMP=y
 BR2_TOOLCHAIN_EXTERNAL_GDB_SERVER_COPY=y
 # BR2_PACKAGE_IRD_TUNER_TC90532=y  # 段階C（Milestone 2）で有効化
 
-# --- rootfs 像（2.6.31 の squashfs は gzip のみ・xattr 非対応） ---
+# --- rootfs イメージ（2.6.31 の squashfs は gzip のみ・xattr 非対応） ---
 BR2_TARGET_ROOTFS_SQUASHFS=y
 BR2_TARGET_ROOTFS_SQUASHFS4_GZIP=y
 # BR2_TARGET_ROOTFS_TAR is not set

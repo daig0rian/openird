@@ -3,7 +3,7 @@
 # scripts/build-vendor-rig.sh と scripts/build-vendor-base.sh が source する。
 #
 # 前提: 呼び出し側が WORK（ext4 上の作業ディレクトリ）を定義していること。
-#   - ベンダ像は静的デバイスノードを数百個持つ。非 root の unsquashfs は落とすので、
+#   - ベンダイメージは静的デバイスノードを数百個持つ。非 root の unsquashfs は落とすので、
 #     マニフェスト（unsquashfs -lls）から mksquashfs の pseudo-file を作って戻す。
 #   - 非 root 展開で umask に削られたモードも、マニフェストから chmod で戻す。
 #   - 梱包は 2.6.31 の squashfs4 が読める設定（gzip / 128KB / xattr 無し）に固定。

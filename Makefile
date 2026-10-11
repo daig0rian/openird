@@ -38,7 +38,7 @@ BR_MAKE = env PATH="$(BR_PATH)" BR2_DL_DIR="$(ROOT)/dl" \
 help:
 	@echo "OpenIRD — make list-boards | make BOARD=<device> [menuconfig|clean]"
 	@echo "例: make BOARD=emma3sep_softbank_poe-br100-yb1"
-	@echo "     make kernel BOARD=<device> … 検証済みカーネル(mtd5像)を再現ビルド (要 Linux/WSL)"
+	@echo "     make kernel BOARD=<device> … 検証済みカーネル(mtd5イメージ)を再現ビルド (要 Linux/WSL)"
 	@echo "     make test-overlayfs BOARD=<device> … overlayfs パッチの QEMU 機能テスト"
 	@echo "     make test-kabi BOARD=<device> … ベンダ製 .ko との構造体レイアウト互換テスト"
 	@echo "     make test-mkimage … openird-mkimage の自己完結テスト (BOARD 不要・uv のみ)"
@@ -73,7 +73,7 @@ all: check-buildroot check-board
 	$(BR_MAKE) $(BOARD)_defconfig
 	$(BR_MAKE)
 
-# 検証済みカーネル(mtd5 像)を再現ビルド（Buildroot 不使用・要 Linux/WSL）。詳細は docs/BUILDING.md
+# 検証済みカーネル(mtd5 イメージ)を再現ビルド（Buildroot 不使用・要 Linux/WSL）。詳細は docs/BUILDING.md
 kernel: check-board
 	@$(ROOT)/scripts/build-kernel.sh $(BOARD)
 

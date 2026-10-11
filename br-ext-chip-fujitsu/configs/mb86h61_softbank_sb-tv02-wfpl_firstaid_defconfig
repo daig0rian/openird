@@ -5,7 +5,7 @@
 # 役割: mtd ツールだけを持つ最小 rootfs。起動しても MTD には一切触れない（受動）。
 #       区画の読み書きは利用者がシリアルから手で行う。カーネル・/dev は
 #       旧区画表（mtd0–mtd10）のまま動く。詳細は board/mb86h61/firstaid/README.md。
-# カーネルは本 defconfig ではビルドしない（make kernel で別途・検証済み像を使う）。
+# カーネルは本 defconfig ではビルドしない（make kernel で別途・検証済みイメージを使う）。
 
 # --- アーキテクチャ / toolchain（Bootlin 公式 fragment のとおり） ---
 # SoC は ARM1176JZF-S(ARMv6) だが、ビルド済み toolchain に合わせ ARMv5TE soft-float で作る
@@ -57,7 +57,7 @@ BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_IRD_FUJITSU_PATH)/boar
 # BR2_PACKAGE_URANDOM_SCRIPTS is not set
 BR2_PACKAGE_OPENWRT_MTD=y
 
-# --- rootfs 像（2.6.31 の squashfs は gzip のみ・xattr 非対応） ---
+# --- rootfs イメージ（2.6.31 の squashfs は gzip のみ・xattr 非対応） ---
 BR2_TARGET_ROOTFS_SQUASHFS=y
 BR2_TARGET_ROOTFS_SQUASHFS4_GZIP=y
 # BR2_TARGET_ROOTFS_TAR is not set

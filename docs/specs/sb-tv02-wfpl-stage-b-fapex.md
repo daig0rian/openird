@@ -1260,7 +1260,7 @@ LASSIE 制御（`CMD_BLOCK_HEADER`）。
   serial capture` で生 TS 取得**。demod/tuner の周波数依存レジスタも fapex-trace で観察できる。
 - 代替 = stdin コンソールのデバッグメニュー（`setfreq` がコンソール側なら stdin 直、要確認）。
 
-## 5.7 ベンダ像でのトレース（2026-09-29・vendor-base）
+## 5.7 ベンダイメージでのトレース（2026-09-29・vendor-base）
 
 vendor-base（`docs/specs/sb-tv02-wfpl-vendor-boot.md` §7。カーネル・区画表・slot はダンプの
 まま）で `dione_server` を `fapex_trace.so` の下で起動し、工場テストシェルから

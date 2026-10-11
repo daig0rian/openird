@@ -299,7 +299,7 @@ def pack(family, version, plain, key, h20=b"\x00" * LEN_H20, h30=b"\x00" * LEN_H
     return build_header(family, version, body, h20, h30) + body
 
 
-# --- OpenIRD 自身の factory 像（書き込み機構の仕様 poe-br100-yb1-nand-update §3.2） ---
+# --- OpenIRD 自身の factory イメージ（書き込み機構の仕様 poe-br100-yb1-nand-update §3.2） ---
 
 FACTORY_MARKER = "openird-factory"      # ペイロードに入れる目印（導入後の片付けが見る）
 UBOOT_CMD_MAX = 2048                    # ブートローダが 1 つの変数を実行できる上限

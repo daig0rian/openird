@@ -10,7 +10,7 @@ Tests:  tests/mkimage/
 <!-- Open 層: 実機ダンプの「データ構造」の静的読み（逆アセではない）。PII 無し。
      実装 (host/openird-mkimage pack-kernel) はこの仕様のみを根拠に書く（clean-room）。 -->
 
-libooter（proprietary・GPL 非収録）が mtd5「kernel bslot」から読み込むカーネル像の
+libooter（proprietary・GPL 非収録）が mtd5「kernel bslot」から読み込むカーネルイメージの
 ラッパー。GPL には無いため、実機 mtd5 ダンプの構造観察から仕様化した（Open）。
 
 ## 全体
@@ -25,7 +25,7 @@ libooter（proprietary・GPL 非収録）が mtd5「kernel bslot」から読み�
   inflate して load アドレスへ展開し、entry へジャンプする）。実測で
   `Linux version 2.6.31.6-rt19 (airtuner@shiki) (gcc 4.5.1, Buildroot 2010.11)` を含む。
 - zlib の末尾 adler32 は実機で **先頭2バイトのみ + 0xff** に欠損していたが起動する
-  ＝**libooter は adler を検証しない（raw-inflate 相当）**。→ 自作像は正規の zlib
+  ＝**libooter は adler を検証しない（raw-inflate 相当）**。→ 自作イメージは正規の zlib
   ストリームで問題ない見込み。
 
 ## ヘッダ（76B, リトルエンディアン u32）
@@ -55,7 +55,7 @@ libooter（proprietary・GPL 非収録）が mtd5「kernel bslot」から読み�
 - load/entry = 0x42e08000 = GPL `Makefile.boot`（memory_start 0x40000000 + FIRM_AREA
   0x02e00000 + 0x8000）= booter ログ "ARM jumps to 0x42e08000" ✓
 
-## 自作カーネル像の作り方（pack-kernel が実装）
+## 自作カーネルイメージの作り方（pack-kernel が実装）
 
 1. カーネルをビルド → `arch/arm/boot/Image`（**非圧縮・生 Image**）。
 2. zlib 圧縮（level 6 = `78 9c`）。
@@ -65,12 +65,12 @@ libooter（proprietary・GPL 非収録）が mtd5「kernel bslot」から読み�
 
 ## H1b（0x08 チェックサム）— 解決済み（実機確認）
 
-- **libooter は `0x08` チェックサムを検証しない**。`0x08=0` で生成した自前 RDHB 像を
+- **libooter は `0x08` チェックサムを検証しない**。`0x08=0` で生成した自前 RDHB イメージを
   mtd5 に焼き、実機（POE 相当 SB-TV02-WFPL）で **libooter が展開・起動することを確認**
   （2026-09-13, `dione_server -w` で書込み→ `ARM jumps to 0x42e08000` → 自前カーネル
   `Linux version 2.6.31.6-rt19 (user@…) gcc 4.9.4` が起動、squashfs(mtd6) を root に
   mount まで到達）。zlib 末尾 adler の欠損でも起動する観察（§上）とも整合。
-- ∴ `openird-mkimage pack-kernel` は **0x08=0（既定）で起動する像を生成できる**。
+- ∴ `openird-mkimage pack-kernel` は **0x08=0（既定）で起動するイメージを生成できる**。
   0x08 のアルゴリズム特定は不要（標準 crc32/adler32/sum/xor は不一致＝独自だが、
   検証されないので実害なし）。
 

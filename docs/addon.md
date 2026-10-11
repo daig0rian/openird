@@ -1,6 +1,6 @@
 # OpenIRD のアドオン（実行時パッケージ）
 
-OpenIRD の像は不変（squashfs の RO ルート）。**アドオン（add-on）は、像を焼き直さずに、
+OpenIRD のイメージは不変（squashfs の RO ルート）。**アドオン（add-on）は、イメージを焼き直さずに、
 実行中の機器へ後から載せるソフト**。追加分はすべて永続 overlay に入り、base には一切
 触れない。アドオンは **アドオンリポジトリ**（HTTPS 上の索引付き静的集合）から
 インストーラ `ird-addon` で導入する。
@@ -23,14 +23,14 @@ OpenIRD の像は不変（squashfs の RO ルート）。**アドオン（add-on
 
 | 機構 | 名前 | いつ／どこ | 選び方 | 例 |
 |---|---|---|---|---|
-| build-time | **ビルドオプション** | 像のビルド時に焼く（base の一部） | `BR2_EXTERNAL` の package を defconfig で選択 | `ird-tuner-*`・`ird-webui` |
+| build-time | **ビルドオプション** | イメージのビルド時に焼く（base の一部） | `BR2_EXTERNAL` の package を defconfig で選択 | `ird-tuner-*`・`ird-webui` |
 | runtime | **アドオン** | 実行中の機器・永続 overlay に後載せ | アドオンリポジトリから `ird-addon` で導入 | recpt1 等・chardev の上 |
 
 - **機構はスコープ内**（base／ホストが用意する土台）: アドオン形式（`.ird`）・リポジトリの
   索引形式・インストーラ `ird-addon`・SDK・置き場所の規約。実装も仕様も本リポジトリ。
 - **アドオンの中身／アドオンリポジトリはスコープ外**（recpt1 等）: 別リポジトリ。OpenIRD は
   規約だけ定め、何を載せるかは決めない（CLAUDE.md §4.1）。
-- 素の OpenIRD 像単体では chardev はあるが読む者がいない。読む者（recpt1 等）はアドオンで
+- 素の OpenIRD イメージ単体では chardev はあるが読む者がいない。読む者（recpt1 等）はアドオンで
   載せる＝設計どおり。
 - ビルドオプションの詳細は Buildroot/`BR2_EXTERNAL` の流儀そのもの（[architecture.md](architecture.md)）。
   本書は**アドオンとアドオンリポジトリ**（実行時側）を規定する。
@@ -160,7 +160,7 @@ Description: ISDB-T/S recorder (px4_drv/pt1 ABI client)
 | `ird-addon list` / `info <name>` | 導入済み一覧／詳細 |
 
 - 設定 `/etc/openird/addons.conf`（アドオンリポジトリの URL 群・1 行 1 つ）。**base 既定は空**
-  （スコープ外の URL を像に焼かない）。所有者がリポジトリを足す。同じ名前が複数の
+  （スコープ外の URL をイメージに焼かない）。所有者がリポジトリを足す。同じ名前が複数の
   リポジトリにあれば、先に書いた方。
 - receipt `/var/lib/ird-addon/<name>.{manifest,files}`（overlay 上。`preremove` があれば
   `<name>.preremove` も）。**中央 DB ではなく per-addon の受領記録**で、`remove` を正確に
@@ -176,7 +176,7 @@ Description: ISDB-T/S recorder (px4_drv/pt1 ABI client)
   書く。`manifest` の無い receipt は未完了の導入で、`list` がそう表示し、`remove`（か入れ直し）
   で消える。コピーに失敗したとき（overlay が満杯など）は、その場で入れた分を取り消す。
 - `remove` は receipt にあるパスだけを消す。ディレクトリは空で base に無いときだけ。base が
-  後から同じパスを持つようになっていたら（像の更新）、そのファイルは消さずに知らせる
+  後から同じパスを持つようになっていたら（イメージの更新）、そのファイルは消さずに知らせる
   （消すと whiteout が base のファイルを隠す）。
 - overlay で起動していない（読み取り専用にフォールバックした）ときは導入も削除もしない。
   overlay が tmpfs のとき（再起動で消える）は警告して続ける。
@@ -240,7 +240,7 @@ SDK は**リリースごとに、本体リポジトリの GitHub Releases に置
 
 ## 7. ライフサイクルと sysupgrade
 
-- 像更新（sysupgrade）は overlay を**既定で保持**（設定・アドオンが残る）。ABI 非互換な
+- イメージ更新（sysupgrade）は overlay を**既定で保持**（設定・アドオンが残る）。ABI 非互換な
   更新は `Arch` / `Requires-OpenIRD` で弾く。
 - factory 導入・overlay wipe でアドオンは全消え（safe to forget）。
 
@@ -271,7 +271,7 @@ SDK は**リリースごとに、本体リポジトリの GitHub Releases に置
   段取り 3 で確かめる。
 - 実機の時計は起動のたびに 1970 年から始まる（実測。時刻合わせをしていない）。導入・削除の
   際にカーネルが `unionfs: new lower inode mtime` と出すことがあるが、導入・保持・削除の結果には
-  影響しなかった（upper が 1970 年・base が像のビルド時刻、という時刻の逆転が原因とみられる。未確認）。
+  影響しなかった（upper が 1970 年・base がイメージのビルド時刻、という時刻の逆転が原因とみられる。未確認）。
 - fujitsu（mb86h61）は未対応: `ADDON_ARCH` をまだ決めていない（toolchain の選び方に依る）。
   決めたら `board.conf`・`busybox.fragment`・defconfig の 3 か所。
 - **未決**: 索引の真正性（§4）。いまは証明書を検証しない HTTPS で、名前での導入は

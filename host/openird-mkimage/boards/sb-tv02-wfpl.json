@@ -32,7 +32,7 @@
     {"mtd":2,  "name":"slot_info0",  "offset":"0x110000", "size":"0x010000", "policy":"preserve", "note":"A/B 選択メタ1面目"},
     {"mtd":3,  "name":"nvram0",      "offset":"0x120000", "size":"0x010000", "policy":"preserve"},
     {"mtd":4,  "name":"nvram1",      "offset":"0x130000", "size":"0x010000", "policy":"preserve"},
-    {"mtd":5,  "name":"kernel_bslot","offset":"0x140000", "size":"0x180000", "policy":"writable", "image":"kernel", "wrapper":"RDHB", "note":"単一面=非起動像厳禁。libooter は 0x08 checksum を見ない(H1b 解決)"},
+    {"mtd":5,  "name":"kernel_bslot","offset":"0x140000", "size":"0x180000", "policy":"writable", "image":"kernel", "wrapper":"RDHB", "note":"単一面=非起動イメージ厳禁。libooter は 0x08 checksum を見ない(H1b 解決)"},
     {"mtd":6,  "name":"rootfs",      "offset":"0x2C0000", "size":"0x500000", "policy":"writable", "image":"squashfs", "note":"squashfs4.0 raw。root=/dev/mtdblock6。開始位置はベンダと同じ＝カーネル差し替えだけで既存 rootfs が起動する"},
     {"mtd":7,  "name":"rootfs_data", "offset":"0x7C0000", "size":"0x700000", "policy":"writable", "image":"jffs2",    "note":"overlayfs の upper。空(0xFF)なら初回 mount で jffs2 が自動生成"},
     {"mtd":8,  "name":"firstaid",    "offset":"0xEC0000", "size":"0x100000", "policy":"writable", "image":"squashfs", "note":"復旧用 rootfs。mtd6 を書き換えるときはここから起動する(root=/dev/mtdblock8)"},

@@ -101,7 +101,7 @@ def main():
                   f"(4B 整列後 {((ln + 3) // 4) * 4})")
 
     if not found:
-        print("見つかりませんでした。圧縮された squashfs 像や生の NAND ダンプでは"
+        print("見つかりませんでした。圧縮された squashfs イメージや生の NAND ダンプでは"
               "なく、展開後のバイナリを対象にしてください。", file=sys.stderr)
         return 1
     if args.list or not args.output:

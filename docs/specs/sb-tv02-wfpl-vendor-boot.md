@@ -101,7 +101,7 @@ OpenIRD の区画表では `/dev/mtd8` = **firstaid**（唯一の救助 rootfs�
 **ベンダ rootfs をそのまま起動させてはいけない**。rig では rcS から
 `slot_selector` を外す（§6）。
 
-**起動時の出力**（2026-09-29・ベンダ像で slot0/slot1 がともにダンプと一致し、slot info の
+**起動時の出力**（2026-09-29・ベンダイメージで slot0/slot1 がともにダンプと一致し、slot info の
 MD5 欄とも一致している状態）：
 
 ```
@@ -336,7 +336,7 @@ rootfs と slot0 を OpenIRD の区画に置き、起動スクリプト 2 本だ
    （元と同じ squashfs 4.0 / gzip / 128KB ブロック。xattr は 2.6.31 が読めない）。
 
 **検証**: 無改変で往復させてマニフェストが完全一致すること（rootfs 910 / slot0 142
-エントリ）。作った像は実機の 2.6.31 squashfs ドライバで loop mount して確認する。
+エントリ）。作ったイメージは実機の 2.6.31 squashfs ドライバで loop mount して確認する。
 
 元イメージの諸元: rootfs = 4.0/gzip/128KB、`bytes_used` 953,223（1MB 区画）。
 slot0 = 同じ、`bytes_used` 4,203,033（6MB 区画）。
@@ -385,13 +385,13 @@ slot0 = 同じ、`bytes_used` 4,203,033（6MB 区画）。
    `ifconfig` `losetup` `chroot` `strings` があり、書き込みは
    `dione_server -w /dev/mtdN:file`（暗号ゲート無し）で行える。
 
-## 7. vendor-base（ベンダ像のまま・入口 1 か所）
+## 7. vendor-base（ベンダイメージのまま・入口 1 か所）
 
 2026-09-29 に §6 の rig を置き換えるために設計した観察土台。カーネル・区画表・slot は
 ダンプのバイトのまま、rootfs の rcS の `/slot/slot_entry.sh` の直前に telnetd と USB
 ディスクのフックだけを差し込む（`tools/vendor-base/`・`scripts/build-vendor-base.sh`）。
 運用は `tools/vendor-base/README.md`。**2026-09-29 に実機へ導入し、全区画の MD5 が
-想定と一致した**（カーネル・slot0/1・slot info・reserved はダンプと同一、rootfs は差し込み入りの像）。
+想定と一致した**（カーネル・slot0/1・slot info・reserved はダンプと同一、rootfs は差し込み入りのイメージ）。
 以下はその設計の根拠になった事実。
 
 ### USB の決め打ち（`dione_server` と `update` の文字列より）
@@ -427,7 +427,7 @@ error -28` で開けなかった。USB-A に USB ディスクを直挿しした�
 
 ### ベンダカーネルが読めるもの
 
-カーネル像（mtd5）の登録名と出荷 .config より：vfat・msdos（MBR）・squashfs・tmpfs・
+カーネルイメージ（mtd5）の登録名と出荷 .config より：vfat・msdos（MBR）・squashfs・tmpfs・
 NFS クライアントはある。ext2/3/4・jffs2・loop・GPT は無い。USB シリアルは
 `usbserial.ko` と `pl2303.ko`（2.6.31・旧型の PL2303HX `067b:2303` 向け）だけで、
 PL2303G 系（`067b:23a3`・bcdDevice `0405`）は ID を知らない。`usb-storage` の

@@ -1,12 +1,12 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0-only
-# OpenIRD 再現ビルド: 検証済みのカーネル(mtd5 像)を clone から再現する。
+# OpenIRD 再現ビルド: 検証済みのカーネル(mtd5 イメージ)を clone から再現する。
 #   使い方: scripts/build-kernel.sh <BOARD>    （Linux/WSL で実行）
 #   例:      scripts/build-kernel.sh mb86h61_softbank_sb-tv02-wfpl
 #
 # pin は各機種の board/<family>/kernel/build.env。toolchain と host lib は公開URLから
 # sha256 検証つきで自動取得。GPL カーネルソースは各自 dl/ に置く（sha256 で検証）。
-# 出力: mb86h61 は output/<BOARD>/mtd5.img（RDHB 像）、emma3sep は
+# 出力: mb86h61 は output/<BOARD>/mtd5.img（RDHB イメージ）、emma3sep は
 #       output/<BOARD>/vmlinux.img（Legacy uImage）。梱包は build.env の KERNEL_PACK で決まる。
 set -eu
 

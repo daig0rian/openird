@@ -54,7 +54,7 @@ BR2_PACKAGE_DROPBEAR_DISABLE_REVERSEDNS=y
 # px4_drv 互換 chardev の確認用クライアント。ドライバ本体はカーネル側（make kernel）
 BR2_PACKAGE_IRD_TUNER_EMMA3SEP=y
 
-# --- rootfs 像 ---
+# --- rootfs イメージ ---
 # ベンダカーネルの squashfs は 3.1 BE。Buildroot の mksquashfs(4.x) では作れないので、
 # post-fakeroot.sh が pin した squashfs-tools 3.4 で固める（tar は fakeroot を回すためだけ）。
 BR2_TARGET_ROOTFS_TAR=y

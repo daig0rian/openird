@@ -50,13 +50,13 @@
   "squashfs": {
     "vendor_format": {"major": 3, "minor": 1, "endian": "be"},
     "compressors": ["gzip"], "xattrs": false, "comp_options": false,
-    "_note": "ベンダカーネルの squashfs は in-tree ではなく patch 版 3.1（GPL fs/squashfs/{inode.c,squashfs2_0.c} と include/linux/squashfs_fs.h の SQUASHFS_MAJOR 3 / MINOR 1）。実機 mtd3/4/5 の像はいずれも BE マジック 'sqsh'。OpenIRD 側が 3.1BE を作るのか 4.0LE をカーネルに backport するのかは未決（NOTES の V3b）。"
+    "_note": "ベンダカーネルの squashfs は in-tree ではなく patch 版 3.1（GPL fs/squashfs/{inode.c,squashfs2_0.c} と include/linux/squashfs_fs.h の SQUASHFS_MAJOR 3 / MINOR 1）。実機 mtd3/4/5 のイメージはいずれも BE マジック 'sqsh'。OpenIRD 側が 3.1BE を作るのか 4.0LE をカーネルに backport するのかは未決（NOTES の V3b）。"
   },
 
   "_partitions_note": "GPL nand_emma_ptt_1Gb.h。offset は MTDPART_OFS_APPEND の累積を展開したもの。各区画に不良ブロック用の余裕（2.5MB）が載っているため、size と factory の write_len は一致しない。",
   "partitions": [
     {"mtd":0,  "name":"u-boot",        "offset":"0x0000000", "size":"0x0300000", "policy":"preserve",  "note":"実イメージは約300KB。復旧の最後の安全網＝絶対に書かない"},
-    {"mtd":1,  "name":"u-boot_env_mac","offset":"0x0300000", "size":"0x0300000", "policy":"preserve",  "note":"更新機構が env 先頭を書く（回避不能）。MAC は最終ブロック 0x5e0000 にあり env 書込みは届かない。pack はこの区画の像を作らない"},
+    {"mtd":1,  "name":"u-boot_env_mac","offset":"0x0300000", "size":"0x0300000", "policy":"preserve",  "note":"更新機構が env 先頭を書く（回避不能）。MAC は最終ブロック 0x5e0000 にあり env 書込みは届かない。pack はこの区画のイメージを作らない"},
     {"mtd":2,  "name":"kernel",        "offset":"0x0600000", "size":"0x0480000", "policy":"writable",  "image":"uimage",   "note":"factory 対象。uImage(gzip)"},
     {"mtd":3,  "name":"rootfs",        "offset":"0x0A80000", "size":"0x0900000", "policy":"writable",  "image":"squashfs", "note":"factory 対象"},
     {"mtd":4,  "name":"app_binary",    "offset":"0x1380000", "size":"0x1B80000", "policy":"preserve",  "image":"squashfs", "note":"ベンダ app。段階 B の観察対象＝温存"},

@@ -44,7 +44,7 @@ uv run --no-project python openird_mkimage.py <cmd> ...   # 依存不要のコ�
 | `partitions <board>` | 区画表（writable / preserve）を表示 |
 | `pack-rootfs <board> <in.squashfs> <out> [--mtd N]` | squashfs をカーネルが読める形式か（4.0・gzip・xattr 無し）と対象区画の容量で検査して出力。既定は mtd6、救助用は `--mtd 8` |
 | `pack-kernel <board> <Image> <out>` | 生カーネル Image を RDHB 梱包（実機 round-trip 検証済） |
-| `unpack-kernel <RDHB> [out]` | RDHB 像を検証・展開（生 Image 取り出し） |
+| `unpack-kernel <RDHB> [out]` | RDHB イメージを検証・展開（生 Image 取り出し） |
 | `flash-script <board> [--rootfs][--kernel][--firstaid] [--via mtd\|dione] [-o]` | 機器上で実行する書き込み手順を生成（preserve 区画はガードで拒否）。既定は OpenIRD の `mtd` ツール、`--via dione` は区画切り直し前のベンダ状態向け |
 | `probe-kernel-header <dump>` | 任意ダンプ先頭を観察（RDHB/PIX-/hsqs 探索） |
 | `full <board>` | 未解明のため refuse（NOTES の H2/H3） |
@@ -57,7 +57,7 @@ uv run --no-project python openird_mkimage.py <cmd> ...   # 依存不要のコ�
 | `probe-factory <file>...` | **不要** | v1b コンテナのヘッダ 332B を読む。族タグ・版数・**h38 = SHA-1(本体)** の検算・本体長の 16B 整合。複数渡すと表で出る |
 | `unpack-factory <file> <outdir>` | 要 | 3 段復号（AES-128-ECB → ZipCrypto → 無暗号 ZIP）。段ごとに成果物を残し、csum を検算する |
 | `repack-factory <in> <out>` | 要 | 純正コンテナを組み直す。`--rebuild none/zipcrypto/all` でどの層から自前にするかを選べる。`--replace NAME=PATH` でペイロードの 1 点を差し替え（書き込み固定長を超えたら hard error） |
-| `pack-factory <board> ...` | 要 | OpenIRD 自身の factory 像を作る。**未実装** |
+| `pack-factory <board> ...` | 要 | OpenIRD 自身の factory イメージを作る。**未実装** |
 
 `repack-factory --rebuild none` は原本とバイト一致する（ヘッダと AES 層の回帰テストになる）。
 `--replace` で差し替えた場合、自己検証は「差し替えなかった点は原本とバイト一致」「差し替えた点は
@@ -97,7 +97,7 @@ RDHB 形式の仕様は [docs/specs/rdhb-kernel-container.md](../../docs/specs/r
 入力は **非圧縮の生カーネル Image**（`arch/arm/boot/Image`。zImage/gzip ではない）。
 libooter は zlib を inflate して load=entry=0x42e08000 へ展開しジャンプする。
 ヘッダ `0x08` のチェックサムは **libooter が検証しない**ことを実機で確認済みなので、
-既定の 0 で起動する像が作れる（`--cksum 0x..` で上書き可）。mtd5 は単一面なので、
+既定の 0 で起動するイメージが作れる（`--cksum 0x..` で上書き可）。mtd5 は単一面なので、
 書き込み前に全ダンプでバックアップを取ること。
 
 ### pack-rootfs メモ

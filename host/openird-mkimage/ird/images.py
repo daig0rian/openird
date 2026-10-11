@@ -2,7 +2,7 @@
 # Copyright (C) 2026 OpenIRD contributors
 """区画イメージ（squashfs / uImage）の形式検査。
 
-ボードのカーネルが読めない像を作ってしまう事故は、実機で mount / boot に失敗して
+ボードのカーネルが読めないイメージを作ってしまう事故は、実機で mount / boot に失敗して
 初めて分かる。ここで生成時に弾く（OpenWrt の check-size と同じ役割）。
 """
 import struct
@@ -10,7 +10,7 @@ import sys
 import zlib
 
 SQUASHFS_MAGIC = b"hsqs"         # squashfs LE (0x73717368)
-SQUASHFS_MAGIC_BE = b"sqsh"       # 同 BE。3.x は両エンディアンの像が存在する
+SQUASHFS_MAGIC_BE = b"sqsh"       # 同 BE。3.x は両エンディアンのイメージが存在する
 SQUASHFS_COMP = {1: "gzip", 2: "lzma", 3: "lzo", 4: "xz", 5: "lz4", 6: "zstd"}
 SQUASHFS_INVALID_BLK = 0xFFFFFFFFFFFFFFFF
 SQUASHFS_FLAG_COMP_OPT = 1 << 10
@@ -26,7 +26,7 @@ UIMAGE_COMP = {0: "none", 1: "gzip", 2: "bzip2", 3: "lzma", 4: "lzo"}
 def identify_squashfs(data):
     """先頭を見て squashfs の版とエンディアンを返す。読めなければ None。
 
-    4.0 は LE 専用（mainline）。3.x は BE/LE 両方の像がある（SQUASHFS_SWAP_*）。
+    4.0 は LE 専用（mainline）。3.x は BE/LE 両方のイメージがある（SQUASHFS_SWAP_*）。
     """
     if len(data) < 96:
         return None
@@ -61,7 +61,7 @@ def check_squashfs(data, spec):
 
 
 def gzip_deterministic(raw):
-    """gzip -9 相当。ヘッダの時刻・ファイル名を持たせない（同じ入力から同じ像）。"""
+    """gzip -9 相当。ヘッダの時刻・ファイル名を持たせない（同じ入力から同じイメージ）。"""
     co = zlib.compressobj(9, zlib.DEFLATED, -15)
     body = co.compress(raw) + co.flush()
     hdr = b"\x1f\x8b\x08\x00" + b"\x00\x00\x00\x00" + b"\x02\x03"    # mtime 0 / XFL=最大圧縮 / OS=Unix

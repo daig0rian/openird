@@ -43,7 +43,7 @@ openird/
 ├─ host/openird-mkimage/    # factory コンテナ生成（鍵は埋めず外から渡す）
 ├─ host/openird-fwup/       # factory コンテナを UPnP で機器へ投入（鍵を扱わない）
 ├─ host/ird-mkaddon/        # アドオン（.ird）と索引の生成。SDK にも入る
-├─ scripts/build-kernel.sh  # 検証済みカーネル（mtd5 像）の再現ビルド（make kernel）
+├─ scripts/build-kernel.sh  # 検証済みカーネル（mtd5 イメージ）の再現ビルド（make kernel）
 ├─ scripts/fetch-buildroot.sh # pin した Buildroot の取得・検証・展開
 ├─ scripts/make-sdk.sh      # アドオン作者向け SDK を固める（make sdk）
 ├─ tests/overlayfs/         # カーネルパッチの QEMU 機能テスト（make test-overlayfs）
@@ -73,7 +73,7 @@ openird/
 | factory / sysupgrade 分離 | ◎ | factory=`openird-mkimage`（生成）＋`openird-fwup`（投入） / sysupgrade=ネイティブ |
 | イメージ命名 | ◎ | `openird-<ver>-<target>-<device>-{factory,sysupgrade}.bin` |
 | UCI 設定レイヤ | ○（語彙） | `ird-config` を自前実装 |
-| package feed | ○（語彙を2分割・feed 語は不採用） | build-time=**ビルドオプション**（`BR2_EXTERNAL` の package・defconfig 選択・像に焼く）／runtime=**アドオン**（`.ird` をアドオンリポジトリから `ird-addon` で overlay に後載せ）。非互換の別機構（[docs/addon.md](addon.md)） |
+| package feed | ○（語彙を2分割・feed 語は不採用） | build-time=**ビルドオプション**（`BR2_EXTERNAL` の package・defconfig 選択・イメージに焼く）／runtime=**アドオン**（`.ird` をアドオンリポジトリから `ird-addon` で overlay に後載せ）。非互換の別機構（[docs/addon.md](addon.md)） |
 | DCO / パッチ流儀 | ◎ | CONTRIBUTING.md で採用 |
 | OpenWrt ビルド本体 | ✕ | 上流 Buildroot を使う（古い非 DT カーネルのため） |
 | LuCI | ✕ | 軽量 `ird-webui`（BE MIPS / 256MB 制約） |

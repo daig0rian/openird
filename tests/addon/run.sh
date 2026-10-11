@@ -415,7 +415,7 @@ addon remove hello >/dev/null
 mkdir "$R/tmp/ird-addon.lock"
 refuses "同時には走らない" "another ird-addon is running" addon install hello
 rmdir "$R/tmp/ird-addon.lock"
-# base が後から同じパスを持った（像の更新）: 消すと whiteout が base を隠すので残す
+# base が後から同じパスを持った（イメージの更新）: 消すと whiteout が base を隠すので残す
 addon install hello >/dev/null
 echo base > "$R/rom/usr/bin/hello"
 says "base が持つようになったパスは消さない" "kept /usr/bin/hello" addon remove hello
@@ -449,7 +449,7 @@ mv "$R/rom" "$T/rom.away"
 refuses "base が見えなければ入れない" "not running on an overlay" addon install hello
 mv "$T/rom.away" "$R/rom"
 sed -i '/^ADDON_ARCH=/d' "$R/etc/openird/board.conf"
-refuses "Arch id の無い像では入れない" "no ADDON_ARCH" addon install hello
+refuses "Arch id の無いイメージでは入れない" "no ADDON_ARCH" addon install hello
 
 echo
 echo "== $pass passed, $fail failed"

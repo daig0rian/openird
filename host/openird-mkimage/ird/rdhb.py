@@ -33,7 +33,7 @@ def build(image, load, name, cksum):
 
 
 def inflate(img):
-    """RDHB 像のペイロードを展開して生 Image を返す（先頭 2B の 78 9c を飛ばし raw-inflate）。"""
+    """RDHB イメージのペイロードを展開して生 Image を返す（先頭 2B の 78 9c を飛ばし raw-inflate）。"""
     d = zlib.decompressobj(wbits=-15)
     return d.decompress(img[HDR_LEN + 2:]) + d.flush()
 

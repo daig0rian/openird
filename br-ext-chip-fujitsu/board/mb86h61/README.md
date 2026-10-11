@@ -35,7 +35,7 @@ ARM1176（ARMv6, VFPv2）**リトルエンディアン** / linux-2.6.31.6-rt19�
 | 1 | `libooter env` | 0x100000 | 64KB | cmdline / MAC。`setparam`+`saveparam` でのみ変更 |
 | 2 | `slot info0` | 0x110000 | 64KB | libooter のカーネルスロット選択メタ |
 | 3–4 | `nvram0/1` | 0x120000 | 64KB×2 | ベンダ NVRAM。温存 |
-| 5 | `kernel bslot` | 0x140000 | 1.5MB | RDHB 梱包カーネル（現行像は 1.26MB＝80%） |
+| 5 | `kernel bslot` | 0x140000 | 1.5MB | RDHB 梱包カーネル（現行イメージは 1.26MB＝80%） |
 | 6 | `rootfs` | 0x2C0000 | **5MB** | squashfs（RO）。`root=/dev/mtdblock6` |
 | 7 | `rootfs_data` | 0x7C0000 | **7MB** | overlayfs の upper（jffs2） |
 | 8 | `firstaid` | 0xEC0000 | **1MB** | 救助用 rootfs。`root=/dev/mtdblock8` で起動 |

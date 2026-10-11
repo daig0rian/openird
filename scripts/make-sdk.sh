@@ -38,7 +38,7 @@ done
 [ -n "$TUPLE" ] && [ -x "$HOST/bin/$TUPLE-gcc" ] || {
 	echo "✗ cross toolchain が見つからない（$HOST/<tuple>/sysroot と bin/<tuple>-gcc）"; exit 1; }
 
-# Arch id は機器が名乗るのと同じ 1 か所から取る（像の board.conf）
+# Arch id は機器が名乗るのと同じ 1 か所から取る（イメージの board.conf）
 CONF="$O/target/etc/openird/board.conf"
 IRD_ARCH="$(sed -n 's/^ADDON_ARCH=//p' "$CONF" 2>/dev/null | head -n 1)"
 [ -n "$IRD_ARCH" ] || {
