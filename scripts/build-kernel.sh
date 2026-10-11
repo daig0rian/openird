@@ -5,7 +5,8 @@
 #   例:      scripts/build-kernel.sh mb86h61_softbank_sb-tv02-wfpl
 #
 # pin は各機種の board/<family>/kernel/build.env。toolchain と host lib は公開URLから
-# sha256 検証つきで自動取得。GPL カーネルソースは各自 dl/ に置く（sha256 で検証）。
+# sha256 検証つきで自動取得。GPL カーネルソースは、build.env に KERNEL_URL がある機種は
+# 同じく自動取得、無い機種は各自 dl/ に置く（どちらも sha256 で検証）。
 # 出力: mb86h61 は output/<BOARD>/mtd5.img（RDHB イメージ）、emma3sep は
 #       output/<BOARD>/vmlinux.img（Legacy uImage）。梱包は build.env の KERNEL_PACK で決まる。
 set -eu
@@ -55,7 +56,10 @@ fi
 export LD_LIBRARY_PATH="$HL:${LD_LIBRARY_PATH:-}"
 
 echo "== [3/6] GPL kernel source =="
-if [ ! -f "$DL/$KERNEL_TARBALL" ] || ! verify "$KERNEL_SHA256" "$DL/$KERNEL_TARBALL"; then
+if [ -n "${KERNEL_URL:-}" ]; then
+  # 公開の URL が pin されている機種は取りに行く（sha256 で検証。手元にあれば使う）
+  fetch "$KERNEL_URL" "$KERNEL_SHA256" "$DL/$KERNEL_TARBALL"
+elif [ ! -f "$DL/$KERNEL_TARBALL" ] || ! verify "$KERNEL_SHA256" "$DL/$KERNEL_TARBALL"; then
   echo "✗ GPL カーネルソースが必要: $KERNEL_TARBALL"
   echo "  sha256=$KERNEL_SHA256"
   echo "  $KERNEL_SRC_NOTE"
