@@ -1,0 +1,229 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# リリース物を作る（docs/release.md）。
+#
+#   版のタグ（v*）の push    … build → factory（承認が要る）→ 下書きのリリース
+#   手動（workflow_dispatch）… build だけ。リリースも鍵も使わない（ワークフローの試運転用）
+#
+# 公開はしない。できるのは下書き（draft）までで、公開のボタンは人が押す。
+#
+# 更新用の鍵の扱い（docs/release.md「factory イメージと鍵」）:
+#   - 鍵は environment "factory" のシークレットにだけ置く。承認者が承認するまで factory
+#     ジョブは始まらず、鍵にも触れない。environment は v* のタグからしか使えない。
+#   - factory ジョブでは外部の Action を 1 つも使わない（run: だけ）。同じジョブで動くコードは、
+#     鍵をランナーのメモリから読めるため。動かすのは、タグの commit にある自前のスクリプト、
+#     ハッシュで固定した pycryptodome、ランナーに初めから入っている道具（git・gh・python3）だけ。
+#   - 第三者のソースを大量にコンパイルする build ジョブは、鍵もリリースの書き込み権限も持たない。
+#   - 鍵の値は、どのジョブのログにも出さない（指紋も出さない）。
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Arch id ごとに 1 機種（docs/release.md）。機種を足すときは matrix にする
+  BOARD: emma3sep_softbank_poe-br100-yb1
+  # 配布物にはビルドした場所の絶対パスが入る。手元でビルドするときと同じ場所にそろえる
+  TREE: /var/tmp/openird-build/openird
+
+jobs:
+  build:
+    name: build (SDK, sources, kernel, rootfs)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.collect.outputs.version }}
+      kernel_sha256: ${{ steps.collect.outputs.kernel_sha256 }}
+      rootfs_sha256: ${{ steps.collect.outputs.rootfs_sha256 }}
+      kernel_source: ${{ steps.collect.outputs.kernel_source }}
+      kernel_source_sha256: ${{ steps.collect.outputs.kernel_source_sha256 }}
+    steps:
+      - name: Host packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libncurses-dev wget xz-utils cpio unzip rsync file \
+            python3 git ca-certificates
+
+      - name: Neutral build environment
+        run: |
+          # 配布物には、ビルドした機械のホスト名も入る（SDK の bin/libtool）
+          echo "127.0.1.1 openird" | sudo tee -a /etc/hosts >/dev/null
+          sudo hostname openird
+          mkdir -p "$(dirname "$TREE")"
+
+      - name: Source (this commit, from the public repository)
+        run: |
+          set -eu
+          git clone "https://github.com/${GITHUB_REPOSITORY}.git" "$TREE"
+          cd "$TREE"
+          git checkout --detach "$GITHUB_SHA"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            test "$(git describe --tags --exact-match --match 'v[0-9]*')" = "$GITHUB_REF_NAME"
+          fi
+          git log -1 --format='%H %s'
+
+      - name: Build (SDK, corresponding sources, rootfs)
+        working-directory: ${{ env.TREE }}
+        run: |
+          set -eu
+          # make release は、版のタグを打った commit の、変更の無い checkout でだけ通る
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            make release BOARD="$BOARD"
+          else
+            make sdk BOARD="$BOARD"
+          fi
+
+      - name: Build (kernel)
+        working-directory: ${{ env.TREE }}
+        run: make kernel BOARD="$BOARD"
+
+      - name: Factory payload without the key
+        working-directory: ${{ env.TREE }}
+        run: |
+          # 鍵の要らないところまで（イメージが機種の契約に合うか・write.sh の生成）をここで確かめる
+          make factory BOARD="$BOARD" FACTORY_ARGS="--payload-only --outdir $RUNNER_TEMP/payload"
+
+      - name: Collect
+        id: collect
+        working-directory: ${{ env.TREE }}
+        run: |
+          set -eu
+          ver="$(git describe --tags --match 'v[0-9]*' | sed 's/^v//')"
+          envf="$(ls br-ext-chip-*/board/"${BOARD%%_*}"/kernel/build.env)"
+          ksrc="$( . "./$envf"; echo "$KERNEL_TARBALL" )"
+          out="$RUNNER_TEMP/out"
+          mkdir -p "$out/images" "$out/release"
+          cp "output/$BOARD/vmlinux.img" "output/$BOARD/images/rootfs.img" "dl/$ksrc" "$out/images/"
+          if [ -d "output/release/$ver" ]; then
+            cp "output/release/$ver"/* "$out/release/"
+            ( cd "$out/release" && sha256sum -c SHA256SUMS )
+          fi
+          ( cd "$out/images" && sha256sum -- * )
+          sum() { sha256sum < "$out/images/$1" | cut -d' ' -f1; }
+          {
+            echo "version=$ver"
+            echo "kernel_sha256=$(sum vmlinux.img)"
+            echo "rootfs_sha256=$(sum rootfs.img)"
+            echo "kernel_source=$ksrc"
+            echo "kernel_source_sha256=$(sum "$ksrc")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload (kernel, rootfs, kernel source)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: images
+          path: ${{ runner.temp }}/out/images/
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+
+      - name: Upload (SDK, sources)
+        if: github.ref_type == 'tag'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release
+          path: ${{ runner.temp }}/out/release/
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+
+  factory:
+    name: factory image and draft release
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # 承認が要る。承認の前に見ること: docs/release.md「承認するときに見ること」
+    environment: factory
+    permissions:
+      contents: write   # 下書きのリリースを作る
+      actions: read     # build ジョブの成果物を取る
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.build.outputs.version }}
+      KERNEL_SHA256: ${{ needs.build.outputs.kernel_sha256 }}
+      ROOTFS_SHA256: ${{ needs.build.outputs.rootfs_sha256 }}
+      KERNEL_SOURCE: ${{ needs.build.outputs.kernel_source }}
+      KERNEL_SOURCE_SHA256: ${{ needs.build.outputs.kernel_source_sha256 }}
+    steps:
+      # ★ このジョブに uses: を足さないこと。鍵を読めるコードを増やさない。
+
+      - name: Inputs from the build job
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/in"
+          gh run download "$GITHUB_RUN_ID" -n images -D "$RUNNER_TEMP/in/images"
+          gh run download "$GITHUB_RUN_ID" -n release -D "$RUNNER_TEMP/in/release"
+          cd "$RUNNER_TEMP/in/images"
+          printf '%s  %s\n' "$KERNEL_SHA256" vmlinux.img "$ROOTFS_SHA256" rootfs.img \
+            "$KERNEL_SOURCE_SHA256" "$KERNEL_SOURCE" | sha256sum -c -
+          cd ../release
+          sha256sum -c SHA256SUMS
+
+      - name: Tool (the tagged commit) and its one dependency (pinned by hash)
+        run: |
+          set -eu
+          git clone "https://github.com/${GITHUB_REPOSITORY}.git" "$RUNNER_TEMP/src"
+          cd "$RUNNER_TEMP/src"
+          git checkout --detach "$GITHUB_SHA"
+          test "$(git describe --tags --exact-match --match 'v[0-9]*')" = "$GITHUB_REF_NAME"
+          python3 -m pip install --disable-pip-version-check --require-hashes --no-deps \
+            --only-binary=:all: --target "$RUNNER_TEMP/pydeps" \
+            -r host/openird-mkimage/requirements-factory.txt
+
+      - name: Pack the factory image
+        env:
+          V1B_AES_KEY: ${{ secrets.V1B_AES_KEY }}
+          V1B_ZIP_PASSWORD: ${{ secrets.V1B_ZIP_PASSWORD }}
+        run: |
+          set -eu
+          umask 077
+          k="$(mktemp -d)"
+          trap 'rm -rf "$k"' EXIT
+          if [ -z "$V1B_AES_KEY" ] || [ -z "$V1B_ZIP_PASSWORD" ]; then
+            echo "environment 'factory' has no V1B_AES_KEY / V1B_ZIP_PASSWORD"
+            exit 1
+          fi
+          printf '%s' "$V1B_AES_KEY" > "$k/key"
+          printf '%s' "$V1B_ZIP_PASSWORD" > "$k/pw"
+          unset V1B_AES_KEY V1B_ZIP_PASSWORD
+          cd "$RUNNER_TEMP/src"
+          OPENIRD_V1B_KEY_FILE="$k/key" OPENIRD_V1B_ZIPPW_FILE="$k/pw" \
+          PYTHON=python3 PYTHONPATH="$RUNNER_TEMP/pydeps" \
+            scripts/make-factory.sh "$BOARD" --version "$VERSION" \
+              --kernel "$RUNNER_TEMP/in/images/vmlinux.img" \
+              --rootfs "$RUNNER_TEMP/in/images/rootfs.img" \
+              --outdir "$RUNNER_TEMP/in/release"
+
+      - name: Draft release
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP/in/release"
+          # カーネルのバイナリを配るので、対応するソースを同じ場所に置く
+          cp "../images/$KERNEL_SOURCE" .
+          rm -f SHA256SUMS
+          sha256sum -- * > ../SHA256SUMS
+          mv ../SHA256SUMS .
+          cat SHA256SUMS
+          pre=""
+          case "$GITHUB_REF_NAME" in *-rc*) pre=--prerelease ;; esac
+          {
+            echo "下書きです。公開の前に、factory イメージ（\`*-factory.bin\`）を実機に書いて確かめ、"
+            echo "この文面を書き直してください（docs/release.md）。"
+            echo
+            echo "- タグ: \`$GITHUB_REF_NAME\`（\`$GITHUB_SHA\`）"
+            echo "- ビルド: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } > ../notes.md
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag $pre \
+            --title "OpenIRD $VERSION" --notes-file ../notes.md -- *
