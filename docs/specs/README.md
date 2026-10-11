@@ -20,7 +20,7 @@ clean-room のファイアウォール。観察 → 実装の間に挟む「文�
 | [rdhb-kernel-container.md](rdhb-kernel-container.md) | SB-TV02-WFPL mtd5 のカーネル容器（RDHB） | 形式 | `verified` |
 | [update-v1b-container.md](update-v1b-container.md) | emma3sep 系の更新コンテナ（UPnP factory 経路） | 形式 | `verified` |
 | [mbin-firmware-container.md](mbin-firmware-container.md) | MaxLinear 復調器のファーム容器（MBIN・段階 C の前提） | 形式 | `implemented` |
-| [emma3sep-upnp-update.md](emma3sep-upnp-update.md) | emma3sep 系の UPnP 更新エンドポイント（factory の投入側） | 機構 | `implemented` |
+| [emma3sep-upnp-update.md](emma3sep-upnp-update.md) | emma3sep 系の UPnP 更新エンドポイント（factory の投入側） | 機構 | `verified` |
 | [poe-br100-yb1-nand-update.md](poe-br100-yb1-nand-update.md) | POE-BR100-YB1 の NAND 書き込み（factory の書き込み側） | 機構 | `verified` |
 | [sb-tv02-wfpl-usb-update.md](sb-tv02-wfpl-usb-update.md) | SB-TV02-WFPL の USB 更新（end-user factory 経路） | 機構 | `specified` |
 | [sb-tv02-wfpl-libooter-env.md](sb-tv02-wfpl-libooter-env.md) | SB-TV02-WFPL の libooter env（mtd1・cmdline・MAC の所在） | 機構 | `specified` |
