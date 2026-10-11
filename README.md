@@ -64,7 +64,7 @@ OpenWrt から受け継ぐのは実装ではなく、以下の**設計思想と�
 
 初期開発段階です。最初の機種（BMMPX1301）で、GPL ソースから再ビルドしたカーネルと Buildroot で新規に作ったユーザランドだけのイメージが実機で動き、放送を受信して TS を取り出せるところまで到達しています。
 
-対象にしている機種は、BMMPX1301（POE-BR100-YB1）、SB-TV02-WFPL、SB-TV06-WRIP（POE-BR310L-SB1）です。**機種ごとの対応状況・制約・導入の手順は、Wiki の[対応機種](https://github.com/daig0rian/openird/wiki/Supported-Devices)にまとめています。**
+対象にしている機種は、BMMPX1301（POE-BR100-YB1）、SB-TV02-WFPL、SB-TV06-WRIP（POE-BR310L-SB1）、SB-TV04-WRIP です。**機種ごとの対応状況・制約・導入の手順は、Wiki の[対応機種](https://github.com/daig0rian/openird/wiki/Supported-Devices)にまとめています。**
 
 ## 文書
 
