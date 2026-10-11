@@ -16,17 +16,24 @@
    ```
    git tag -a v26.10 -m "OpenIRD 26.10"
    ```
-2. **ビルド用の git clone をそのタグに合わせる**（Linux/WSL の ext4 上。`dl` は共有の
-   ダウンロードキャッシュへのリンクでよい）:
+2. **ビルド用の git clone を、そのタグで作る**（Linux/WSL の ext4 上）。**場所は個人名の
+   入らないパスにする**（下の「決まり」）。公開しているリポジトリから取る:
    ```
-   git pull --ff-only --tags        # clone の HEAD がタグの commit になること
+   git clone https://github.com/daig0rian/openird.git /var/tmp/openird-build/openird
+   cd /var/tmp/openird-build/openird
+   git checkout --detach v26.10
+   cp -al <共有のダウンロードキャッシュ> dl    # 任意。symlink にはしない（元のパスが見える）
    ```
-3. **リリース物を作る**（Arch id ごとに、その Arch id の機種を 1 つ指定する）:
+3. **リリース物を作る**（Arch id ごとに、その Arch id の機種を 1 つ指定する）。ビルドの間だけ、
+   ホスト名を `openird` に見せる（機械の設定は変えない）:
    ```
-   make release BOARD=emma3sep_softbank_poe-br100-yb1
+   unshare --user --map-root-user --uts sh -c "hostname openird && \
+     exec unshare --user --map-user=$(id -u) --map-group=$(id -g) -- \
+     make release BOARD=emma3sep_softbank_poe-br100-yb1"
    ```
    その機種の `output` を消して最初からビルドし（16 コアで 10 分ほど）、
    `output/release/<版>/` に SDK・ソース一式・`SHA256SUMS` を揃える。
+   **出す前に、SDK とソース一式を展開して、自分のユーザ名とホスト名で grep し、0 件を確かめる。**
 4. **公開する**（ここは人が行う）:
    ```
    git push origin main v26.10
@@ -46,6 +53,11 @@
   確かめて、そうでなければ止まる。版の名前が中身を指すこと（git でないツリーは `unknown` に
   なる）と、git に入っているとおりのファイルでビルドできること（Windows から写したツリーは
   実行ビットの付け忘れを隠す）を、リリースのたびに確かめるため。
+- **個人名・機械の名前が入らない環境でビルドする。** 配布物には、ビルドした場所の絶対パス
+  （SDK の toolchain の数百ファイルと、ソース一式の `buildroot.config`・`manifest.csv`）と、
+  ビルドした機械のホスト名（SDK の `bin/libtool`）が入る。`/home/<名前>/…` でビルドすると、
+  その名前を配ることになる。`relocate-sdk.sh` が書き換えるのは使う側の手元の写しで、
+  配るファイルの中身は変わらない。
 - **信頼の単位は sha256。** 署名はしない。出したファイルは差し替えない（直すなら版を上げる）。
   使う側は URL と sha256 を pin している。
 - **SDK は Arch id ごとに 1 本。** 同じ Arch id の機種を足しても SDK は増えない。
