@@ -9,19 +9,9 @@ ARM1176（ARMv6, VFPv2）**リトルエンディアン** / linux-2.6.31.6-rt19�
 
 対象機: SB-TV02-WFPL。
 
-## 到達点（2026-09-16 実機で確認）
-
-| できること | 確認内容 |
-|---|---|
-| 自前カーネルの起動 | GPL 2.6.31.6-rt19 を再ビルド → RDHB 梱包 → mtd5。overlayfs / jffs2 を移植して有効化 |
-| 書き込み手段の自立 | mtd ツールを持つ first-aid rootfs を mtd6/mtd8 に置き、ベンダ app 層（`dione_server`）非依存に |
-| 区画の切り直し | rootfs 5MB / rootfs_data 7MB / firstaid 1MB（下表）。カーネル差し替え → 再起動だけで移行 |
-| 書き込み可能な root | squashfs(mtd6) + jffs2(mtd7) の overlayfs を preinit が組み立て、`pivot_root` で本番 root に |
-| リモートシェル | dropbear。DHCP でアドレス取得、`passwd` で設定した root パスワードは overlay に残る |
-| 復旧手段 | firstaid 区画(mtd8) から起動して mtd6 を書き直す。libooter の cmdline は mtd1 のみ＝可逆 |
-
-未着手: sysupgrade（現状は firstaid から手で書く）、Linux から libooter env を書く自前ツール、
-チューナ（段階B/C）。
+何が実機で動くか（到達点・未着手・チューナーを提供できない理由）は、Wiki の
+[SB-TV02-WFPL](https://github.com/daig0rian/openird/wiki/SB%E2%80%90TV02%E2%80%90WFPL) に置いている。
+この文書は、区画の設計と、実機への入れ方・起動の流れを書く。
 
 ## SPI-NOR の区画（OpenIRD レイアウト）
 

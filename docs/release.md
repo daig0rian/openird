@@ -36,6 +36,9 @@
 5. **取得して確かめる**（アドオン作者と同じ道筋）: リリースから SDK と `SHA256SUMS` を取り、
    `sha256sum -c` → 展開 → `./relocate-sdk.sh` → `. ./sdk.env` → 何か 1 つビルドして
    `ird-mkaddon build`。
+6. **Wiki の対応機種表を更新する**: [対応機種](https://github.com/daig0rian/openird/wiki/Supported-Devices)の
+   「確認した版」を、この版で実機確認した機種だけ書き換える。確認していない機種は前の版のまま
+   残す（＝どの版で確かめたかが分かる）。
 
 ## 決まり
 

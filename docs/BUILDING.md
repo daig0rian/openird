@@ -4,12 +4,9 @@ clone した人が、検証済みのイメージを再現するための手順�
 **rootfs**（本番＋復旧用の 2 種）を、pin した外部ソースから再現できる。
 
 ## 対応状況
-| 機種 (BOARD) | カーネル再現ビルド | rootfs | 実機起動確認 |
-|---|---|---|---|
-| `mb86h61_softbank_sb-tv02-wfpl` (SB-TV02-WFPL) | ✅ `make kernel`（区画切り直し済み＝パッチ 0015） | ✅ `make BOARD=…`（overlay root + SSH） | ✅ 実機で起動・overlay root・SSH ログインまで確認 |
-| `mb86h61_softbank_sb-tv02-wfpl_firstaid` | （同上のカーネルを使う） | ✅ `make BOARD=…_firstaid` | ✅ mtd6 / mtd8 の両方で起動確認（`board/mb86h61/firstaid/README.md`） |
-| `emma3sep_softbank_poe-br100-yb1` (BMMPX1301) | ✅ `make kernel`（uImage。チューナのドライバを組み込む） | ✅ `make BOARD=…`（squashfs 3.1 BE・overlay root・アドオン） | ✅ 実機の NAND から起動し、`/dev/irdvideo0` で受信まで確認 |
-| その他 | 未 | 未 | 未 |
+ビルドできる機種（`BOARD`）は `make list-boards` で出る。実機で何が動くかは、Wiki の
+[対応機種](https://github.com/daig0rian/openird/wiki/Supported-Devices)にまとめている
+（機種ごとの状況をこの文書には持たない）。
 
 以下の節は SB-TV02-WFPL を例に書いてある。BMMPX1301 は `make BOARD=…`（rootfs）を先に通してから
 `make kernel BOARD=…` の順で、出力は `output/<BOARD>/images/rootfs.img` と `output/<BOARD>/vmlinux.img`。

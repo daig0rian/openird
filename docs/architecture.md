@@ -56,13 +56,9 @@ openird/
 
 ## 対象機種（現在）
 
-| BOARD (defconfig 名) | 製品 | SoC / ツリー | カードリーダ |
-|---|---|---|---|
-| `emma3sep_softbank_poe-br100-yb1` | BMMPX1301 | Renesas EMMA3SEP / renesas | 無（LITE） |
-| `mb86h61_softbank_sb-tv02-wfpl`   | SB-TV02-WFPL | Fujitsu MB86H61 / fujitsu | 有（Dione 下＝当面 deferred） |
-| `emma3sep_softbank_sb-tv06-wrip`  | SB-TV06-WRIP (POE-BR310L-SB1) | Renesas EMMA3SEP / renesas | 有（可能なら PC/SC 対応） |
-
-> SB-TV06-WRIP の板サポートは GPL 未収録のため bring-up は重い（後続マイルストーン）。
+対象機種の一覧と、機種ごとの対応状況は、Wiki の
+[対応機種](https://github.com/daig0rian/openird/wiki/Supported-Devices)に置く（`BOARD` 名も
+そこに載せる）。ビルドできる機種は `make list-boards` で出る。この文書には一覧を持たない。
 
 ## OpenWrt 管理モデルの適用範囲
 
@@ -86,8 +82,11 @@ openird/
 | 層 | 置き場 | 理由 |
 |---|---|---|
 | Open 層 spec（chardev 契約・区画表・観察事実）＝ clean-room の firewall | **repo `docs/specs/`** | `Spec-Ref` の不変・レビュー済み・provenance/PII 検査済みターゲット。フック/PR/CI が効く |
-| 導入・復旧 how-to / UART ピン配 / FAQ / 写真 / コミュニティメモ | **GitHub Wiki** | 頻繁更新・人向け・ビルド非依存。編集しやすさが活きる |
+| 機種ごとの対応状況（対応機種表・機種ページ）/ 導入・復旧 how-to / UART ピン配 / FAQ / 写真 / コミュニティメモ | **[GitHub Wiki](https://github.com/daig0rian/openird/wiki)** | 頻繁更新・人向け・ビルド非依存。編集しやすさが活きる |
 
+- **機種ごとの対応状況の台帳は Wiki の 1 か所だけ。** README やこの `docs/` に状況表を
+  持たない（2 か所に持つと片方が古くなる）。Wiki の対応機種表には「確認した版」と
+  「実機で確かめた日」を書き、リリースのたびに更新する（[release.md](release.md)）。
 - `Spec-Ref:` は必ず **repo の spec** を指す（Wiki は誰でも後から書換え可能＝監査線にならない）。
 - **Wiki は本体のフック/PR/CI の圏外**。ダンプ・鍵・未伏字の識別情報は Wiki に
   置かない。Wiki の "anyone can edit" は off にする。
