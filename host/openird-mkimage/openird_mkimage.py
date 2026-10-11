@@ -10,8 +10,8 @@
 現状の実装範囲:
   mb86h61 / sb-tv02-wfpl   : 確定経路（booter-root から MTD を直接書く。暗号ゲート無し）。
   emma3sep / poe-br100-yb1 : 純正の更新コンテナ <FAMILY>_UPDATE_v1b を使う経路。
-                             probe / unpack / repack まで実装済み。OpenIRD 自身の
-                             image を作る pack-factory は未実装。
+                             probe / unpack / repack と、OpenIRD 自身のイメージを
+                             包む pack-factory。
 
 不明点（HOLD）は推測で埋めない。refuse して理由を示す。詳細は
 NOTES-sb-tv02-factory.md / NOTES-poe-br100-yb1-factory.md を参照。

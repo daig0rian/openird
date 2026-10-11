@@ -35,7 +35,8 @@ uv run --no-project python openird_mkimage.py <cmd> ...   # 依存不要のコ�
   経路（暗号ゲート無し）。一般ユーザ向けの USB 経路は未解明点が残る（NOTES 参照）。
 - **poe-br100-yb1 (Renesas EMMA3SEP)** — 純正の更新コンテナ `BLUR_UPDATE_v1b` を UPnP で
   流し込む経路。この機種には開発者向けの直接書き込み経路が無い（u-boot がロック）ので
-  **これが本線**。現状は `probe-factory`（鍵不要の観察）まで実装済み。
+  **これが本線**。観察（`probe-factory`）・ほどき直し（`unpack-factory` / `repack-factory`）と、
+  OpenIRD 自身のイメージを包む `pack-factory` がある。
 
 ## サブコマンド（sb-tv02-wfpl）
 
@@ -57,7 +58,7 @@ uv run --no-project python openird_mkimage.py <cmd> ...   # 依存不要のコ�
 | `probe-factory <file>...` | **不要** | v1b コンテナのヘッダ 332B を読む。族タグ・版数・**h38 = SHA-1(本体)** の検算・本体長の 16B 整合。複数渡すと表で出る |
 | `unpack-factory <file> <outdir>` | 要 | 3 段復号（AES-128-ECB → ZipCrypto → 無暗号 ZIP）。段ごとに成果物を残し、csum を検算する |
 | `repack-factory <in> <out>` | 要 | 純正コンテナを組み直す。`--rebuild none/zipcrypto/all` でどの層から自前にするかを選べる。`--replace NAME=PATH` でペイロードの 1 点を差し替え（書き込み固定長を超えたら hard error） |
-| `pack-factory <board> ...` | 要 | OpenIRD 自身の factory イメージを作る。**未実装** |
+| `pack-factory <board> <out> [--kernel K] [--rootfs R] [--fw-version X.Y.Z] [--payload-only]` | 要（`--payload-only` は不要） | OpenIRD の kernel / rootfs から factory コンテナを作る。渡されたイメージが機種の契約（uImage の形・squashfs の版・書き込み固定長・ブートローダの展開余裕）に合うかを検査し、`write.sh` を仕様どおり生成する。書くのは kernel と rootfs だけで、ほかの区画には触れない。`--payload-only` は暗号層を被せないペイロード ZIP だけを出す |
 
 `repack-factory --rebuild none` は原本とバイト一致する（ヘッダと AES 層の回帰テストになる）。
 `--replace` で差し替えた場合、自己検証は「差し替えなかった点は原本とバイト一致」「差し替えた点は

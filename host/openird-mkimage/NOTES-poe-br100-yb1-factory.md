@@ -24,7 +24,7 @@ SB-TV02-WFPL と違い、**この機種には開発者向けの直接書き込�
 | P2a | `ird/zipcrypto.py`（ZipCrypto 付き ZIP の書き出し） | **完了**。V1/V2 に依存しないので先に片付けた |
 | P2b | `repack-factory`（純正の組み直し・ペイロードの差し替え） | **完了** |
 | P2c | ベンダ rootfs を 3.1BE で往復する道具（`scripts/fetch-squashfs3.sh` ＋ `tools/vendor-rootfs/mkshell.sh`） | **完了** |
-| P2d | `pack-factory`（OpenIRD 自身の kernel/rootfs から factory イメージを作る） | 未着手 |
+| P2d | `pack-factory`（OpenIRD 自身の kernel/rootfs から factory イメージを作る） | **完了**（2026-10-10）。`openird-fwup` での投入は実機で未確認 |
 | P3 | UPnP 投入クライアント（別ツール・鍵を扱わない） | **完了**（[`host/openird-fwup`](../openird-fwup/)） |
 
 **unpack を pack より先に作る。** 仕様 §7 の U1/U2 は「鍵回収後に復号平文で検算すれば

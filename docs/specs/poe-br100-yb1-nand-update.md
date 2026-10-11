@@ -5,7 +5,7 @@ Status: verified
 As-of:  純正 BLUR v2.1.17 の復号平文 / GPL 2.6.27.39 / 実機 POE-BR100-YB1 (2026-09-21)
 Impl:   host/openird-mkimage/boards/poe-br100-yb1.json
 Tests:  tests/mkimage/
-Note:   §3.2 の write.sh 生成（pack-factory）と §5 の 512Mb 機は未実装
+Note:   §3.2 の write.sh は pack-factory（host/openird-mkimage/ird/v1b.py）が生成する。§5 の 512Mb 機は未実装
 -->
 
 <!-- Open 層: 機器内の平文シェルスクリプト読解（更新・容量別書き込み・後始末の各スクリプト）
