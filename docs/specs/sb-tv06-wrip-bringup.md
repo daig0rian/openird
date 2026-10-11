@@ -85,7 +85,8 @@ YB1 で最大の関門だった箇所が丸ごと無い。
 
 - **鍵は族横断で単一**＝回収済みの `BLUR` 用鍵・ZIP パスワードでそのまま復号・再暗号化できる。
   `probe-factory` で `LINDBERG_UPDATE_v1b v1.0.2`・`h38 = SHA-1(body)` を確認。
-- **投入クライアント = `fwup`**（OpenIRD ホストツール。ベンダサーバに触れない）。
+- **投入クライアント = `fwup`**（[`host/openird-fwup`](../../host/openird-fwup/)。ベンダサーバに触れない。
+  手順の仕様は [emma3sep-upnp-update.md](emma3sep-upnp-update.md)）。
   UPnP で機器を発見 → ローカル HTTP でコンテナを配って `X_UpdateFirmware` を送る →
   機器が Wget で pull → 機器内で `update.sh`→`write1Gb.sh` が u-boot 更新 env を mtd1 に
   書いて reset → U-Boot が `bootcmd=run update` で各区画を焼く。
@@ -125,7 +126,8 @@ uv run openird_mkimage.py repack-factory --rebuild all \
   ../../temp/fw/POE-BR310L-SB1_v1.0.2_data.bin ../../temp/wrip-factory-telnet.bin
 
 # 4. 投入（destructive・毎回ユーザ確認）
-fwup flash <device-ip> temp/wrip-factory-telnet.bin --serve-ip <PC IP> --confirm-flash
+uv run host/openird-fwup/openird_fwup.py flash <device-ip> temp/wrip-factory-telnet.bin \
+  --serve-ip <PC IP> --confirm-flash
 
 # 5. 再起動後: telnet <device-ip>（login: root / パスワード空）
 ```

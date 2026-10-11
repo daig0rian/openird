@@ -25,8 +25,10 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 MKIMAGE = os.path.join(ROOT, "host", "openird-mkimage")
 sys.path.insert(0, MKIMAGE)
 sys.path.insert(0, os.path.dirname(HERE))
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "fwup"))
 
 import spec_status                   # noqa: E402
+import test_fwup                     # noqa: E402
 from ird import rdhb, v1b, zipcrypto, images  # noqa: E402
 from ird.board import h, load_board  # noqa: E402
 
@@ -499,6 +501,11 @@ def test_uimage_decompress_budget():
           spec="poe-br100-yb1-nand-update#2.1")
 
 
+def test_fwup_suite():
+    """openird-fwup のテスト（tests/fwup）。仕様の引用をここの検査に合流させる。"""
+    test_fwup.run(check)
+
+
 def test_spec_declarations():
     """仕様の Status 宣言と、上の実測（spec= の引用）を突き合わせる。"""
     print("[spec] docs/specs の宣言を検査")
@@ -515,6 +522,7 @@ def main():
     test_mbin()
     test_uimage_decompress_budget()
     test_samples()
+    test_fwup_suite()
     test_spec_declarations()
     print()
     if _fail:

@@ -1,10 +1,11 @@
 # emma3sep 系の UPnP 更新エンドポイント（factory 経路の投入側）
 
 <!-- openird-spec
-Status: specified
+Status: implemented
 As-of:  実機 POE-BR100-YB1 fw 1.3.1〜2.1.17 (2026-09-06〜09-21) / SB-TV06-WRIP fw 1.0.2 (2026-09-11・09-26) / SB-TV04-WRIP (2026-10-01・発見のみ)
-Impl:   -
-Tests:  -
+Impl:   host/openird-fwup/openird_fwup.py
+Tests:  tests/fwup/
+Note:   実機への投入はこの仕様の元になった旧クライアントで行った。openird-fwup での実機投入は未実施＝verified にしていない
 -->
 
 <!-- Open 層: 機器が HTTP で公開する機器記述（description.xml）とサービス記述（SCPD）、

@@ -68,6 +68,7 @@ uv run --no-project python openird_mkimage.py <cmd> ...   # 依存不要のコ�
 
 形式の仕様は [update-v1b-container.md](../../docs/specs/update-v1b-container.md)、機器側の
 書き込み機構は [poe-br100-yb1-nand-update.md](../../docs/specs/poe-br100-yb1-nand-update.md)。
+できたコンテナを機器へ渡すのは [openird-fwup](../openird-fwup/)（鍵を扱わない別ツール）。
 実装の段取りと残っている不明点は **NOTES-poe-br100-yb1-factory.md**。
 
 ### 鍵と ZIP パスワードの渡し方

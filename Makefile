@@ -8,6 +8,7 @@
 #   make test-kabi BOARD=<device>      … ベンダ製 .ko と構造体レイアウトが互換かを確かめる
 #   make sdk BOARD=<device>          … アドオン作者向け SDK（toolchain＋sysroot＋ird-mkaddon）
 #   make test-addon                  … アドオン機構（ird-mkaddon / ird-addon）のテスト
+#   make test-fwup                   … openird-fwup（UPnP 投入クライアント）のテスト
 #   make hooks                       … git フック/テンプレートを有効化
 #
 # 外部ツリーは常に「br-ext-common : 該当ベンダツリー」を重ねる。ベンダツリーは
@@ -31,7 +32,7 @@ BR_MAKE = env PATH="$(BR_PATH)" BR2_DL_DIR="$(ROOT)/dl" \
 
 .DEFAULT_GOAL := $(if $(BOARD),all,help)
 
-.PHONY: help list-boards all kernel sdk test-overlayfs test-kabi test-mkimage test-tuner test-addon menuconfig linux-menuconfig savedefconfig clean distclean hooks check-buildroot check-board
+.PHONY: help list-boards all kernel sdk test-overlayfs test-kabi test-mkimage test-fwup test-tuner test-addon menuconfig linux-menuconfig savedefconfig clean distclean hooks check-buildroot check-board
 
 help:
 	@echo "OpenIRD — make list-boards | make BOARD=<device> [menuconfig|clean]"
@@ -40,6 +41,7 @@ help:
 	@echo "     make test-overlayfs BOARD=<device> … overlayfs パッチの QEMU 機能テスト"
 	@echo "     make test-kabi BOARD=<device> … ベンダ製 .ko との構造体レイアウト互換テスト"
 	@echo "     make test-mkimage … openird-mkimage の自己完結テスト (BOARD 不要・uv のみ)"
+	@echo "     make test-fwup … openird-fwup の自己完結テスト (BOARD 不要・偽の機器を 127.0.0.1 に立てる)"
 	@echo "     make test-tuner … tuner-core の PID 列挙のホスト単体テスト (BOARD 不要)"
 	@echo "     make sdk BOARD=<device> … アドオン作者向け SDK (docs/addon.md)"
 	@echo "     make test-addon … アドオン機構のテスト (BOARD 不要・要 Linux/WSL)"
@@ -95,6 +97,10 @@ test-kabi: check-board
 # openird-mkimage のボード定義・容器形式の自己完結テスト（秘密もベンダ資材も不要）
 test-mkimage:
 	@$(ROOT)/tests/mkimage/run.sh
+
+# openird-fwup の自己完結テスト（偽の機器を 127.0.0.1 に立てる。実機もベンダ資材も不要）
+test-fwup:
+	@$(ROOT)/tests/fwup/run.sh
 
 # tuner-core の PID 列挙（ird_psi）のホスト単体テスト（BOARD 不要・ホストの cc のみ）
 test-tuner:

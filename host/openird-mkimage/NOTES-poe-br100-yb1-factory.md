@@ -25,7 +25,7 @@ SB-TV02-WFPL と違い、**この機種には開発者向けの直接書き込�
 | P2b | `repack-factory`（純正の組み直し・ペイロードの差し替え） | **完了** |
 | P2c | ベンダ rootfs を 3.1BE で往復する道具（`scripts/fetch-squashfs3.sh` ＋ `tools/vendor-rootfs/mkshell.sh`） | **完了** |
 | P2d | `pack-factory`（OpenIRD 自身の kernel/rootfs から factory 像を作る） | 未着手 |
-| P3 | UPnP 投入クライアント（別ツール・鍵を扱わない） | 未着手 |
+| P3 | UPnP 投入クライアント（別ツール・鍵を扱わない） | **完了**（[`host/openird-fwup`](../openird-fwup/)） |
 
 **unpack を pack より先に作る。** 仕様 §7 の U1/U2 は「鍵回収後に復号平文で検算すれば
 即決着」と仕様自身が書いており、かつ pack に必要な V1（下記）は平文を見ないと
