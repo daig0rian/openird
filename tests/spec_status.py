@@ -35,19 +35,30 @@ _SECTION = re.compile(r"^##+\s+(?:§\s*)?([0-9]+(?:\.[0-9]+)*)[.．]?\s+(.*)$", 
 
 
 def parse_header(text):
-    """先頭の openird-spec ブロックを読む。無ければ None。"""
+    """先頭の openird-spec ブロックを読む。無ければ None。
+
+    1 行に `Key: value` を 1 つ。キーは行頭から書く。値が長いときは、次の行を字下げして
+    続けてよい（字下げした行は、直前の項目の値に空白 1 つでつなぐ）。続きかどうかを字下げで
+    決めるので、続きの行に `:` が入っていても、別の項目と取り違えない。
+    """
     m = _BLOCK.search(text)
     if not m:
         return None
-    hdr = {}
-    for line in m.group(1).splitlines():
-        line = line.strip()
+    hdr, last = {}, None
+    for raw in m.group(1).splitlines():
+        line = raw.strip()
         if not line or line.startswith("#"):
             continue
+        if raw[:1] in (" ", "\t"):
+            if last is None:
+                return {"_error": "項目の前に、字下げした行がある（キーは行頭から書く）: %r" % line}
+            hdr[last] = (hdr[last] + " " + line).strip()
+            continue
         if ":" not in line:
-            return {"_error": "key: value 形式でない行: %r" % line}
+            return {"_error": "key: value 形式でない行: %r（値の続きなら字下げする）" % line}
         k, v = line.split(":", 1)
-        hdr[k.strip()] = v.strip()
+        last = k.strip()
+        hdr[last] = v.strip()
     return hdr
 
 

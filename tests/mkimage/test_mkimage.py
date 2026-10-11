@@ -506,6 +506,25 @@ def test_fwup_suite():
     test_fwup.run(check)
 
 
+def test_spec_header_parser():
+    """openird-spec ヘッダの読み方（tests/spec_status.py）。書き方は docs/specs/README.md。"""
+    print("[spec] ヘッダの読み方")
+    p = spec_status.parse_header
+    h = p("# t\n\n<!-- openird-spec\nStatus: observing\nAs-of:  2026-10-01\nImpl:   -\nTests:  -\n-->\n")
+    check("1 行 1 項目を読む", h == {"Status": "observing", "As-of": "2026-10-01", "Impl": "-", "Tests": "-"},
+          repr(h))
+    h = p("<!-- openird-spec\nStatus: observing\nNote:   one\n        two: three\n\tfour\nTests:  -\n-->")
+    check("字下げした行は、直前の項目の値の続き（: を含んでいてもよい）",
+          h == {"Status": "observing", "Note": "one two: three four", "Tests": "-"}, repr(h))
+    h = p("<!-- openird-spec\nImpl: a.py,\n      b.py\n-->")
+    check("続きの行でパスの並びを折り返せる", spec_status._paths(h.get("Impl")) == ["a.py", "b.py"], repr(h))
+    h = p("<!-- openird-spec\nStatus: observing\nnot a key line\n-->")
+    check("行頭からの、: の無い行は誤り", "_error" in h, repr(h))
+    h = p("<!-- openird-spec\n  Status: observing\n-->")
+    check("最初の項目を字下げしたら誤り", "_error" in h, repr(h))
+    check("ヘッダが無ければ None", p("# t\n\n本文\n") is None)
+
+
 def test_spec_declarations():
     """仕様の Status 宣言と、上の実測（spec= の引用）を突き合わせる。"""
     print("[spec] docs/specs の宣言を検査")
@@ -513,6 +532,7 @@ def test_spec_declarations():
 
 
 def main():
+    test_spec_header_parser()
     test_boards()
     test_v1b()
     test_v1b_crypto()
