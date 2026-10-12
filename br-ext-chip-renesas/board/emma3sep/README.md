@@ -8,10 +8,17 @@ MIPS32r2 **ビッグエンディアン** / linux-2.6.27.39（GPL から再ビル
 
 対象機: POE-BR100-YB1（BMMPX1301）, POE-BR310L-SB1（SB-TV06-WRIP, 板サポート GPL 未収録）。
 
-## rootfs（mtd3）の更新 — OpenIRD が動いている実機
+## 更新 — OpenIRD が動いている実機
 
-OpenIRD が動いている間は、純正の更新経路（UPnP → u-boot の env）が使えない。rootfs は、
-動いている系から OpenWrt の `mtd` で書ける（2026-10-11・POE-BR100-YB1 で実施）。
+OpenIRD が動いている間は、純正の更新経路（UPnP → u-boot の env）が使えない。
+
+**ふつうは `sysupgrade <更新イメージ>` を使う**（[docs/sysupgrade.md](../../../docs/sysupgrade.md)）。
+カーネルと rootfs を、照合つきで書いて再起動する。この機種の書き方は
+[rootfs_overlay/lib/upgrade/platform.sh](rootfs_overlay/lib/upgrade/platform.sh)。更新イメージは
+`make sysupgrade BOARD=…`。
+
+下は、同じことを手でする手順（`sysupgrade` を持たない古い版が入っているとき・開発のとき）。
+動いている系から OpenWrt の `mtd` で書く（2026-10-11・POE-BR100-YB1 で実施）。
 
 **mtd3 は単一面で、救助 initramfs はいまカーネルに積んでいない。** 書き損じるか、起動しない
 イメージを書くと、戻すには u-boot コンソールの解錠（所有者のパスワード）と `tftpboot` →
