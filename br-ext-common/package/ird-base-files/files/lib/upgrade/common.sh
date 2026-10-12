@@ -92,7 +92,7 @@ upgrade_parts() {
 		n=$(( ($(file_size "$f") + es - 1) / es ))
 		v "keeping what $m holds ($n blocks)"
 		dd if="$SR/dev/$m" of="$W/old.$m" bs="$es" count="$n" 2>/dev/null ||
-			{ v "cannot read $m"; return 1; }
+			{ v "cannot keep a copy of what $m holds"; return 1; }
 		set -- "$@" "$f" "$m"
 	done
 	shift

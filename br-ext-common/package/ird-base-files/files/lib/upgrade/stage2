@@ -15,12 +15,13 @@ export PATH
 cd "$W"
 
 # init's shutdown actions unmounted what they could and made the rest
-# read-only.  Put back what is needed, now, while the root is still intact.
-mount -o remount,rw /tmp 2>/dev/null
-[ -r /proc/mtd ] || mount -t proc proc /proc
+# read-only.  Put back what is needed, now, while the root is still intact:
+# /proc first (mount looks there), then this tmpfs writable again - the old
+# contents of the flash are kept in it.
+[ -r /proc/mounts ] || mount -t proc proc /proc
+mount -t tmpfs -o remount,rw tmpfs /tmp
 [ -d /sys/class ] || mount -t sysfs sysfs /sys
 
-rm -f "$W/armed"
 IMGDIR=
 KEEP=1
 DRYRUN=0
@@ -42,6 +43,11 @@ restart() {
 }
 
 v "running from RAM as PID $$"
+if ! rm -f "$W/armed" || ! : > "$W/rw-test"; then
+	v "cannot write to $W - nothing was written to the flash"
+	restart
+fi
+rm -f "$W/rw-test"
 indicate_upgrade
 
 if platform_do_upgrade "$IMGDIR"; then
