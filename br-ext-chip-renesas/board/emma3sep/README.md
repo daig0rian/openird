@@ -29,18 +29,35 @@ RAM の上で確かめ、書いた後は読み戻して確かめる。
    （`mkdir /tmp/bb; for a in $(/tmp/nr/bin/busybox --list); do ln -s /tmp/nr/bin/busybox /tmp/bb/$a; done;
    export PATH=/tmp/bb; exec /tmp/bb/sh`）。dropbear と udhcpc を止める。
 5. **書く**: `/tmp/mtd write /tmp/<新>.img /dev/mtd3` → `/tmp/mtd verify /tmp/<新>.img /dev/mtd3` が
-   `Success` → `sync` → **電源を入れ直す**（`reboot` は効かない。下記）。verify が失敗したら、動いて
-   いるうちに書き直す（だめなら旧イメージを書き戻す）。
+   `Success` → `sync` → **`/tmp/bb/reboot -f`**（init を通さずに再起動する。古いカーネルでは
+   効かないので電源を入れ直す。下記）。verify が失敗したら、動いているうちに書き直す（だめなら
+   旧イメージを書き戻す）。
 
 `mtd` は消去ブロックごとに「消去 → 書き込み」をし、不良ブロックは飛ばして先へ書く。カーネルは
 mtdblock3 を詰めずに読むので、飛ばしが起きると verify が合わなくなる（＝そこで気づける）。
 overlay（mtd9 の `openird/overlay`）は触らないので、設定とアドオンは残る。
 
-**再起動の手段は、電源の入れ直しだけ**（2026-10-12・POE-BR100-YB1 で観察）:
+カーネル（mtd2）も同じ手順で書ける（2026-10-12 に 2 回）。**rootfs → カーネルの順に書き、どちらも
+verify が通ってから再起動する。** 巻き戻し用に、いまの中身を `/tmp` に取っておく
+（`dd if=/dev/mtd2 bs=4096 count=512 | head -c <長さ>`）。カーネルは単一面で、起動しない
+イメージを書くと復旧は上と同じ（u-boot の解錠）になる。uImage が `0x280000` を超えないことは
+`openird-mkimage` が見る。
+
+## 再起動と LED
+
+`ird-board-emma3sep` を組み込んだカーネル（`v26.10-rc2` より後）では、`reboot` が効き、前面の
+LED を `/sys/class/leds/ird:<色>:<power|status>` から点けられる（`ird-led`）。配線の出どころと
+実機での確認は [docs/specs/emma3sep-airtuner-gpio.md](../../../docs/specs/emma3sep-airtuner-gpio.md)。
+
+**それより前のカーネル（`v26.10-rc2` まで）は、電源の入れ直しでしか再起動できない**
+（2026-10-12・POE-BR100-YB1 で観察）:
 
 - `reboot -f` は再起動にならない。カーネルは `EMMA3Sx restart.` と出してリセットベクタ
   `0xbfc00000` へ飛び、そこで例外（Reserved instruction）になって `reboot` のプロセスだけが
   落ちる。系は動いたまま残る。
 - そのあと `/dev/watchdog` を開いたまま放置したところ、リセットにはならず、数分のうちに
-  シリアルもネットワークも無応答になった（U-Boot の出力も出ない）。直前の例外の影響かどうかは
-  切り分けていない。電源を入れ直すと普通に起動した。
+  シリアルもネットワークも無応答になった（U-Boot の出力も出ない）。ドライバはウォッチドッグを
+  NMI を起こす設定にしていて、NMI の飛び先は同じベクタなので、そこで止まったとみられる。
+  このドライバは変えていない＝新しいカーネルでも、ウォッチドッグは再起動の手段にならない。
+- 手で再起動させるなら、自己リセット線を直接下げる:
+  `devmem 0x10110d18 32 0xBFFFFFFF; devmem 0x10110d00 32 0`。

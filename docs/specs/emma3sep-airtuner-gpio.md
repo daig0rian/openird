@@ -1,12 +1,12 @@
 # AirTuner 基板（EMMA3SEP）の LED と再起動
 
 <!-- openird-spec
-Status: implemented
-As-of:  GPL の U-Boot（2013.5.27.00-emma3sep-01）と GPL のカーネル 2.6.27.39 のソース /
-        実機 POE-BR100-YB1・OpenIRD 26.10-rc2 のカーネル (2026-10-12)
+Status: verified
+As-of:  GPL の U-Boot（2013.5.27.00-emma3sep-01）と GPL のカーネル 2.6.27.39 のソース / 実機 POE-BR100-YB1 (2026-10-12)
 Impl:   br-ext-chip-renesas/package/ird-board-emma3sep/src/airtuner.c,
         br-ext-common/package/ird-base-files/files/usr/sbin/ird-led
 Tests:  tests/mkimage/
+Note:   実機で確かめたのは POE-BR100-YB1 だけ。LED はレジスタと sysfs の値で確かめた（色を目で見た記録はまだ無い）
 -->
 
 <!-- Open 層: 出どころは、機器のメーカーが公開している GPL のソース（ブートローダとカーネル）と、
@@ -80,7 +80,18 @@ SoC までしか知らず、この基板の LED を持たない。再起動も�
 | そのあと `/dev/watchdog` を開いて放置 | 数分のうちに、シリアルもネットワークも無応答。ブートローダの出力は出ない |
 | GPIO30 に L を書く | すぐに落ち、15 秒後にはネットワークに戻った（カーネルの稼働時間 11 秒）。チューナは ready、受信は連続性エラー 0・同期エラー 0。LED のピンは `PON_NORMAL` に戻っていた |
 
-色は、レジスタの値と §2 の信号名からの読み取り。目で見た記録は、実装を入れてから足す。
+上の 5 行は、手を入れる前のカーネル（OpenIRD 26.10-rc2）での観察。§6 の実装を入れたカーネルと
+rootfs では:
+
+| したこと | 見えたこと |
+|---|---|
+| 起動 | カーネルが LED 4 本を登録。起動が終わると `ird:green:power`・`ird:green:status` が 255、赤は 2 本とも 0。GPIO19〜22 = L・H・L・H |
+| `S99ready stop` → `start` | 電源が赤（緑 0・赤 255）→ 緑（緑 255・赤 0）。ステータスは変わらない |
+| `ird-led status orange` → `green` | ステータスの緑と赤が 255 → 緑だけ 255 |
+| `reboot` | 停止処理 → `Restarting system.` → `AirTuner restart (self-reset line).` → ブートローダ → 起動。19 秒後にはネットワークに戻り、チューナは ready、LED は上と同じ |
+| `reboot -f` | 同じく再起動する（rootfs とカーネルを書いた直後に、tmpfs の BusyBox から） |
+
+色は、レジスタと sysfs の値と §2 の信号名からの読み取り。目で見た記録はまだ無い。
 
 ## 6. OpenIRD の実装
 
