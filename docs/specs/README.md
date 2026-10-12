@@ -31,6 +31,7 @@ clean-room のファイアウォール。観察 → 実装の間に挟む「文�
 | [poe-br100-yb1-ts-fifo.md](poe-br100-yb1-ts-fifo.md) | POE-BR100-YB1 の生 TS の取り出し（AV SRAM の TS 入力 FIFO・PID の列挙・ドレイナー・chardev への対応） | 機構 | `specified` |
 | [poe-br100-yb1-av-command.md](poe-br100-yb1-av-command.md) | POE-BR100-YB1 の AV コマンド経路（ベンダの `.ko` 無しでデマルチプレクサを組む・フィルタの状態遷移） | 機構 | `specified` |
 | [poe-br100-yb1-subcpu-control.md](poe-br100-yb1-subcpu-control.md) | POE-BR100-YB1 の裏 CPU 制御インターフェース（BHIF の CPU 制御ブロック・アドレス窓・割り込みの振り分け・デバッグの口） | 機構 | `observing` |
+| [sb-tv06-wrip-frontend.md](sb-tv06-wrip-frontend.md) | SB-TV06-WRIP のフロントエンド（TC90532＋MxL601RF＋TDA8263HN の I2C の線上の手順・電源・選局・状態・衛星の TS の選択） | 機構 | `specified` |
 
 ## 実装状態の宣言（`openird-spec` ヘッダ）
 
