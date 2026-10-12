@@ -6,7 +6,7 @@ As-of:  GPL の U-Boot（2013.5.27.00-emma3sep-01）と GPL のカーネル 2.6.
 Impl:   br-ext-chip-renesas/package/ird-board-emma3sep/src/airtuner.c,
         br-ext-common/package/ird-base-files/files/usr/sbin/ird-led
 Tests:  tests/mkimage/
-Note:   実機で確かめたのは POE-BR100-YB1 だけ。LED はレジスタと sysfs の値で確かめた（色を目で見た記録はまだ無い）
+Note:   実機で確かめたのは POE-BR100-YB1 だけ。LED の色は、所有者が実物を見て確かめた (2026-10-13)
 -->
 
 <!-- Open 層: 出どころは、機器のメーカーが公開している GPL のソース（ブートローダとカーネル）と、
@@ -91,7 +91,7 @@ rootfs では:
 | `reboot` | 停止処理 → `Restarting system.` → `AirTuner restart (self-reset line).` → ブートローダ → 起動。19 秒後にはネットワークに戻り、チューナは ready、LED は上と同じ |
 | `reboot -f` | 同じく再起動する（rootfs とカーネルを書いた直後に、tmpfs の BusyBox から） |
 
-色は、レジスタと sysfs の値と §2 の信号名からの読み取り。目で見た記録はまだ無い。
+色は、所有者が実物を見て確かめた（2026-10-13・起動後に電源が緑、チューナが ready でステータスが緑）。
 
 ## 6. OpenIRD の実装
 
