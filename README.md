@@ -76,6 +76,7 @@ OpenWrt から受け継ぐのは実装ではなく、以下の**設計思想と�
 | [docs/BUILDING.md](docs/BUILDING.md) | ビルドの前提と手順（再現ビルド） |
 | [docs/architecture.md](docs/architecture.md) | ディレクトリ構造とビルドモデル |
 | [docs/addon.md](docs/addon.md) | アドオンの形式・インストーラ・SDK |
+| [docs/sysupgrade.md](docs/sysupgrade.md) | OpenIRD から OpenIRD への更新（更新イメージの形式・機器の中の流れ・機種ごとの部品） |
 | [docs/specs/](docs/specs/) | 観察から起こした機器の仕様（実装はこれだけを見て書く） |
 | [CONTRIBUTING.md](CONTRIBUTING.md)・[docs/clean-room.md](docs/clean-room.md) | 貢献のルール（スコープ・DCO・clean-room） |
 | [emma3sep](br-ext-chip-renesas/board/emma3sep/README.md)・[mb86h61](br-ext-chip-fujitsu/board/mb86h61/README.md) の README | 機種ごとの区画・書き込み・復旧 |

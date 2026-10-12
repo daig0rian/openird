@@ -15,3 +15,7 @@ ttyS1::respawn:-/bin/sh
 
 ::shutdown:/etc/init.d/rcK
 ::shutdown:/bin/umount -a -r
+
+# sysupgrade: on SIGQUIT init runs the shutdown actions, kills everything else
+# and executes this as PID 1, which continues from RAM (docs/sysupgrade.md)
+::restart:/lib/upgrade/upgraded

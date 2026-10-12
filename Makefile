@@ -9,7 +9,9 @@
 #   make sdk BOARD=<device>          … アドオン作者向け SDK（toolchain＋sysroot＋ird-mkaddon）
 #   make release BOARD=<device>      … リリース物（SDK・ソース一式・SHA256SUMS）を揃える（docs/release.md）
 #   make factory BOARD=<device>      … factory イメージ（純正の更新機構に渡すコンテナ。要 鍵・docs/release.md）
+#   make sysupgrade BOARD=<device>   … 更新イメージ（動いている OpenIRD の sysupgrade に渡す・鍵不要・docs/sysupgrade.md）
 #   make test-addon                 … アドオン機構（ird-mkaddon / ird-addon）のテスト
+#   make test-sysupgrade             … 更新（sysupgrade）のテスト
 #   make test-fwup                   … openird-fwup（UPnP 投入クライアント）のテスト
 #   make hooks                       … git フック/テンプレートを有効化
 #
@@ -34,7 +36,7 @@ BR_MAKE = env PATH="$(BR_PATH)" BR2_DL_DIR="$(ROOT)/dl" \
 
 .DEFAULT_GOAL := $(if $(BOARD),all,help)
 
-.PHONY: help list-boards all kernel sdk release factory test-overlayfs test-kabi test-mkimage test-fwup test-tuner test-addon menuconfig linux-menuconfig savedefconfig clean distclean hooks check-buildroot check-board
+.PHONY: help list-boards all kernel sdk release factory sysupgrade test-overlayfs test-kabi test-mkimage test-fwup test-tuner test-addon test-sysupgrade menuconfig linux-menuconfig savedefconfig clean distclean hooks check-buildroot check-board
 
 help:
 	@echo "OpenIRD — make list-boards | make BOARD=<device> [menuconfig|clean]"
@@ -48,6 +50,7 @@ help:
 	@echo "     make sdk BOARD=<device> … アドオン作者向け SDK (docs/addon.md)"
 	@echo "     make release BOARD=<device> … リリース物を揃える (版のタグを打った clean な clone で・docs/release.md)"
 	@echo "     make factory BOARD=<device> … factory イメージを作る (先に make BOARD=… と make kernel。要 鍵・docs/release.md)"
+	@echo "     make sysupgrade BOARD=<device> … 更新イメージを作る (先に make BOARD=… と make kernel。鍵不要・docs/sysupgrade.md)"
 	@echo "     make test-addon … アドオン機構のテスト (BOARD 不要・要 Linux/WSL)"
 	@$(MAKE) -s list-boards
 
@@ -102,9 +105,18 @@ release: check-board
 factory: check-board
 	@$(ROOT)/scripts/make-factory.sh $(BOARD) $(FACTORY_ARGS)
 
+# 更新イメージ＝動いている OpenIRD の sysupgrade に渡す tar（docs/sysupgrade.md）。先に make BOARD=…
+# （rootfs）と make kernel を通しておく。鍵は要らない。SYSUPGRADE_ARGS で引数を足せる（--outdir など）。
+sysupgrade: check-board
+	@$(ROOT)/scripts/make-sysupgrade.sh $(BOARD) $(SYSUPGRADE_ARGS)
+
 # アドオン機構（host/ird-mkaddon と ird-addon）の自己完結テスト（要 Linux/WSL・python3）
 test-addon:
 	@$(ROOT)/tests/addon/run.sh
+
+# 更新（機器の sysupgrade と openird-mkimage pack-sysupgrade）の自己完結テスト（要 Linux/WSL・python3）
+test-sysupgrade:
+	@$(ROOT)/tests/sysupgrade/run.sh
 
 # カーネルパッチの QEMU 機能テスト（要 Linux/WSL・qemu-system-<arch>）。詳細は tests/overlayfs/README.md
 test-overlayfs: check-board

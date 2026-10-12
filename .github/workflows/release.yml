@@ -81,7 +81,7 @@ jobs:
           python3 -m pip install --disable-pip-version-check --require-hashes --no-deps \
             --only-binary=:all: --target "$RUNNER_TEMP/pydeps" \
             -r host/openird-mkimage/requirements-factory.txt
-          PYTHONPATH="$RUNNER_TEMP/pydeps" make test-mkimage test-fwup test-tuner test-addon
+          PYTHONPATH="$RUNNER_TEMP/pydeps" make test-mkimage test-fwup test-tuner test-addon test-sysupgrade
 
       - name: Build (SDK, corresponding sources, rootfs)
         working-directory: ${{ env.TREE }}
@@ -104,6 +104,12 @@ jobs:
           # 鍵の要らないところまで（イメージが機種の契約に合うか・write.sh の生成）をここで確かめる
           make factory BOARD="$BOARD" FACTORY_ARGS="--payload-only --outdir $RUNNER_TEMP/payload"
 
+      - name: Sysupgrade image
+        working-directory: ${{ env.TREE }}
+        run: |
+          # OpenIRD から OpenIRD への更新イメージ（docs/sysupgrade.md）。上と同じ kernel と rootfs から作る。鍵は要らない
+          make sysupgrade BOARD="$BOARD" SYSUPGRADE_ARGS="--outdir $RUNNER_TEMP/sysupgrade"
+
       - name: Collect
         id: collect
         working-directory: ${{ env.TREE }}
@@ -118,6 +124,8 @@ jobs:
           if [ -d "output/release/$ver" ]; then
             cp "output/release/$ver"/* "$out/release/"
             ( cd "$out/release" && sha256sum -c SHA256SUMS )
+            # 更新イメージも配布物に入れる（SHA256SUMS は factory ジョブが全部について作り直す）
+            cp "$RUNNER_TEMP/sysupgrade"/*-sysupgrade.bin "$out/release/"
           fi
           ( cd "$out/images" && sha256sum -- * )
           sum() { sha256sum < "$out/images/$1" | cut -d' ' -f1; }

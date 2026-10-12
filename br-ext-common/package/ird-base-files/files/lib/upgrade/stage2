@@ -1,0 +1,60 @@
+# /lib/upgrade/stage2 - the part of an upgrade that writes.  Not run from
+# here: sysupgrade copies it to RAM, and /lib/upgrade/upgraded starts that
+# copy as PID 1 with the BusyBox it also copied.
+#
+# Rules for everything below, and for platform_do_upgrade:
+#   - Use nothing from the root filesystem.  PATH has only $W/bin; scripts
+#     are run as "sh <file in $W>".  The flash under the root is about to
+#     change, and reading it back gives the kernel the new blocks.
+#   - Never exit.  This is PID 1; the kernel panics when it ends.
+
+W=/tmp/sysupgrade
+PATH="$W/bin"
+export PATH
+
+cd "$W"
+
+# init's shutdown actions unmounted what they could and made the rest
+# read-only.  Put back what is needed, now, while the root is still intact.
+mount -o remount,rw /tmp 2>/dev/null
+[ -r /proc/mtd ] || mount -t proc proc /proc
+[ -d /sys/class ] || mount -t sysfs sysfs /sys
+
+rm -f "$W/armed"
+IMGDIR=
+KEEP=1
+DRYRUN=0
+UPPER=
+VERSION=
+. "$W/env"
+. "$W/lib/common.sh"
+. "$W/lib/platform.sh"
+
+restart() {
+	sync
+	v "restarting"
+	sleep 1
+	reboot -f
+	sleep 5
+	# a kernel whose restart does not work may still take this
+	echo b > /proc/sysrq-trigger 2>/dev/null
+	while :; do sleep 60; done
+}
+
+v "running from RAM as PID $$"
+indicate_upgrade
+
+if platform_do_upgrade "$IMGDIR"; then
+	if [ "$DRYRUN" = 1 ]; then
+		v "dry run complete, nothing was written"
+	else
+		v "$VERSION is written"
+		if [ "$KEEP" = 0 ]; then
+			v "emptying the overlay"
+			wipe_overlay "$UPPER"
+		fi
+	fi
+else
+	v "THE UPGRADE FAILED"
+fi
+restart

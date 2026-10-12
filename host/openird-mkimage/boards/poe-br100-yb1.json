@@ -39,6 +39,11 @@
     ]
   },
 
+  "sysupgrade": {
+    "files": [["kernel", "vmlinux.img"], ["root", "rootfs.img"]],
+    "_note": "OpenIRD から OpenIRD への更新イメージ（docs/sysupgrade.md）。[更新イメージの中の名前, factory.images の名前]。検査は factory と同じ（uImage の形・展開の余裕・squashfs の版・書き込み固定長）。機器側の書き方は board/emma3sep/rootfs_overlay/lib/upgrade/platform.sh。"
+  },
+
   "uimage": {
     "os": 5, "arch": 5, "type": 2, "comp": 1,
     "name": "emma3se",

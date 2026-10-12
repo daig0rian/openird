@@ -1,0 +1,177 @@
+#!/bin/sh
+# sysupgrade - replace the running OpenIRD with another version
+#
+#   sysupgrade [-n] [-T] [--dry-run] <image file | http(s) URL>
+#
+# The image is a tar archive: sysupgrade-<board>/CONTROL plus the files the
+# board writes (docs/sysupgrade.md).  This script checks it and gets it into
+# RAM; the writing is done after init has stopped everything else and handed
+# PID 1 over to /lib/upgrade/stage2, which runs from RAM only.  How a board
+# writes its flash is in its /lib/upgrade/platform.sh.
+#
+# What you configured stays (the overlay is not touched) unless -n is given.
+
+SR="${SYSUPGRADE_ROOT:-}"		# test hook: stands in for /
+W="${SYSUPGRADE_WORK:-/tmp/sysupgrade}"
+LIB="$SR/lib/upgrade"
+
+usage() {
+	cat >&2 <<EOF
+usage: sysupgrade [-n] [-T] [--dry-run] <image file | http(s) URL>
+  -n         do not keep the configuration (start from an empty overlay)
+  -T         check the image and stop; nothing is written
+  --dry-run  go through the whole hand-over and restart, but write nothing
+EOF
+	exit 2
+}
+
+die() {
+	echo "sysupgrade: $*" >&2
+	exit 1
+}
+
+KEEP=1
+TEST=0
+DRYRUN=0
+IMAGE=
+while [ $# -gt 0 ]; do
+	case "$1" in
+		-n) KEEP=0 ;;
+		-T|--test) TEST=1 ;;
+		--dry-run) DRYRUN=1 ;;
+		-h|--help) usage ;;
+		-*) usage ;;
+		*) [ -z "$IMAGE" ] || usage; IMAGE="$1" ;;
+	esac
+	shift
+done
+[ -n "$IMAGE" ] || usage
+
+[ -r "$LIB/common.sh" ] || die "$LIB/common.sh is missing"
+. "$LIB/common.sh"
+[ -r "$LIB/platform.sh" ] || die "not implemented for this board (no $LIB/platform.sh)"
+. "$LIB/platform.sh"
+type platform_check_image >/dev/null 2>&1 && type platform_do_upgrade >/dev/null 2>&1 ||
+	die "not implemented for this board (platform.sh has no platform_do_upgrade)"
+
+[ -n "$SR" ] || [ "$(id -u)" = 0 ] || die "must be run as root"
+
+OPENIRD_BOARD=
+OPENIRD_BUILD=unknown
+[ -r "$SR/etc/openird_release" ] && . "$SR/etc/openird_release"
+[ -n "$OPENIRD_BOARD" ] || die "cannot tell which board this is (/etc/openird_release)"
+
+case "$IMAGE" in
+	"$W"/*) die "$W is this program's work directory: put the image somewhere else" ;;
+esac
+rm -rf "$W"
+mkdir -p "$W/img" || die "cannot create $W"
+
+case "$IMAGE" in
+	http://*|https://*)
+		v "downloading $IMAGE"
+		wget -q -O "$W/image" "$IMAGE" || die "download failed"
+		IMAGE="$W/image"
+		;;
+esac
+[ -f "$IMAGE" ] || die "$IMAGE: no such file"
+
+# --- the image: one directory, plain names in it, nothing else ---------------
+
+LIST="$(tar -tf "$IMAGE" 2>/dev/null)" || die "not a sysupgrade image (not a tar archive)"
+TOP="$(printf '%s\n' "$LIST" | sed -n 's|^\(sysupgrade-[^/]*\)/.*$|\1|p' | sort -u)"
+[ -n "$TOP" ] && [ "$(printf '%s\n' "$TOP" | wc -l)" -eq 1 ] ||
+	die "not a sysupgrade image (no single sysupgrade-<board> directory)"
+if printf '%s\n' "$LIST" | grep -v -x -e "$TOP/" -e "$TOP/[A-Za-z0-9_.-]*" | grep -q .; then
+	die "not a sysupgrade image (unexpected members)"
+fi
+
+# room in RAM for the image's files, the old contents kept for a roll-back,
+# and the tools
+need_kb=$(( $(file_size "$IMAGE") / 1024 * 2 + 4096 ))
+free_kb="$(df -k "$W" | awk 'NR == 2 { print $4 }')"
+[ "${free_kb:-0}" -ge "$need_kb" ] || die "not enough room in $W (${free_kb:-0} KB free, $need_kb KB needed)"
+
+tar -xf "$IMAGE" -C "$W/img" || die "cannot unpack the image"
+D="$W/img/$TOP"
+[ -f "$D/CONTROL" ] && [ ! -L "$D/CONTROL" ] || die "not a sysupgrade image (no CONTROL)"
+
+BOARD="$(control_get "$D" BOARD)"
+VERSION="$(control_get "$D" VERSION)"
+COMPAT="$(control_get "$D" COMPAT)"
+FILES="$(control_get "$D" FILES)"
+[ -n "$BOARD" ] && [ -n "$FILES" ] || die "the image's CONTROL is incomplete"
+[ "$TOP" = "sysupgrade-$BOARD" ] || die "the image's CONTROL does not match its directory"
+[ "$BOARD" = "$OPENIRD_BOARD" ] ||
+	die "this image is for $BOARD, and this is $OPENIRD_BOARD"
+
+for f in $FILES; do
+	[ -f "$D/$f" ] && [ ! -L "$D/$f" ] || die "the image has no $f"
+	want="$(control_get "$D" "SHA256_$f")"
+	[ -n "$want" ] || die "the image's CONTROL has no checksum for $f"
+	got="$(sha256sum < "$D/$f" | cut -d' ' -f1)"
+	[ "$got" = "$want" ] || die "$f is damaged (checksum mismatch)"
+done
+
+if [ "${COMPAT:-1}" != "$OPENIRD_COMPAT" ] && [ "$KEEP" = 1 ]; then
+	die "the configuration of this version cannot be kept by the image's (compat $OPENIRD_COMPAT -> ${COMPAT:-1}): use -n"
+fi
+
+platform_check_image "$D" || die "the image is not right for this board"
+
+v "image ${VERSION:-?} for $BOARD, running $OPENIRD_BUILD"
+if [ "$TEST" = 1 ]; then
+	rm -rf "$W"
+	v "the image is good; nothing was written"
+	exit 0
+fi
+
+# --- everything stage2 needs, in RAM ------------------------------------------
+
+BB="$SR/bin/busybox"
+mkdir -p "$W/bin" "$W/lib" || die "cannot create $W/bin"
+cp "$BB" "$W/bin/busybox" && cmp -s "$BB" "$W/bin/busybox" || die "cannot copy busybox"
+for a in $("$W/bin/busybox" --list); do
+	ln -s busybox "$W/bin/$a" || die "cannot set up $W/bin"
+done
+for p in $RAMFS_COPY_BIN; do
+	src="$(command -v "$p")" || die "$p is missing"
+	cp "$src" "$W/bin/$p" && cmp -s "$src" "$W/bin/$p" || die "cannot copy $p"
+done
+cp "$LIB/common.sh" "$LIB/platform.sh" "$LIB/stage2" "$W/lib/" || die "cannot copy the upgrade scripts"
+LED="$(command -v ird-led 2>/dev/null)" && cp "$LED" "$W/lib/ird-led"
+
+OVERLAY_SUBDIR=
+[ -r "$SR/etc/openird/board.conf" ] && . "$SR/etc/openird/board.conf"
+UPPER=/overlay${OVERLAY_SUBDIR:+/$OVERLAY_SUBDIR}
+
+cat > "$W/env" <<EOF
+IMGDIR='$D'
+KEEP=$KEEP
+DRYRUN=$DRYRUN
+UPPER='$UPPER'
+VERSION='${VERSION:-?}'
+EOF
+
+# init re-executes this as PID 1 when it gets SIGQUIT; it read its inittab at
+# boot, so the entry has to have been there then
+grep -q '^::restart:/lib/upgrade/upgraded' "$SR/etc/inittab" 2>/dev/null ||
+	die "this system cannot hand the upgrade over (no restart action in /etc/inittab)"
+
+if [ "$DRYRUN" = 1 ]; then
+	v "dry run: the device goes down and restarts, nothing is written"
+else
+	v "upgrading to ${VERSION:-?}.  DO NOT SWITCH THE DEVICE OFF."
+fi
+v "everything stops now, this session too.  The LEDs are orange while"
+v "the flash is written; the device then restarts by itself."
+
+: > "$W/armed"
+sync
+# The trigger stays alive with its working directory in $W: that keeps the
+# tmpfs mounted when init's shutdown actions unmount what they can.
+if [ -z "$SR" ]; then
+	( cd "$W" && exec setsid sh -c 'sleep 2; kill -QUIT 1; exec sleep 600' ) \
+		</dev/null >/dev/null 2>&1 &
+fi
+exit 0

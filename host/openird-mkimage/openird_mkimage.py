@@ -28,7 +28,7 @@ import zlib
 import argparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ird import images, rdhb, secrets, v1b              # noqa: E402
+from ird import images, rdhb, secrets, sysupgrade, v1b  # noqa: E402
 from ird.board import load_board, part_by_mtd, h        # noqa: E402
 
 for _s in (sys.stdout, sys.stderr):            # Windows cp932 既定を回避
@@ -683,6 +683,43 @@ def cmd_pack_factory(a):
           % (fac["family_tag"], a.fw_version, len(out), os.path.abspath(a.outfile)))
 
 
+def cmd_pack_sysupgrade(a):
+    """OpenIRD の kernel / rootfs から、機器の sysupgrade に渡す更新イメージを作る（鍵不要）。"""
+    b = load_board(a.board)
+    su = b.get("sysupgrade")
+    if not su:
+        sys.exit("✗ %s の更新イメージはまだ作れません（ボード定義に sysupgrade が無い）。" % a.board)
+    # factory と同じ検査を通す（uImage の形・展開の余裕・squashfs の版・書き込み固定長）
+    checked = dict(_factory_entries(b, a.kernel, a.rootfs, a.version))
+    files = [(name, checked[src]) for name, src in su["files"]]
+    try:
+        img = sysupgrade.build(b["defconfig"], a.version, a.compat, files)
+    except ValueError as e:
+        sys.exit("✗ %s" % e)
+    r = sysupgrade.read(img)
+    if r["problems"] or [n for n, _ in files] != r["control"]["FILES"].split():
+        sys.exit("✗ 内部エラー: 生成したイメージを読み直せません: %s" % "; ".join(r["problems"]))
+    with open(a.outfile, "wb") as f:
+        f.write(img)
+    print("✓ sysupgrade: %s %s（compat %d）/ %d B → %s"
+          % (b["defconfig"], a.version, a.compat, len(img), os.path.abspath(a.outfile)))
+
+
+def cmd_probe_sysupgrade(a):
+    """更新イメージの CONTROL を表示し、形と SHA-256 を確かめる。"""
+    with open(a.infile, "rb") as f:
+        r = sysupgrade.read(f.read())
+    for k, v in r["control"].items():
+        print("  %-16s %s" % (k, v))
+    for n, d in r["files"].items():
+        print("  %-16s %d B" % (n, len(d)))
+    if r["problems"]:
+        for p in r["problems"]:
+            print("  ✗ %s" % p)
+        sys.exit(1)
+    print("  ✓ 形と SHA-256 は正しい（機種ごとの検査は、機器の sysupgrade -T）")
+
+
 def cmd_full(a):
     sys.exit(
         "✗ HOLD(H2/H3): .full (Updater_Header + 本体) 生成は未実装。\n"
@@ -783,6 +820,21 @@ def main():
     p.add_argument("--key-file", help="AES 鍵ファイル（既定 ~/.openird/v1b/%s）" % secrets.KEY_FILE)
     p.add_argument("--zip-pw-file", help="ZIP パスワードファイル（既定 ~/.openird/v1b/%s）" % secrets.PW_FILE)
     p.set_defaults(fn=cmd_pack_factory)
+
+    p = sub.add_parser("pack-sysupgrade",
+                       help="OpenIRD の kernel / rootfs から更新イメージ（機器の sysupgrade 用）を作る")
+    p.add_argument("board")
+    p.add_argument("outfile")
+    p.add_argument("--kernel", required=True, help="vmlinux.img（uImage）")
+    p.add_argument("--rootfs", required=True, help="rootfs.img（squashfs）")
+    p.add_argument("--version", required=True, help="版（表示用。例 26.10-rc3）")
+    p.add_argument("--compat", type=int, default=1,
+                   help="設定を引き継げる世代（/lib/upgrade/common.sh の OPENIRD_COMPAT。既定 1）")
+    p.set_defaults(fn=cmd_pack_sysupgrade)
+
+    p = sub.add_parser("probe-sysupgrade", help="更新イメージの中身を表示し、形と SHA-256 を確かめる")
+    p.add_argument("infile")
+    p.set_defaults(fn=cmd_probe_sysupgrade)
 
     p = sub.add_parser("full", help=".full コンテナ（HOLD）")
     p.add_argument("board")

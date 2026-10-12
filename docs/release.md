@@ -8,9 +8,10 @@
 | SDK | アドオン作者向け（[addon.md](addon.md) §6.1）。Arch id ごとに 1 本 |
 | ソース一式 | SDK と rootfs に入るパッケージのソースとライセンス文（Buildroot の `legal-info`） |
 | factory イメージ | 純正の更新機構に渡して導入するコンテナ（カーネルと rootfs）。機種ごとに 1 本 |
+| 更新イメージ | 動いている OpenIRD の `sysupgrade` に渡す（[sysupgrade.md](sysupgrade.md)）。カーネルと rootfs。鍵は関わらない。機種ごとに 1 本 |
 | カーネルのソース | factory イメージに入れたカーネルの、メーカー公開の GPL ソース（パッチはリポジトリにある） |
 
-sysupgrade イメージはまだ無い。
+更新イメージは、鍵を使わない build ジョブが作る。factory イメージと同じカーネルと rootfs が入る。
 
 ## 版とタグ
 
@@ -28,9 +29,9 @@ sysupgrade イメージはまだ無い。
    git push origin v26.10
    ```
 2. **build ジョブ**（自動）: タグの commit を、公開しているリポジトリから取り直して、テスト
-   （`make test-mkimage test-fwup test-tuner test-addon`）を通してからビルドする。
+   （`make test-mkimage test-fwup test-tuner test-addon test-sysupgrade`）を通してからビルドする。
    SDK・ソース一式（`make release`）、カーネル（`make kernel`）、rootfs。鍵の要らないところまでの
-   factory の検査（`make factory FACTORY_ARGS=--payload-only`）もここで通す。
+   factory の検査（`make factory FACTORY_ARGS=--payload-only`）と、更新イメージ（`make sysupgrade`）もここ。
    このジョブは鍵も、リリースを書く権限も持たない。
 3. **factory ジョブを承認する**（人）: Actions の画面に「Review deployments」が出る。
    下の「承認するときに見ること」を確かめてから承認する。承認すると、鍵を使って factory
