@@ -11,9 +11,19 @@ else
 	printf '   overlay  none - read-only root\n'
 fi
 
-if [ -n "$(awk -F: '$1=="root"{print $2}' /etc/shadow 2>/dev/null | tr -d '!*')" ]; then
-	printf '   ssh      dropbear\n'
+# dropbear runs with -B (/etc/default/dropbear): a blank root password lets
+# anyone on the network in, a locked one ("!" or "*") lets nobody in
+if [ -r /etc/shadow ]; then
+	case "$(awk -F: '$1=="root"{print $2}' /etc/shadow)" in
+	'')
+		printf '   ssh      dropbear - NO ROOT PASSWORD, anyone on the network can log in\n'
+		printf '            set one now with "passwd"\n' ;;
+	'!'*|'*'*)
+		printf '   ssh      dropbear (root is locked: set a password with "passwd")\n' ;;
+	*)
+		printf '   ssh      dropbear\n' ;;
+	esac
 else
-	printf '   ssh      dropbear (set a root password with "passwd" to allow login)\n'
+	printf '   ssh      dropbear\n'
 fi
 printf '\n'

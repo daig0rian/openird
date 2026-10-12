@@ -1,0 +1,12 @@
+# Read by /etc/init.d/S50dropbear before it starts the SSH server.
+#
+# -B  accept a login to an account whose password is blank
+#
+# A fresh image has no root password and SSH is the only door on the
+# network, so without -B the first login would need a serial console.
+# dropbear takes this path only while the password field is empty: once
+# "passwd" has set one, it asks for it. There is nothing to switch back.
+#
+# Until then anyone who can reach the device can log in as root, so set a
+# password before the device goes on a network you do not control.
+DROPBEAR_ARGS="-B"
