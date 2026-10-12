@@ -5,7 +5,7 @@ Status: verified
 As-of:  実機 POE-BR100-YB1 fw 1.3.1〜2.1.17 (2026-09-06〜09-21) / SB-TV06-WRIP fw 1.0.2 (2026-09-11・09-26) / SB-TV04-WRIP (2026-10-01・発見のみ)
 Impl:   host/openird-fwup/openird_fwup.py
 Tests:  tests/fwup/
-Note:   openird-fwup での実機投入を確認（2026-10-12・POE-BR100-YB1 fw 2.1.17 r3 → OpenIRD 26.10-rc2 の factory イメージ。HEAD 1 回・GET 1 回で受理 → U-Boot が書き込み → 起動）。それ以前の投入は、この仕様の元になった旧クライアントで行った
+Note:   openird-fwup での実機投入を確認（2026-10-12・POE-BR100-YB1 fw 2.1.17 r3 → OpenIRD 26.10-rc2 の factory イメージ。HEAD 1 回・GET 1 回で受理 → U-Boot が書き込み → 起動）。公開した 26.10-rc3 の factory イメージでも同じ通し（2026-10-13・書かれたカーネルと rootfs がリリースのものと一致・シリアルを使わず SSH でログイン）。それ以前の投入は、この仕様の元になった旧クライアントで行った
 -->
 
 <!-- Open 層: 機器が HTTP で公開する機器記述（description.xml）とサービス記述（SCPD）、
