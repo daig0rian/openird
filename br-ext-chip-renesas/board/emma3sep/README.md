@@ -29,9 +29,18 @@ RAM の上で確かめ、書いた後は読み戻して確かめる。
    （`mkdir /tmp/bb; for a in $(/tmp/nr/bin/busybox --list); do ln -s /tmp/nr/bin/busybox /tmp/bb/$a; done;
    export PATH=/tmp/bb; exec /tmp/bb/sh`）。dropbear と udhcpc を止める。
 5. **書く**: `/tmp/mtd write /tmp/<新>.img /dev/mtd3` → `/tmp/mtd verify /tmp/<新>.img /dev/mtd3` が
-   `Success` → `sync` → **電源を入れ直す**（`reboot` は使わない）。verify が失敗したら、動いて
+   `Success` → `sync` → **電源を入れ直す**（`reboot` は効かない。下記）。verify が失敗したら、動いて
    いるうちに書き直す（だめなら旧イメージを書き戻す）。
 
 `mtd` は消去ブロックごとに「消去 → 書き込み」をし、不良ブロックは飛ばして先へ書く。カーネルは
 mtdblock3 を詰めずに読むので、飛ばしが起きると verify が合わなくなる（＝そこで気づける）。
 overlay（mtd9 の `openird/overlay`）は触らないので、設定とアドオンは残る。
+
+**再起動の手段は、電源の入れ直しだけ**（2026-10-12・POE-BR100-YB1 で観察）:
+
+- `reboot -f` は再起動にならない。カーネルは `EMMA3Sx restart.` と出してリセットベクタ
+  `0xbfc00000` へ飛び、そこで例外（Reserved instruction）になって `reboot` のプロセスだけが
+  落ちる。系は動いたまま残る。
+- そのあと `/dev/watchdog` を開いたまま放置したところ、リセットにはならず、数分のうちに
+  シリアルもネットワークも無応答になった（U-Boot の出力も出ない）。直前の例外の影響かどうかは
+  切り分けていない。電源を入れ直すと普通に起動した。
