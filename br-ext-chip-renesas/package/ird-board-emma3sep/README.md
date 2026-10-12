@@ -7,7 +7,7 @@ EMMA3SEP の基板ごとの支援。GPL のカーネルが SoC までしか知�
 
 | ファイル | 内容 |
 |---|---|
-| `src/airtuner.c` | AirTuner 基板の LED（`/sys/class/leds/openird:<色>:<power\|status>`）と、効く再起動（自己リセット線） |
+| `src/airtuner.c` | AirTuner 基板の LED（`/sys/class/leds/ird:<色>:<power\|status>`）と、効く再起動（自己リセット線） |
 
 割り当ての出どころと実機での確認は
 [docs/specs/emma3sep-airtuner-gpio.md](../../../docs/specs/emma3sep-airtuner-gpio.md)。

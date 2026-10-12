@@ -18,7 +18,7 @@
  *   GPIO 30  SELF_RST_EMMA_L   low resets the whole board, the AV sub-CPU
  *                              included; the boot loader leaves it high
  *
- * LEDs appear as /sys/class/leds/openird:<colour>:<power|status>.  The boot
+ * LEDs appear as /sys/class/leds/ird:<colour>:<power|status>.  The boot
  * loader leaves the power LED red; it stays red here until userland says the
  * system is up (ird-led).
  */
@@ -44,12 +44,16 @@ static const char *airtuner_boards[] __initdata = {
 	"TOSHIBA_AIRTUNER_R",
 };
 
+/*
+ * Keep the names within 19 characters: this kernel cuts a device name there,
+ * and a cut name is one userland does not find.
+ */
 static struct gpio_led airtuner_leds[] = {
-	{ .name = "openird:green:status", .gpio = 19, .active_low = 1 },
-	{ .name = "openird:red:status",   .gpio = 20, .active_low = 1 },
-	{ .name = "openird:green:power",  .gpio = 21, .active_low = 1 },
+	{ .name = "ird:green:status", .gpio = 19, .active_low = 1 },
+	{ .name = "ird:red:status",   .gpio = 20, .active_low = 1 },
+	{ .name = "ird:green:power",  .gpio = 21, .active_low = 1 },
 	{
-		.name = "openird:red:power", .gpio = 22, .active_low = 1,
+		.name = "ird:red:power", .gpio = 22, .active_low = 1,
 		/* registering an LED turns it off: put this one back on */
 		.default_trigger = "default-on",
 	},

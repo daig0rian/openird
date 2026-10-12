@@ -514,11 +514,17 @@ def test_airtuner_board():
               encoding="utf-8") as f:
         src = f.read()
     leds = {}
-    for m in re.finditer(r'\{([^{}]*\.name\s*=\s*"openird:(\w+):(\w+)"[^{}]*)\}', src):
+    names = []
+    for m in re.finditer(r'\{([^{}]*\.name\s*=\s*"(ird:(\w+):(\w+))"[^{}]*)\}', src):
         gpio = re.search(r"\.gpio\s*=\s*(\d+)", m.group(1))
-        leds[(m.group(3), m.group(2))] = (int(gpio.group(1)) if gpio else None,
+        names.append(m.group(2))
+        leds[(m.group(4), m.group(3))] = (int(gpio.group(1)) if gpio else None,
                                           bool(re.search(r"\.active_low\s*=\s*1\b", m.group(1))),
                                           "default-on" in m.group(1))
+    # 2.6.27 のデバイス名は 19 文字まで（BUS_ID_SIZE 20）。20 文字の名前は末尾が切れて登録され、
+    # ird-led が見つけられなくなる（実機で踏んだ）。
+    check("LED の名前は 19 文字以内", bool(names) and all(len(n) <= 19 for n in names),
+          repr([n for n in names if len(n) > 19]), spec=spec + "#6")
     want = {("status", "green"): 19, ("status", "red"): 20, ("power", "green"): 21, ("power", "red"): 22}
     check("LED 4 本の GPIO が仕様の表どおり", {k: v[0] for k, v in leds.items()} == want, repr(leds),
           spec=spec + "#2")
@@ -544,7 +550,7 @@ def test_airtuner_board():
     with tempfile.TemporaryDirectory() as d:
         for fn in ("power", "status"):
             for colour in ("green", "red"):
-                p = os.path.join(d, "openird:%s:%s" % (colour, fn))
+                p = os.path.join(d, "ird:%s:%s" % (colour, fn))
                 os.mkdir(p)
                 for name, text in (("brightness", "0\n"), ("trigger", "[default-on]\n")):
                     with open(os.path.join(p, name), "w") as f:
@@ -555,7 +561,7 @@ def test_airtuner_board():
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE).returncode
 
         def read(colour, fn, name="brightness"):
-            with open(os.path.join(d, "openird:%s:%s" % (colour, fn), name)) as f:
+            with open(os.path.join(d, "ird:%s:%s" % (colour, fn), name)) as f:
                 return f.read().strip()
 
         def lit(fn):

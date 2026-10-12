@@ -3,8 +3,8 @@
 #
 #   ird-led <power|status> <off|green|red|orange>
 #
-# Each LED is two in the kernel, /sys/class/leds/openird:green:<name> and
-# openird:red:<name>; orange is both.  A board that does not have the LED is
+# Each LED is two in the kernel, /sys/class/leds/ird:green:<name> and
+# ird:red:<name>; orange is both.  A board that does not have the LED is
 # not an error, so start-up scripts can call this without asking first.
 
 LEDS="${IRD_LED_SYSFS:-/sys/class/leds}"
@@ -28,7 +28,7 @@ case "$2" in
 esac
 
 set_led() {	# <colour> <brightness>
-	d="$LEDS/openird:$1:$name"
+	d="$LEDS/ird:$1:$name"
 	[ -d "$d" ] || return 0
 	# a trigger would take the LED back (the kernel holds the red power
 	# LED on with one until something is written here)

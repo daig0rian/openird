@@ -87,8 +87,11 @@ SoC までしか知らず、この基板の LED を持たない。再起動も�
 **カーネル**（`ird-board-emma3sep` の `airtuner.c`・組み込み）。起動引数の `PRODUCT_FWIDS=` が
 §2 の 5 つの名前のどれかのときだけ働く。
 
-- LED は 4 本を `leds-gpio` に登録する。名前は `/sys/class/leds/openird:<色>:<power|status>`
+- LED は 4 本を `leds-gpio` に登録する。名前は `/sys/class/leds/ird:<色>:<power|status>`
   （色は `green`・`red`）。`brightness` に 0 を書くと消灯、0 以外で点灯。
+  **名前は 19 文字まで**: このカーネルはデバイス名を 19 文字で切る。20 文字の
+  `openird:green:status` で登録したら末尾の 1 文字が切れ、`ird-led` がその LED を見つけ
+  られなかった（実機で踏んだ）。
 - 登録すると LED はいったん消えるので、**電源の赤だけ**トリガ `default-on` で点け直す
   ＝カーネルの起動中は、ブートローダのまま電源が赤。
 - 再起動は、GPIO30 を L にする関数に差し替える。起動時にこのピンを要求するときは H を書く
