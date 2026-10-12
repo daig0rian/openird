@@ -1,0 +1,13 @@
+config IRD_BOARD_AIRTUNER
+	bool "AirTuner boards (EMMA3SEP): LEDs and restart"
+	depends on EMMA3SX && GPIOLIB
+	select NEW_LEDS
+	select LEDS_CLASS
+	select LEDS_GPIO
+	select LEDS_TRIGGERS
+	select LEDS_TRIGGER_DEFAULT_ON
+	help
+	  The power and status LEDs, and a restart that works: the boards
+	  boot from NAND, so the SoC's own restart (a jump to the reset
+	  vector) goes nowhere, and they have a self-reset line instead.
+	  Inactive on boards the boot loader does not name as an AirTuner.

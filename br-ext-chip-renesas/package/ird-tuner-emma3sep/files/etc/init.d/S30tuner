@@ -16,7 +16,15 @@ FW=/vendor/fw
 SUBCPU_FW=emma3sep_driver_std_op0.mem
 SUBCPU_LOAD=0x00030000		# physical address the vendor loads it to
 
+# The status LED says how this went: green once the tuner is ready, red if
+# it could not be brought up.  ird-led is quiet on a board without the LED.
+led() {
+	command -v ird-led >/dev/null 2>&1 && ird-led status "$1"
+	return 0
+}
+
 fail() {
+	led red
 	echo "FAIL"
 	echo "tuner: $1"
 	exit 1
@@ -26,7 +34,7 @@ start() {
 	# other boards of the family run the same kernel without this tuner
 	[ -d "$SYS" ] || return 0
 	printf "Starting tuner: "
-	grep -q "^state ready" "$SYS/state" && { echo "already running"; return 0; }
+	grep -q "^state ready" "$SYS/state" && { led green; echo "already running"; return 0; }
 
 	grep -q " $APP " /proc/mounts || mount -t squashfs -o ro /dev/mtdblock4 "$APP" ||
 		fail "cannot mount the vendor application partition (mtd4)"
@@ -58,6 +66,7 @@ start() {
 	# 3. Everything else is the driver's.
 	echo 1 > "$SYS/start" 2>/dev/null ||
 		fail "$(sed -n 's/^reason //p' "$SYS/state")"
+	led green
 	echo "OK"
 }
 

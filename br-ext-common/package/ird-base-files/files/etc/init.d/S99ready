@@ -1,0 +1,12 @@
+#!/bin/sh
+# The last start-up script: everything before it has run, so say so.
+#
+# The power LED turns from the boot loader's red to green, and back to red
+# on the way down.  ird-led does nothing on a board without that LED.
+
+case "$1" in
+	start) ird-led power green ;;
+	stop) ird-led power red ;;
+	restart|reload) ;;
+	*) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

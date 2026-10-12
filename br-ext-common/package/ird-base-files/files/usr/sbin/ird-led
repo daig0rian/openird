@@ -1,0 +1,40 @@
+#!/bin/sh
+# ird-led - set a front panel LED
+#
+#   ird-led <power|status> <off|green|red|orange>
+#
+# Each LED is two in the kernel, /sys/class/leds/openird:green:<name> and
+# openird:red:<name>; orange is both.  A board that does not have the LED is
+# not an error, so start-up scripts can call this without asking first.
+
+LEDS="${IRD_LED_SYSFS:-/sys/class/leds}"
+
+usage() {
+	echo "usage: ird-led <power|status> <off|green|red|orange>" >&2
+	exit 2
+}
+
+[ $# -eq 2 ] || usage
+case "$1" in
+	power|status) name=$1 ;;
+	*) usage ;;
+esac
+case "$2" in
+	off)    green=0;   red=0 ;;
+	green)  green=255; red=0 ;;
+	red)    green=0;   red=255 ;;
+	orange) green=255; red=255 ;;
+	*) usage ;;
+esac
+
+set_led() {	# <colour> <brightness>
+	d="$LEDS/openird:$1:$name"
+	[ -d "$d" ] || return 0
+	# a trigger would take the LED back (the kernel holds the red power
+	# LED on with one until something is written here)
+	[ -w "$d/trigger" ] && echo none > "$d/trigger"
+	echo "$2" > "$d/brightness"
+}
+
+set_led green "$green"
+set_led red "$red"

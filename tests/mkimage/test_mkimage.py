@@ -501,6 +501,86 @@ def test_uimage_decompress_budget():
           spec="poe-br100-yb1-nand-update#2.1")
 
 
+def test_airtuner_board():
+    """AirTuner 基板の LED と自己リセット線: 割り当てが仕様の表どおりか、ird-led が色を 2 本の LED に直すか。"""
+    import re
+    import shutil
+    import subprocess
+    import tempfile
+
+    spec = "emma3sep-airtuner-gpio"
+    print("[board] AirTuner の LED と再起動")
+    with open(os.path.join(ROOT, "br-ext-chip-renesas", "package", "ird-board-emma3sep", "src", "airtuner.c"),
+              encoding="utf-8") as f:
+        src = f.read()
+    leds = {}
+    for m in re.finditer(r'\{([^{}]*\.name\s*=\s*"openird:(\w+):(\w+)"[^{}]*)\}', src):
+        gpio = re.search(r"\.gpio\s*=\s*(\d+)", m.group(1))
+        leds[(m.group(3), m.group(2))] = (int(gpio.group(1)) if gpio else None,
+                                          bool(re.search(r"\.active_low\s*=\s*1\b", m.group(1))),
+                                          "default-on" in m.group(1))
+    want = {("status", "green"): 19, ("status", "red"): 20, ("power", "green"): 21, ("power", "red"): 22}
+    check("LED 4 本の GPIO が仕様の表どおり", {k: v[0] for k, v in leds.items()} == want, repr(leds),
+          spec=spec + "#2")
+    check("LED は 4 本とも L で点灯", len(leds) == 4 and all(v[1] for v in leds.values()), repr(leds),
+          spec=spec + "#2")
+    check("登録で消える分を点け直すのは、電源の赤だけ", [k for k, v in leds.items() if v[2]] == [("power", "red")],
+          repr(leds), spec=spec + "#6")
+    m = re.search(r"#define\s+AIRTUNER_GPIO_SELF_RST\s+(\d+)", src)
+    check("自己リセット線は GPIO30", bool(m) and int(m.group(1)) == 30, spec=spec + "#2")
+    check("自己リセット線を L にするのは再起動の 1 か所だけ（起動時は H を書く）",
+          src.count("gpio_direction_output(AIRTUNER_GPIO_SELF_RST, 0)") == 1
+          and src.count("gpio_direction_output(AIRTUNER_GPIO_SELF_RST, 1)") == 1, spec=spec + "#6")
+    names = set(re.findall(r'"((?:PIX|NEC|TOSHIBA)_\w+)"', src))
+    check("働く基板は、割り当てが GPL に書いてある 5 つ",
+          names == {"PIX_AIRTUNER_LITE", "PIX_AIRTUNER_R", "PIX_AIRTUNER_W", "NEC_AIRTUNER_R", "TOSHIBA_AIRTUNER_R"},
+          repr(sorted(names)), spec=spec + "#2")
+
+    sh = shutil.which("sh")
+    if os.name != "posix" or not sh:
+        print("  - ird-led の動作は POSIX の sh が要る（skip）")
+        return
+    tool = os.path.join(ROOT, "br-ext-common", "package", "ird-base-files", "files", "usr", "sbin", "ird-led")
+    with tempfile.TemporaryDirectory() as d:
+        for fn in ("power", "status"):
+            for colour in ("green", "red"):
+                p = os.path.join(d, "openird:%s:%s" % (colour, fn))
+                os.mkdir(p)
+                for name, text in (("brightness", "0\n"), ("trigger", "[default-on]\n")):
+                    with open(os.path.join(p, name), "w") as f:
+                        f.write(text)
+
+        def led(*args, sysfs=d):
+            return subprocess.run([sh, tool] + list(args), env=dict(os.environ, IRD_LED_SYSFS=sysfs),
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE).returncode
+
+        def read(colour, fn, name="brightness"):
+            with open(os.path.join(d, "openird:%s:%s" % (colour, fn), name)) as f:
+                return f.read().strip()
+
+        def lit(fn):
+            return tuple(read(c, fn) != "0" for c in ("green", "red"))
+
+        rc = led("power", "green")
+        check("ird-led: power green は緑だけ点け、ステータスに触れない",
+              rc == 0 and lit("power") == (True, False) and lit("status") == (False, False),
+              "rc=%d %r %r" % (rc, lit("power"), lit("status")), spec=spec + "#6")
+        check("ird-led: 書く LED のトリガを外す",
+              read("red", "power", "trigger") == "none" and read("red", "status", "trigger") == "[default-on]",
+              spec=spec + "#6")
+        led("status", "orange")
+        check("ird-led: orange は緑と赤の両方", lit("status") == (True, True), repr(lit("status")), spec=spec + "#6")
+        led("status", "red")
+        check("ird-led: red は赤だけ", lit("status") == (False, True), repr(lit("status")), spec=spec + "#6")
+        led("status", "off")
+        check("ird-led: off は両方消す", lit("status") == (False, False), repr(lit("status")), spec=spec + "#6")
+        check("ird-led: LED の無い基板では何もせず 0", led("power", "green", sysfs=os.path.join(d, "none")) == 0,
+              spec=spec + "#6")
+        check("ird-led: 知らない色・名前は 2 で終わり、何も書かない",
+              led("power", "blue") == 2 and led("wifi", "green") == 2 and lit("power") == (True, False),
+              spec=spec + "#6")
+
+
 def test_fwup_suite():
     """openird-fwup のテスト（tests/fwup）。仕様の引用をここの検査に合流させる。"""
     test_fwup.run(check)
@@ -542,6 +622,7 @@ def main():
     test_mbin()
     test_uimage_decompress_budget()
     test_samples()
+    test_airtuner_board()
     test_fwup_suite()
     test_spec_declarations()
     print()
