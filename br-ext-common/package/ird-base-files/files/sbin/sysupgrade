@@ -132,7 +132,8 @@ BB="$SR/bin/busybox"
 mkdir -p "$W/bin" "$W/lib" || die "cannot create $W/bin"
 cp "$BB" "$W/bin/busybox" && cmp -s "$BB" "$W/bin/busybox" || die "cannot copy busybox"
 for a in $("$W/bin/busybox" --list); do
-	ln -s busybox "$W/bin/$a" || die "cannot set up $W/bin"
+	# some builds list "busybox" itself among the applets
+	[ -e "$W/bin/$a" ] || ln -s busybox "$W/bin/$a" || die "cannot set up $W/bin"
 done
 for p in $RAMFS_COPY_BIN; do
 	src="$(command -v "$p")" || die "$p is missing"
