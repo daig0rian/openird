@@ -12,6 +12,12 @@ once.  The trace is a module parameter and defaults to off, so with
 trace=0 the module behaves exactly like the stock one; it can be turned on
 at runtime through /sys/module/i2c_algo_emma/parameters/trace.
 
+trace=2 folds repeats: a message identical to the one two back is only
+counted.  The SB-TV06-WRIP front-end driver polls one status register
+about 3000 times a second while it waits for satellite lock, which
+overruns the 16 KB log ring and takes the tuner writes just before it
+with it.
+
 Only the byte stream on the wire is recorded -- addresses, direction,
 length and data.  That is observation of the bus, not of the vendor's code.
 
@@ -19,7 +25,7 @@ Origin: gpl-derived
 ---
 --- a/drivers/i2c/algos/i2c-algo-emma.c
 +++ b/drivers/i2c/algos/i2c-algo-emma.c
-@@ -327,6 +327,46 @@
+@@ -327,6 +327,100 @@
  	return 0;
  }
  
@@ -33,40 +39,94 @@ Origin: gpl-derived
 + *
 + *   insmod i2c-algo-emma.ko trace=1
 + *   echo 1 > /sys/module/i2c_algo_emma/parameters/trace
++ *
++ * trace=2 folds repeats.  A status poll is the same pair of messages over and
++ * over ("write the register number", "read one byte"), thousands a second
++ * while a driver waits for lock, and the log ring is 16 KB.  A message that is
++ * identical to the one two back is only counted.  The adapter lock serialises
++ * the callers; two busy adapters sharing this history would just fold less.
 + */
 +static int trace;
 +module_param(trace, int, S_IRUGO | S_IWUSR);
-+MODULE_PARM_DESC(trace, "log every I2C message: 0 off, 1 on");
++MODULE_PARM_DESC(trace, "log every I2C message: 0 off, 1 on, 2 on with repeats folded");
 +
 +#define EMMA_TRACE_MAX 64
++#define EMMA_FOLD_MAX 8
 +
-+static void emma_trace_msg(struct i2c_adapter *i2c_adap, int i, int num,
-+			   const struct i2c_msg *m, int ret)
++static struct emma_trace_rec {
++	u16 addr, flags, len;
++	int ret;
++	u8 buf[EMMA_FOLD_MAX];
++} emma_trace_hist[2];
++static unsigned int emma_trace_pos, emma_trace_folded;
++
++static void emma_trace_line(int nr, int i, int num, u16 addr, u16 flags,
++			    u16 len, int ret, const u8 *p, int lim)
 +{
 +	char buf[EMMA_TRACE_MAX * 3 + 8];
-+	int n = 0, k, lim;
++	int n = 0, k;
 +
-+	if (!trace)
-+		return;
-+
-+	lim = (m->len < EMMA_TRACE_MAX) ? m->len : EMMA_TRACE_MAX;
-+	if (m->buf)
++	if (p)
 +		for (k = 0; k < lim; k++)
-+			n += sprintf(buf + n, " %02x", m->buf[k]);
-+	if (lim < m->len)
++			n += sprintf(buf + n, " %02x", p[k]);
++	if (lim < len)
 +		n += sprintf(buf + n, " ..");
 +	buf[n] = 0;
 +
 +	printk(KERN_INFO "i2c-emma%d: %d/%d %s addr=0x%02x len=%d ret=%d%s\n",
-+	       i2c_adap->nr, i + 1, num,
-+	       (m->flags & I2C_M_RD) ? "R" : "W",
-+	       m->addr, m->len, ret, buf);
++	       nr, i + 1, num, (flags & I2C_M_RD) ? "R" : "W", addr, len, ret,
++	       buf);
++}
++
++static void emma_trace_msg(struct i2c_adapter *i2c_adap, int i, int num,
++			   const struct i2c_msg *m, int ret)
++{
++	struct emma_trace_rec *r;
++
++	if (!trace)
++		return;
++
++	if (trace == 2) {
++		r = &emma_trace_hist[emma_trace_pos];
++		if (m->buf && m->len <= EMMA_FOLD_MAX && r->len == m->len &&
++		    r->addr == m->addr && r->flags == m->flags &&
++		    r->ret == ret && !memcmp(r->buf, m->buf, m->len)) {
++			emma_trace_folded++;
++			emma_trace_pos ^= 1;
++			return;
++		}
++		if (emma_trace_folded) {
++			printk(KERN_INFO "i2c-emma%d: folded %u\n",
++			       i2c_adap->nr, emma_trace_folded);
++			/* an odd count stopped on the first of the pair */
++			r = &emma_trace_hist[emma_trace_pos ^ 1];
++			if (emma_trace_folded & 1)
++				emma_trace_line(i2c_adap->nr, 0, 1, r->addr,
++						r->flags, r->len, r->ret,
++						r->buf, r->len);
++			emma_trace_folded = 0;
++		}
++		r = &emma_trace_hist[emma_trace_pos];
++		r->addr = m->addr;
++		r->flags = m->flags;
++		r->len = m->len;
++		r->ret = ret;
++		if (m->buf && m->len <= EMMA_FOLD_MAX)
++			memcpy(r->buf, m->buf, m->len);
++		else
++			r->len = 0xffff;	/* never folds */
++		emma_trace_pos ^= 1;
++	}
++
++	emma_trace_line(i2c_adap->nr, i, num, m->addr, m->flags, m->len, ret,
++			m->buf,
++			(m->len < EMMA_TRACE_MAX) ? m->len : EMMA_TRACE_MAX);
 +}
 +
  static int emma_xfer(struct i2c_adapter *i2c_adap,
  		     struct i2c_msg msgs[], int num)
  {
-@@ -419,6 +459,8 @@
+@@ -419,6 +513,8 @@
  					     (i + 1 == num));
  		}
  
