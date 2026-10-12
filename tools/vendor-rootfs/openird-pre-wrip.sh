@@ -21,12 +21,28 @@
 #                     静的 IP の telnet が唯一の口。壊すと電源リセットでも戻らない恐れ。
 #   openird-ip        静的 IP（既定 192.168.11.20）。noblur のとき eth0 に振る。
 #   openird-csddebug  csd.ko を CSD_DEBUG=<中身>(既定1) で自前 load。
+#   openird-i2ctrace  フロントエンドの I2C（GPL の emma アダプタ・バス 1）を記録する。
+#                     /app/setting/i2c-algo-emma.ko（カーネルパッチ 0002 つきの自前ビルド）を
+#                     ベンダより先に trace=<中身>(既定2) で load し、/proc/kmsg を /tmp/kmsg.log へ流す。
+#                     ベンダアプリが後から入れる同名モジュールは "File exists" で無害に失敗する。
 #
 # フラグを消せばその機能は無効。結果は /app/setting/openird-pre.log。
 
 {
   echo "--- openird-pre (wrip) ---"
   cat /proc/uptime
+
+  # --- 0. I2C バスの記録（ベンダアプリが動くモードでも noblur でも効く） -----
+  # ログ環は 16KB しかないので、dmesg を周期で吸うのではなく /proc/kmsg を流し続ける。
+  if [ -f /app/setting/openird-i2ctrace ] && [ -f /app/setting/i2c-algo-emma.ko ] ; then
+    # フラグの中身が trace の値（空なら 2＝同じ読み出しの繰り返しを畳む。衛星のロック待ちは
+    # 毎秒約 3000 回の読み出しで、畳まないとログ環が溢れて直前のチューナ設定が欠ける）。
+    T=$(cat /app/setting/openird-i2ctrace 2>/dev/null)
+    [ -n "$T" ] || T=2
+    echo 1 > /sys/module/printk/parameters/time
+    cat /proc/kmsg > /tmp/kmsg.log &
+    insmod /app/setting/i2c-algo-emma.ko trace=$T && echo "i2c-algo-emma loaded (trace=$T)"
+  fi
 
   # 1 回だけ noblur: 読んだ時点で消す＝次の起動は通常＝救済可能。初回はこれを使う。
   NOBLUR=0

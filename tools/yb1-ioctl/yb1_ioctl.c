@@ -29,6 +29,8 @@
  *
  * Script lines are whitespace separated:
  *   <cmd> [word ...]   issue that request, payload given as 32-bit words
+ *   val <cmd> <value>  issue that request with the argument passed by value
+ *                      (what the tracer prints as "byvalue")
  *   load $N <phys>     read one 32-bit word of physical memory into $N
  *   hold <seconds>     keep the fd open and wait (so the capture can run)
  *   trace              from here on, print the command-stack entries each
@@ -82,6 +84,7 @@
 
 #define MAXARG		256		/* _IOC size field caps at 8191, but
 					 * every vendor request seen is <= 64 */
+#define MAXWORDS	16		/* payload words on one script line */
 #define STDOUT		1
 
 typedef unsigned char u8;
@@ -343,7 +346,7 @@ static long do_one(long fd, unsigned long cmd, const unsigned long *w, int nw)
 	put("ret=");
 	putdec(r);
 	put("  buf:");
-	for (i = 0; i < 10 && (unsigned long)(i * 4 + 4) <= size; i++) {
+	for (i = 0; i < MAXWORDS && (unsigned long)(i * 4 + 4) <= size; i++) {
 		put(" ");
 		puthex(((unsigned long)argbuf[i * 4] << 24) |
 		       ((unsigned long)argbuf[i * 4 + 1] << 16) |
@@ -486,7 +489,7 @@ static int run_script(long fd, const char *dev0, const char *path)
 	end = script + got;
 	while (p < end) {
 		char *line = p;
-		unsigned long w[8], cmd;
+		unsigned long w[MAXWORDS], cmd;
 		int nw = 0;
 		char *tok;
 
@@ -646,13 +649,45 @@ static int run_script(long fd, const char *dev0, const char *path)
 			tr_syscall(SYS_nanosleep, (long)ts, 0, 0, 0, 0, 0);
 			continue;
 		}
+		if (streq(tok, "val")) {
+			/* val <cmd> <value>: the argument IS the value (the
+			 * driver does not treat it as a pointer) */
+			char *a;
+			long r;
+
+			while (is_space(*line))
+				line++;
+			a = line;
+			while (*line && !is_space(*line))
+				line++;
+			if (*line)
+				*line++ = 0;
+			while (is_space(*line))
+				line++;
+			w[0] = 0;
+			if (parse_arg(a, &cmd) || (*line && parse_arg(line, &w[0]))) {
+				put("bad val line\n");
+				flushout();
+				continue;
+			}
+			r = tr_syscall(SYS_ioctl, cur, (long)cmd, (long)w[0], 0, 0, 0);
+			put("nr=0x");
+			puthex(cmd & 0xff, 2);
+			put(" V ret=");
+			putdec(r);
+			put("  val: ");
+			puthex(w[0], 8);
+			put("\n");
+			flushout();
+			continue;
+		}
 		if (parse_arg(tok, &cmd)) {
 			put("bad cmd in script: ");
 			put(tok);
 			put("\n");
 			continue;
 		}
-		while (nw < 8) {
+		while (nw < MAXWORDS) {
 			char *a;
 
 			while (is_space(*line))
