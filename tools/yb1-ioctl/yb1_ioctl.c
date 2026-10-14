@@ -32,6 +32,9 @@
  *   val <cmd> <value>  issue that request with the argument passed by value
  *                      (what the tracer prints as "byvalue")
  *   load $N <phys>     read one 32-bit word of physical memory into $N
+ *   store <phys> <word> [word ...]
+ *                      write 32-bit words to physical memory (a parameter
+ *                      block that needs a value known only at run time)
  *   hold <seconds>     keep the fd open and wait (so the capture can run)
  *   trace              from here on, print the command-stack entries each
  *                      request produced (command ID, request, response)
@@ -65,6 +68,7 @@
 #define O_RDWR		0x0002
 #define O_SYNC		0x0010		/* MIPS: O_DSYNC, enough for /dev/mem */
 #define PROT_READ	0x1
+#define PROT_WRITE	0x2
 #define MAP_SHARED	0x001
 #define PAGE_SHIFT	12
 #define PAGE_SIZE	(1UL << PAGE_SHIFT)
@@ -390,6 +394,33 @@ static int read_phys(unsigned long phys, unsigned long *out)
 	return 0;
 }
 
+/* The other way round, for a parameter block that lives in shared memory and
+ * needs a value another call returned (a handle). */
+static int write_phys(unsigned long phys, unsigned long v)
+{
+	unsigned long off = phys & (PAGE_SIZE - 1);
+	volatile unsigned char *m;
+	long fd, r;
+
+	fd = tr_syscall(SYS_open, (long)"/dev/mem", O_RDWR | O_SYNC, 0, 0, 0, 0);
+	if (fd < 0)
+		return -1;
+	r = tr_syscall(SYS_mmap2, 0, (long)PAGE_SIZE, PROT_READ | PROT_WRITE,
+		       MAP_SHARED, fd, (long)((phys - off) >> PAGE_SHIFT));
+	if (r < 0 && r > -4096) {
+		tr_syscall(SYS_close, fd, 0, 0, 0, 0, 0);
+		return -1;
+	}
+	m = (volatile unsigned char *)r + off;
+	m[0] = (unsigned char)(v >> 24);
+	m[1] = (unsigned char)(v >> 16);
+	m[2] = (unsigned char)(v >> 8);
+	m[3] = (unsigned char)v;
+	tr_syscall(SYS_munmap, r, (long)PAGE_SIZE, 0, 0, 0, 0);
+	tr_syscall(SYS_close, fd, 0, 0, 0, 0, 0);
+	return 0;
+}
+
 /* Some drivers take a POINTER inside the argument rather than the value
  * itself -- /dev/h57fmb0 does, for the transcoder's parameter space.  "$B"
  * resolves to the address of this buffer so a script can hand one over,
@@ -546,6 +577,47 @@ static int run_script(long fd, const char *dev0, const char *path)
 				puthex(var[idx], 8);
 				put("\n");
 			}
+			flushout();
+			continue;
+		}
+		if (streq(tok, "store")) {
+			unsigned long phys, v;
+			char *a;
+			int n = 0, bad = 0;
+
+			while (is_space(*line))
+				line++;
+			a = line;
+			while (*line && !is_space(*line))
+				line++;
+			if (*line)
+				*line++ = 0;
+			if (parse_arg(a, &phys) || (phys & 3)) {
+				put("bad store line\n");
+				flushout();
+				continue;
+			}
+			for (;;) {
+				while (is_space(*line))
+					line++;
+				if (!*line)
+					break;
+				a = line;
+				while (*line && !is_space(*line))
+					line++;
+				if (*line)
+					*line++ = 0;
+				if (parse_arg(a, &v) || write_phys(phys + 4 * n, v)) {
+					bad = 1;
+					break;
+				}
+				n++;
+			}
+			put(bad ? "store: failed after " : "store: ");
+			putdec(n);
+			put(" word(s) at 0x");
+			puthex(phys, 8);
+			put("\n");
 			flushout();
 			continue;
 		}
@@ -715,6 +787,7 @@ static void usage(void)
 	    "  <cmd>     request as the tracer prints it, e.g. 0x4028c32f\n"
 	    "  [byte]    payload, most significant first, zero padded\n"
 	    "Script lines: '<cmd> [word ...]', 'load $N <phys>', 'hold <secs>',\n"
+	    "  'store <phys> <word>...' (physical memory, 32-bit words),\n"
 	    "  'fill <off> <byte>...' / 'show <off> [n]' use the I/O buffer,\n"
 	    "  whose address is '$B' (drivers that take a pointer in the arg),\n"
 	    "  or 'dev <path>' to switch node (both stay open).\n"

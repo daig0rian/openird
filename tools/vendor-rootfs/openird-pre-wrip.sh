@@ -25,6 +25,10 @@
 #                     /app/setting/i2c-algo-emma.ko（カーネルパッチ 0002 つきの自前ビルド）を
 #                     ベンダより先に trace=<中身>(既定2) で load し、/proc/kmsg を /tmp/kmsg.log へ流す。
 #                     ベンダアプリが後から入れる同名モジュールは "File exists" で無害に失敗する。
+#   openird-avwatch   裏 CPU へのコマンド（共有メモリのエントリ表とデータ環）の変化を記録する。
+#                     /app/setting/avwatch.ko（tools/yb1-fifodrain）を csd より先に load する。
+#                     中身が insmod の引数（空なら下の既定）。結果は /proc/misc の avwatch の
+#                     番号で mknod した先から読む（/dev は読み取り専用なので /tmp に作る）。
 #
 # フラグを消せばその機能は無効。結果は /app/setting/openird-pre.log。
 
@@ -42,6 +46,13 @@
     echo 1 > /sys/module/printk/parameters/time
     cat /proc/kmsg > /tmp/kmsg.log &
     insmod /app/setting/i2c-algo-emma.ko trace=$T && echo "i2c-algo-emma loaded (trace=$T)"
+  fi
+
+  # --- 0b. 裏 CPU へのコマンドの記録（csd より先に入れる） ------------------
+  if [ -f /app/setting/openird-avwatch ] && [ -f /app/setting/avwatch.ko ] ; then
+    A=$(cat /app/setting/openird-avwatch 2>/dev/null)
+    [ -n "$A" ] || A="period_us=250 secs=90 sweep=0 cmdlog=1"
+    insmod /app/setting/avwatch.ko $A && echo "avwatch loaded ($A)"
   fi
 
   # 1 回だけ noblur: 読んだ時点で消す＝次の起動は通常＝救済可能。初回はこれを使う。

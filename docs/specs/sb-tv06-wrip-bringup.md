@@ -552,8 +552,9 @@ lindberg が open しているのは **`/dev/val_record`（録画TS経路）＋`
    明記・端子の実測 0 V・設定を切り替えても何も動かない。同 §8.1）。
 3. **CS の流量への対処**（§10.6）。全 PID の流量は測った。CS は試作の XDMA の形では数 % 落ち、
    CPU で写すと欠けは 0 だが CPU を 4 割強使う。製品のドレイナーでの振り分けと写し方が課題。
-4. **B-CAS カードの口（`val_scard`）**。PC/SC の運び役としてはスコープ内。呼び出しの形までは
-   見た（§10.7）。本体は、鍵にあたる情報を採らない手順を決めてから。
+4. ~~カードの口（`val_scard`）~~ → **運び役は観察済み**（[カードの口](sb-tv06-wrip-card-slot.md)）。
+   B-CAS ではないカードを挿して、リセット → ATR → コマンドの往復を、ベンダのモジュール無しで
+   通した。残りはカードの抜き挿しの合図と、製品のドライバ。
 5. **製品への組み込み**: 機種の defconfig・`ird-tuner-emma3sep` の機種グルー（GPIO43・フロントエンド）・
    起動スクリプト。カーネルは YB1 と同じ GPL から作れる見込み（設定の差は §10.1、機種名の
    分岐は §10.7）。**この機種で GPL のカーネルが起動するかは未検証**で、確かめるにはカーネルの
@@ -605,10 +606,10 @@ ECM/EMM の PID も載せて運ぶだけ）、全部をフィルタに載せて�
 - **zpio の向きは 1 が出力**（GPL の `emma-gpio.c`）。`dir` は `c1fff1fc 0fefdf7f`。
 - **フロントエンドの電源 GPIO43 は、カーネルではなくベンダアプリが上げている**（アプリ抜きの
   起動では 0）。製品では機種グルーが gpiolib で上げる。
-- **カードの口（`/dev/val_scard`）**: 起動時の呼び出しは `nr=0x01` → `0x0b` → `0x02` → `0x06`（6 回）→
-  `0x07`。どれも引数は 40 バイトで、中身は AV の共有メモリ上の番地 1 語だけ（やり取りの本体は
-  共有メモリ側にある）。**本体は読んでいない**: カードの応答には限定受信の鍵にあたる情報が
-  含まれ得るので、長さと状態だけを採る手順を決めてから観察する（未着手）。
+- **カードの口**: 裏 CPU の FW が持っていて、コマンド `0x11xx` とイベント 16 で扱える
+  （[カードの口](sb-tv06-wrip-card-slot.md)。YB1 と同じ FW だが、YB1 には口が無い）。ベンダの
+  `/dev/val_scard` との対応も同じ文書の §5。観察は B-CAS ではないカードで行い、カードが運ぶ
+  中身には触れていない。
 
 ### 10.8 ★ 参照受信機との照合（地上 3 波・BS 2 つの TS・CS 2 波）
 
@@ -645,7 +646,7 @@ ECM/EMM の PID も載せて運ぶだけ）、全部をフィルタに載せて�
   載せ損ねた（9 秒にして解消）。実装は CAT を待ち続けて、来たら足す形にする。
 - 参照側の ch24 は 1 回目に「Channel selection failed」で受信できず、やり直して通った（参照側の事情）。
 
-## 11. 実機リグの現状（2026-10-12）
+## 11. 実機リグの現状（2026-10-13）
 
 - NAND は 2026-09-26 のまま（telnet-root 入りの LINDBERG コンテナ・rootfs タグ `WRIP1`）。
   今回フラッシュに書いたのは `/app/setting`（mtd8・yaffs2）のファイルだけ。
@@ -653,12 +654,12 @@ ECM/EMM の PID も載せて運ぶだけ）、全部をフィルタに載せて�
   シリアルは COM3＝`ttyS1`（getty）。電源は SwitchBot のプラグ。
 - `/app/setting` に置いたもの: `openird-pre.sh`（[`openird-pre-wrip.sh`](../../tools/vendor-rootfs/openird-pre-wrip.sh)。
   旧版は `.bak`）・`openird-ip`（`192.168.11.19`）・`i2c-algo-emma.ko`（記録つき）・`wrip-fe.sh`・
-  `yb1-mem`・`yb1-ioctl`・`yb1-cmd`・`min-rawts.cmd`・`fifodrain.ko`。
+  `yb1-mem`・`yb1-ioctl`・`yb1-cmd`・`min-rawts.cmd`・`fifodrain.ko`・`avwatch.ko`。
 - ベンダの設定（アッテネータ・アンテナへの給電）は、観察のために `X_SetTunerSetting` で
   切り替えた後、元の値（アッテネータ切・給電入）に戻してある。設定ファイル
   `SettingInfo*.data` は書き換えのたびに名前の末尾（世代）が変わる。
-- **フラグはすべて外してある**（`openird-trace`・`openird-i2ctrace`・`openird-noblur*`・
-  `openird-csddebug`）。2026-09-26 から `openird-trace` が残っていて、起動のたびに ioctl の記録が
+- **フラグはすべて外してある**（`openird-trace`・`openird-i2ctrace`・`openird-avwatch`・
+  `openird-noblur*`・`openird-csddebug`）。2026-09-26 から `openird-trace` が残っていて、起動のたびに ioctl の記録が
   `/tmp`（tmpfs 51.9MB）へ毎秒約 3.6KB 溜まっていた（約 4 時間で満杯になる）ので外した。
 - 観察のやり方:
   - I2C の記録: `touch /app/setting/openird-i2ctrace` → 電源入れ直し → `/tmp/kmsg.log`。
@@ -668,5 +669,11 @@ ECM/EMM の PID も載せて運ぶだけ）、全部をフィルタに載せて�
     §10.4 の手順は、`gpiotool set 43` → `wrip-fe.sh init` → `wrip-fe.sh t|s <MHz>` →
     `rmmod val_merge csd` → `yb1-cmd -v min-rawts.cmd` → `mknod /tmp/yb1fifo c 10 <minor>`
     （`/dev` は読み取り専用。minor は `/proc/misc`）→ `insmod fifodrain.ko fifos=5 [use_xdma=0]`。
+  - 裏 CPU へのコマンドの記録: `touch /app/setting/openird-avwatch`（中身が `insmod` の引数。
+    空なら `period_us=250 secs=90 sweep=0 cmdlog=1`）→ 電源入れ直し → `/proc/misc` の `avwatch` の
+    番号で `mknod /tmp/avwatch c 10 <番号>` → `cat`。PC で
+    [`tools/host/avwatch2cmds.py`](../../tools/host/avwatch2cmds.py) に通すと、コマンド 1 本ごとの
+    要求と応答になる。**50 µs の周期で共有メモリを広く掃くと、起動が数倍遅くなる**（1 回、肝心の
+    所が記録の時間から外れた）。
   - ベンダアプリの選局は UPnP の `X_SetTuning(BroadcastWave, Frequency)`（`tb`/`bs`/`cs`・MHz）。
     約 15 秒で待機に戻る。
