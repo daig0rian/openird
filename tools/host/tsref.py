@@ -71,6 +71,8 @@ class Sections:
             return
         off = 4 + (1 + p[4] if (p[3] >> 4) & 2 else 0)
         pl = p[off:]
+        if not pl:  # adaptation field to the end (or a broken length)
+            return
         if p[1] & 0x40:
             ptr = pl[0]
             if self.buf:
