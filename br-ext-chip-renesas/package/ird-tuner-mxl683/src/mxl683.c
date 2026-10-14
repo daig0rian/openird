@@ -31,8 +31,8 @@
 #define REG_FW_ID	0xa8cc		/* 0xabcd once the firmware runs */
 #define FW_ID_ALIVE	0xabcd
 #define REG_FREQ	0x3029		/* centre frequency, 1/64 MHz */
-#define REG_LOCK_STAGES	0x1129		/* 0x1f: every stage locked */
-#define REG_LOCK_FINAL	0x112e		/* 1: the last one too */
+#define REG_LOCK_STAGES	0x1129		/* one bit per stage, see stages_locked() */
+#define REG_LOCK_FINAL	0x112e		/* 1: the last stage */
 #define REG_CNR		0x112d
 
 /* Parts of the cold start take the chip off the bus for a while (about 30 ms
@@ -350,6 +350,13 @@ int mxl683_tune(struct mxl683 *m, u32 freq_khz)
 }
 EXPORT_SYMBOL_GPL(mxl683_tune);
 
+/* Bits 0..3 of 0x1129 must be set.  Bit 4 is set on most stations but never
+ * on some that otherwise lock just as well (§86.1). */
+static int stages_locked(u32 stages)
+{
+	return (stages & 0x0f) == 0x0f;
+}
+
 int mxl683_locked(struct mxl683 *m)
 {
 	u32 stages, final;
@@ -360,7 +367,7 @@ int mxl683_locked(struct mxl683 *m)
 		ret = reg_read(m, REG_LOCK_FINAL, &final);
 	if (ret)
 		return ret;
-	return stages == 0x1f && final == 1;
+	return stages_locked(stages) && final == 1;
 }
 EXPORT_SYMBOL_GPL(mxl683_locked);
 
@@ -392,7 +399,7 @@ int mxl683_read_cnr(struct mxl683 *m, u32 *mdb)
 	ret = reg_read(m, REG_LOCK_STAGES, &v);
 	if (ret)
 		return ret;
-	if (v != 0x1f)
+	if (!stages_locked(v))
 		return 0;		/* the reading means nothing before lock */
 	for (i = 0; i < 4; i++) {	/* it wanders by +-15 %: average */
 		ret = reg_read(m, REG_CNR, &v);

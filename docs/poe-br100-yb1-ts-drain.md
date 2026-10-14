@@ -25,7 +25,7 @@
 [起動]  mtd5 の FW（emma3sep_driver_std_op0.mem）→ 物理 0x30000
         insmod csd.ko（裏 CPU を起こす）→ rmmod csd.ko（裏 CPU は走り続ける）
 [選局]  MXL683 ← GPL の i2c だけ（MBIN は blur から実行時に取り出して転送）
-        選局語 = 64 × (X + 1/7)、ロック = 0x1129 == 0x1f かつ 0x112e == 1（1.4〜1.7 秒）
+        選局語 = 64 × (X + 1/7)、ロック = 0x1129 の下位 4 ビット かつ 0x112e == 1（1.4〜1.7 秒・§86.1）
 [組む]  裏 CPU のコマンドスタック（共有メモリ 0x10000・合図 0x100001b0）に 6 種のコマンド
         Initialise / OpenDevice ×3 / 入力源 / フィルタ確保 / PID 設定 / 無効化
 [吸う]  AV SRAM の TS 入力 FIFO（27 MHz の到着時刻＋188B・スクランブルされたまま）
