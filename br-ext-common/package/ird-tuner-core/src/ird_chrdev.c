@@ -68,6 +68,23 @@ static u32 cnr_mdb_to_ptx(u32 mdb)
 	return cnr_tab[i] - (cnr_tab[i] - cnr_tab[i + 1]) * frac / CNR_TAB_STEP_MDB;
 }
 
+/* The other way, for a demodulator that reports in the PT1's units itself:
+ * the C/N in 1/1000 dB, read off the same table. */
+u32 ird_tuner_cnr_from_ptx(u32 raw)
+{
+	u32 i;
+
+	if (raw >= cnr_tab[0])
+		return CNR_TAB_MIN_MDB;
+	for (i = 0; i + 1 < ARRAY_SIZE(cnr_tab); i++)
+		if (raw > cnr_tab[i + 1])
+			return CNR_TAB_MIN_MDB + i * CNR_TAB_STEP_MDB +
+			       (cnr_tab[i] - raw) * CNR_TAB_STEP_MDB /
+			       (cnr_tab[i] - cnr_tab[i + 1]);
+	return CNR_TAB_MIN_MDB + (ARRAY_SIZE(cnr_tab) - 1) * CNR_TAB_STEP_MDB;
+}
+EXPORT_SYMBOL_GPL(ird_tuner_cnr_from_ptx);
+
 /* The ISDB-T channel numbering of px4_drv (ird_ptx_ioctl.h). */
 static int isdbt_freq_khz(int system, const struct ptx_freq *f, u32 *khz)
 {

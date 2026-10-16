@@ -1,16 +1,21 @@
 #!/bin/sh
-# OpenIRD tuner bring-up for the POE-BR100-YB1.
+# OpenIRD tuner bring-up for the EMMA3SEP boards (POE-BR100-YB1, SB-TV06-WRIP).
 #
-# The tuner driver is in the kernel, but three things it needs are not part
-# of OpenIRD and are taken, at every boot, from the owner's own device:
+# The tuner driver is in the kernel, but what it needs is not part of OpenIRD
+# and is taken, at every boot, from the owner's own device:
 #
 #   mtd5  emma3sep_driver_std_op0.mem   firmware of the SoC's AV sub-CPU
 #   mtd4  drivers/csd.ko                vendor module that starts that CPU
-#   mtd4  blur                          carries the demodulator's firmware
+#   mtd4  blur                          the demodulator's firmware (POE-BR100-YB1
+#                                       only: the driver has a `firmware' file)
 #
 # Both partitions are only ever mounted read-only.  Messages are ASCII only.
 
-SYS=/sys/devices/platform/ird-tuner-yb1.0
+# the kernel registers ird-tuner-<board>.0 for the board the boot loader names
+SYS=
+for d in /sys/devices/platform/ird-tuner-*.0; do
+	[ -d "$d" ] && SYS="$d"
+done
 APP=/vendor/app
 FW=/vendor/fw
 SUBCPU_FW=emma3sep_driver_std_op0.mem
@@ -31,8 +36,8 @@ fail() {
 }
 
 start() {
-	# other boards of the family run the same kernel without this tuner
-	[ -d "$SYS" ] || return 0
+	# a board the kernel has no tuner for
+	[ -n "$SYS" ] || return 0
 	printf "Starting tuner: "
 	grep -q "^state ready" "$SYS/state" && { led green; echo "already running"; return 0; }
 
@@ -40,7 +45,9 @@ start() {
 		fail "cannot mount the vendor application partition (mtd4)"
 	grep -q " $FW " /proc/mounts || mount -t squashfs -o ro /dev/mtdblock5 "$FW" ||
 		fail "cannot mount the vendor firmware partition (mtd5)"
-	for f in "$FW/$SUBCPU_FW" "$APP/drivers/csd.ko" "$APP/blur"; do
+	need="$FW/$SUBCPU_FW $APP/drivers/csd.ko"
+	[ -e "$SYS/firmware" ] && need="$need $APP/blur"
+	for f in $need; do
 		[ -f "$f" ] || fail "$f is missing"
 	done
 
@@ -57,11 +64,15 @@ start() {
 	sleep 1
 	rmmod csd || fail "csd.ko did not unload"
 
-	# 2. The demodulator's firmware, found inside the vendor application.
-	ird-mbin -o /tmp/mxl683.mbin "$APP/blur" 2>/dev/null ||
-		fail "no demodulator firmware found in $APP/blur"
-	cat /tmp/mxl683.mbin > "$SYS/firmware" || fail "the driver refused the firmware"
-	rm -f /tmp/mxl683.mbin
+	# 2. The demodulator's firmware, found inside the vendor application
+	#    (only where the driver asks for it).
+	if [ -e "$SYS/firmware" ]; then
+		ird-mbin -o /tmp/mxl683.mbin "$APP/blur" 2>/dev/null ||
+			fail "no demodulator firmware found in $APP/blur"
+		cat /tmp/mxl683.mbin > "$SYS/firmware" ||
+			fail "the driver refused the firmware"
+		rm -f /tmp/mxl683.mbin
+	fi
 
 	# 3. Everything else is the driver's.
 	echo 1 > "$SYS/start" 2>/dev/null ||

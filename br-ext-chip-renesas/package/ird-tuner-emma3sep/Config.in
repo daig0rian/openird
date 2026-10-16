@@ -4,9 +4,10 @@ config BR2_PACKAGE_IRD_TUNER_EMMA3SEP
 	select BR2_PACKAGE_IRD_TUNER_MXL683
 	help
 	  Renesas EMMA3SEP の TS 取り出し（AV サブシステムのコマンド経路と
-	  TS 入力 FIFO のドレイナー）と、POE-BR100-YB1 向けの組み立て。
+	  TS 入力 FIFO のドレイナー）と、機種ごとのフロントエンド（POE-BR100-YB1・
+	  SB-TV06-WRIP）を合わせたチューナ。
 
 	  ドライバ本体（src/）はカーネルに組み込む。このパッケージが
 	  rootfs に入れるのは起動スクリプト: 所有者の機器の区画から
-	  裏 CPU の FW・csd.ko・復調器のファームを実行時に使って
-	  チューナを立ち上げる（どれも配布物には含めない）。
+	  裏 CPU の FW・csd.ko（と、要る機種では復調器のファーム）を
+	  実行時に使ってチューナを立ち上げる（どれも配布物には含めない）。

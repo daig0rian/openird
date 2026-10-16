@@ -49,4 +49,8 @@ struct ird_tuner {
 int ird_tuner_register(struct ird_tuner *t);
 void ird_tuner_unregister(struct ird_tuner *t);
 
+/* C/N in 1/1000 dB from the PT1 demodulator's raw value (the unit
+ * PTX_GET_CNR hands out), for drivers whose demodulator reports in it */
+u32 ird_tuner_cnr_from_ptx(u32 raw);
+
 #endif /* _IRD_TUNER_H */

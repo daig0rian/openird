@@ -7,7 +7,7 @@
 #
 # 中身: 素の Linux 基盤（BusyBox・dropbear・mtd）。カーネルは YB1 と同じファミリー共通の
 # もの（GPL 2.6.27.39 の再ビルド・機種の部品は起動引数の PRODUCT_FWIDS で選ぶ）。
-# チューナ（px4_drv 互換 chardev）は、この機種のフロントエンドのドライバができてから入れる。
+# チューナは px4_drv 互換 chardev（/dev/irdvideo0・ドライバはカーネルに組み込み）。地上のみ。
 # 区画はベンダのまま（mtd2/mtd3 だけ書く・docs/specs/sb-tv06-wrip-bringup.md §2）。
 
 # --- アーキテクチャ / toolchain ---
@@ -53,7 +53,9 @@ BR2_PACKAGE_IRD_ADDON=y
 BR2_PACKAGE_OPENWRT_MTD=y
 BR2_PACKAGE_DROPBEAR=y
 BR2_PACKAGE_DROPBEAR_DISABLE_REVERSEDNS=y
-# チューナ: まだ入れない（YB1 の起動スクリプトと MBIN の道具は、この機種では使わない）
+# チューナ: 起動スクリプト（裏 CPU の FW・csd は所有者の機器から実行時に使う。この機種は
+# 復調器のファームが要らない）
+BR2_PACKAGE_IRD_TUNER_EMMA3SEP=y
 
 # --- rootfs イメージ ---
 # ベンダカーネルの squashfs は 3.1 BE。Buildroot の mksquashfs(4.x) では作れないので、
