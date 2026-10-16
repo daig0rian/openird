@@ -1,0 +1,61 @@
+# OpenIRD: SB-TV06-WRIP / POE-BR310L-SB1（Renesas EMMA3SEP, MIPS 4KEc＝MIPS32r2 BE・FPU 無し）
+# ビルド: make BOARD=emma3sep_softbank_sb-tv06-wrip          （rootfs と救助用 initramfs）
+#         make kernel BOARD=emma3sep_softbank_sb-tv06-wrip   （カーネル。先に上を通すこと）
+# 出力:   output/<BOARD>/images/rootfs.img    … mtd3 用（squashfs 3.1 BE）
+#         output/<BOARD>/images/rescue.cpio   … カーネルに埋め込む救助用 initramfs
+#         output/<BOARD>/vmlinux.img          … mtd2 用（uImage）
+#
+# 中身: 素の Linux 基盤（BusyBox・dropbear・mtd）。カーネルは YB1 と同じファミリー共通の
+# もの（GPL 2.6.27.39 の再ビルド・機種の部品は起動引数の PRODUCT_FWIDS で選ぶ）。
+# チューナ（px4_drv 互換 chardev）は、この機種のフロントエンドのドライバができてから入れる。
+# 区画はベンダのまま（mtd2/mtd3 だけ書く・docs/specs/sb-tv06-wrip-bringup.md §2）。
+
+# --- アーキテクチャ / toolchain ---
+# FPU が無いので soft-float（musl）。toolchain は Buildroot に作らせる。
+BR2_mips=y
+BR2_mips_32r2=y
+BR2_MIPS_SOFT_FLOAT=y
+BR2_TOOLCHAIN_BUILDROOT_MUSL=y
+BR2_KERNEL_HEADERS_5_10=y
+
+# --- ダウンロードの完全性（全ソースを .hash で検証） ---
+BR2_DOWNLOAD_FORCE_CHECK_HASHES=y
+
+# --- 静的リンク・サイズ優先 ---
+# 同じ BusyBox を救助用 initramfs（カーネルに埋め込む・3.0MB の枠）にも入れるため。
+BR2_STATIC_LIBS=y
+BR2_OPTIMIZE_S=y
+
+# --- system ---
+BR2_TARGET_GENERIC_HOSTNAME="openird"
+BR2_TARGET_GENERIC_ISSUE="OpenIRD"
+BR2_INIT_BUSYBOX=y
+# 2.6.27 は devtmpfs 無し → squashfs に静的 /dev を持ち、起動時に tmpfs へ写す（preinit）
+BR2_ROOTFS_DEVICE_CREATION_STATIC=y
+BR2_ROOTFS_STATIC_DEVICE_TABLE="system/device_table_dev.txt $(BR2_EXTERNAL_IRD_RENESAS_PATH)/board/emma3sep/device_table_dev.txt"
+# / は preinit が組み立てる（squashfs + yaffs2 を unionfs で重ねる）。getty も使わない
+# BR2_TARGET_GENERIC_REMOUNT_ROOTFS_RW is not set
+# BR2_TARGET_GENERIC_GETTY is not set
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_IRD_RENESAS_PATH)/board/emma3sep/rootfs_overlay"
+BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_IRD_RENESAS_PATH)/board/emma3sep/post-build.sh"
+BR2_ROOTFS_POST_FAKEROOT_SCRIPT="$(BR2_EXTERNAL_IRD_RENESAS_PATH)/board/emma3sep/post-fakeroot.sh"
+BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_IRD_RENESAS_PATH)/board/emma3sep/post-image.sh"
+# post スクリプトはファミリー共通。機種名はここから渡す
+BR2_ROOTFS_POST_SCRIPT_ARGS="emma3sep_softbank_sb-tv06-wrip"
+
+# --- packages ---
+BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_IRD_RENESAS_PATH)/board/emma3sep/busybox.fragment"
+# ネットワークは ird-base-files の S40network（フォールバック IP → DHCP）
+# BR2_PACKAGE_IFUPDOWN_SCRIPTS is not set
+BR2_PACKAGE_IRD_BASE_FILES=y
+# アドオン（実行時パッケージ）のインストーラ。リポジトリは 1 つも焼かない（docs/addon.md）
+BR2_PACKAGE_IRD_ADDON=y
+BR2_PACKAGE_OPENWRT_MTD=y
+BR2_PACKAGE_DROPBEAR=y
+BR2_PACKAGE_DROPBEAR_DISABLE_REVERSEDNS=y
+# チューナ: まだ入れない（YB1 の起動スクリプトと MBIN の道具は、この機種では使わない）
+
+# --- rootfs イメージ ---
+# ベンダカーネルの squashfs は 3.1 BE。Buildroot の mksquashfs(4.x) では作れないので、
+# post-fakeroot.sh が pin した squashfs-tools 3.4 で固める（tar は fakeroot を回すためだけ）。
+BR2_TARGET_ROOTFS_TAR=y

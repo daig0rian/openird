@@ -516,31 +516,38 @@ def test_airtuner_board():
     leds = {}
     names = []
     for m in re.finditer(r'\{([^{}]*\.name\s*=\s*"(ird:(\w+):(\w+))"[^{}]*)\}', src):
-        gpio = re.search(r"\.gpio\s*=\s*(\d+)", m.group(1))
         names.append(m.group(2))
-        leds[(m.group(4), m.group(3))] = (int(gpio.group(1)) if gpio else None,
-                                          bool(re.search(r"\.active_low\s*=\s*1\b", m.group(1))),
+        leds[(m.group(4), m.group(3))] = (bool(re.search(r"\.active_low\s*=\s*1\b", m.group(1))),
                                           "default-on" in m.group(1))
+    # the per-board table: { "NAME", { status green, status red, power green, power red }, usb power }
+    boards = {}
+    for m in re.finditer(r'\{\s*"(\w+)",\s*\{\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+)\s*\},\s*(-?\d+)\s*\}', src):
+        boards[m.group(1)] = (tuple(int(m.group(i)) for i in range(2, 6)), int(m.group(6)))
+    order = re.findall(r'\.name\s*=\s*"ird:(\w+):(\w+)"', src)
     # 2.6.27 のデバイス名は 19 文字まで（BUS_ID_SIZE 20）。20 文字の名前は末尾が切れて登録され、
     # ird-led が見つけられなくなる（実機で踏んだ）。
     check("LED の名前は 19 文字以内", bool(names) and all(len(n) <= 19 for n in names),
           repr([n for n in names if len(n) > 19]), spec=spec + "#6")
-    want = {("status", "green"): 19, ("status", "red"): 20, ("power", "green"): 21, ("power", "red"): 22}
-    check("LED 4 本の GPIO が仕様の表どおり", {k: v[0] for k, v in leds.items()} == want, repr(leds),
+    check("LED の並びは 状態の緑・状態の赤・電源の緑・電源の赤（基板の表と同じ順）",
+          order == [("green", "status"), ("red", "status"), ("green", "power"), ("red", "power")],
+          repr(order), spec=spec + "#6")
+    gpl = ("PIX_AIRTUNER_LITE", "PIX_AIRTUNER_R", "PIX_AIRTUNER_W", "NEC_AIRTUNER_R", "TOSHIBA_AIRTUNER_R")
+    check("GPL に割り当てがある 5 つの基板: LED は 19〜22・USB の電源は GPL のドライバ任せ",
+          all(boards.get(n) == ((19, 20, 21, 22), -1) for n in gpl), repr(boards), spec=spec + "#2")
+    check("BR310L（SB-TV06-WRIP）: LED の 2 組が入れ替わり・USB の電源は GPIO36",
+          boards.get("PIX_AIRTUNER_BR310L") == ((21, 22, 19, 20), 36), repr(boards.get("PIX_AIRTUNER_BR310L")),
+          spec=spec + "#7")
+    check("LED は 4 本とも L で点灯", len(leds) == 4 and all(v[0] for v in leds.values()), repr(leds),
           spec=spec + "#2")
-    check("LED は 4 本とも L で点灯", len(leds) == 4 and all(v[1] for v in leds.values()), repr(leds),
-          spec=spec + "#2")
-    check("登録で消える分を点け直すのは、電源の赤だけ", [k for k, v in leds.items() if v[2]] == [("power", "red")],
+    check("登録で消える分を点け直すのは、電源の赤だけ", [k for k, v in leds.items() if v[1]] == [("power", "red")],
           repr(leds), spec=spec + "#6")
     m = re.search(r"#define\s+AIRTUNER_GPIO_SELF_RST\s+(\d+)", src)
     check("自己リセット線は GPIO30", bool(m) and int(m.group(1)) == 30, spec=spec + "#2")
     check("自己リセット線を L にするのは再起動の 1 か所だけ（起動時は H を書く）",
           src.count("gpio_direction_output(AIRTUNER_GPIO_SELF_RST, 0)") == 1
           and src.count("gpio_direction_output(AIRTUNER_GPIO_SELF_RST, 1)") == 1, spec=spec + "#6")
-    names = set(re.findall(r'"((?:PIX|NEC|TOSHIBA)_\w+)"', src))
-    check("働く基板は、割り当てが GPL に書いてある 5 つ",
-          names == {"PIX_AIRTUNER_LITE", "PIX_AIRTUNER_R", "PIX_AIRTUNER_W", "NEC_AIRTUNER_R", "TOSHIBA_AIRTUNER_R"},
-          repr(sorted(names)), spec=spec + "#2")
+    check("働く基板は、GPL の 5 つと、実機で確かめた BR310L だけ",
+          set(boards) == set(gpl) | {"PIX_AIRTUNER_BR310L"}, repr(sorted(boards)), spec=spec + "#7")
 
     sh = shutil.which("sh")
     if os.name != "posix" or not sh:

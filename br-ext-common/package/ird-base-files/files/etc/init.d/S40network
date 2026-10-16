@@ -10,8 +10,28 @@ FALLBACK_IP=192.168.1.1
 FALLBACK_MASK=255.255.255.0
 # MAC= in network.conf restores the factory address if the boot loader command
 # line lost its mac_adrs= (that command line is the only place it is stored).
+# Without it, MAC_MTD= in board.conf names a partition whose last erase block
+# starts with the address as text.
 MAC=
+MAC_MTD=
+[ -r /etc/openird/board.conf ] && . /etc/openird/board.conf
 [ -r /etc/openird/network.conf ] && . /etc/openird/network.conf
+
+# The first 17 bytes of the last erase block of $1, if they are an address
+mac_from_mtd() {
+	name="${1##*/}"
+	set -- $(grep "^$name:" /proc/mtd)
+	[ -n "$3" ] || return 0
+	last=$(( 0x$2 / 0x$3 - 1 ))
+	m=$(dd if="/dev/$name" bs=$(( 0x$3 )) skip=$last count=1 2>/dev/null |
+		dd bs=17 count=1 2>/dev/null)
+	case "$m" in
+	00:00:00:00:00:00|[fF][fF]:[fF][fF]:[fF][fF]:[fF][fF]:[fF][fF]:[fF][fF]) ;;
+	[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F])
+		echo "$m" ;;
+	esac
+}
+[ -z "$MAC" ] && [ -n "$MAC_MTD" ] && MAC=$(mac_from_mtd "$MAC_MTD")
 
 start() {
 	printf "Starting network: "

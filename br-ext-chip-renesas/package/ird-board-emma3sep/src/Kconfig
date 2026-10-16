@@ -10,4 +10,6 @@ config IRD_BOARD_AIRTUNER
 	  The power and status LEDs, and a restart that works: the boards
 	  boot from NAND, so the SoC's own restart (a jump to the reset
 	  vector) goes nowhere, and they have a self-reset line instead.
-	  Inactive on boards the boot loader does not name as an AirTuner.
+	  On PIX_AIRTUNER_BR310L also the USB power, which the GPL EHCI
+	  driver leaves off there.  Inactive on boards the boot loader does
+	  not name as one it knows.

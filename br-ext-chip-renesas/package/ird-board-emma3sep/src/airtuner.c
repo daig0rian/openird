@@ -9,7 +9,7 @@
  * that goes to the same vector.)
  *
  * The wiring is the one the boards' GPL boot loader documents, the same on
- * every board named below (docs/specs/emma3sep-airtuner-gpio.md):
+ * the five boards it covers (docs/specs/emma3sep-airtuner-gpio.md §2):
  *
  *   GPIO 19  LED1_A  status LED, green  \
  *   GPIO 20  LED1_B  status LED, red     | low = lit, both = orange
@@ -17,6 +17,11 @@
  *   GPIO 22  LED2_B  power LED, red     /
  *   GPIO 30  SELF_RST_EMMA_L   low resets the whole board, the AV sub-CPU
  *                              included; the boot loader leaves it high
+ *
+ * PIX_AIRTUNER_BR310L (SB-TV06-WRIP) is not in the GPL sources.  On it the
+ * two LED pairs are the other way round, and nothing in the GPL kernel
+ * switches its USB power on: GPIO 36, which the GPL EHCI driver raises only
+ * for the boards it names (seen on the device, §7).
  *
  * LEDs appear as /sys/class/leds/ird:<colour>:<power|status>.  The boot
  * loader leaves the power LED red; it stays red here until userland says the
@@ -35,25 +40,33 @@
 
 #define AIRTUNER_GPIO_SELF_RST	30
 
-/* the names the boot loader passes in PRODUCT_FWIDS= */
-static const char *airtuner_boards[] __initdata = {
-	"PIX_AIRTUNER_LITE",
-	"PIX_AIRTUNER_R",
-	"PIX_AIRTUNER_W",
-	"NEC_AIRTUNER_R",
-	"TOSHIBA_AIRTUNER_R",
+/* LED order in the tables: status green, status red, power green, power red */
+struct airtuner_board {
+	const char *name;	/* what the boot loader passes in PRODUCT_FWIDS= */
+	int led[4];
+	int usb_power;		/* < 0: the GPL kernel's EHCI driver does it */
+};
+
+static const struct airtuner_board airtuner_boards[] __initdata = {
+	{ "PIX_AIRTUNER_LITE",   { 19, 20, 21, 22 }, -1 },
+	{ "PIX_AIRTUNER_R",      { 19, 20, 21, 22 }, -1 },
+	{ "PIX_AIRTUNER_W",      { 19, 20, 21, 22 }, -1 },
+	{ "NEC_AIRTUNER_R",      { 19, 20, 21, 22 }, -1 },
+	{ "TOSHIBA_AIRTUNER_R",  { 19, 20, 21, 22 }, -1 },
+	{ "PIX_AIRTUNER_BR310L", { 21, 22, 19, 20 }, 36 },
 };
 
 /*
  * Keep the names within 19 characters: this kernel cuts a device name there,
  * and a cut name is one userland does not find.
  */
+/* the pins come from the board's table */
 static struct gpio_led airtuner_leds[] = {
-	{ .name = "ird:green:status", .gpio = 19, .active_low = 1 },
-	{ .name = "ird:red:status",   .gpio = 20, .active_low = 1 },
-	{ .name = "ird:green:power",  .gpio = 21, .active_low = 1 },
+	{ .name = "ird:green:status", .active_low = 1 },
+	{ .name = "ird:red:status",   .active_low = 1 },
+	{ .name = "ird:green:power",  .active_low = 1 },
 	{
-		.name = "ird:red:power", .gpio = 22, .active_low = 1,
+		.name = "ird:red:power", .active_low = 1,
 		/* registering an LED turns it off: put this one back on */
 		.default_trigger = "default-on",
 	},
@@ -86,7 +99,7 @@ static void airtuner_restart(char *command)
 		airtuner_soc_restart(command);
 }
 
-static int __init airtuner_board_named(void)
+static const struct airtuner_board * __init airtuner_board_named(void)
 {
 	static const char key[] = "PRODUCT_FWIDS=";
 	const char *p = strstr(saved_command_line, key);
@@ -94,22 +107,32 @@ static int __init airtuner_board_named(void)
 	int i;
 
 	if (!p)
-		return 0;
+		return NULL;
 	p += sizeof(key) - 1;
 	n = strcspn(p, " \t\n");
 	for (i = 0; i < ARRAY_SIZE(airtuner_boards); i++)
-		if (strlen(airtuner_boards[i]) == n &&
-		    !strncmp(p, airtuner_boards[i], n))
-			return 1;
-	return 0;
+		if (strlen(airtuner_boards[i].name) == n &&
+		    !strncmp(p, airtuner_boards[i].name, n))
+			return &airtuner_boards[i];
+	return NULL;
 }
 
 static int __init airtuner_init(void)
 {
-	int err;
+	const struct airtuner_board *board = airtuner_board_named();
+	int err, i;
 
-	if (!airtuner_board_named())
+	if (!board)
 		return 0;
+
+	if (board->usb_power >= 0) {
+		err = gpio_request(board->usb_power, "usb-power");
+		if (!err)
+			err = gpio_direction_output(board->usb_power, 1);
+		if (err)
+			printk(KERN_WARNING "airtuner: USB power not switched on "
+			       "(%d)\n", err);
+	}
 
 	/*
 	 * Tell gpiolib the pin is an output that is high - which it already
@@ -126,6 +149,8 @@ static int __init airtuner_init(void)
 		_machine_restart = airtuner_restart;
 	}
 
+	for (i = 0; i < ARRAY_SIZE(airtuner_leds); i++)
+		airtuner_leds[i].gpio = board->led[i];
 	err = platform_device_register(&airtuner_leds_device);
 	if (err)
 		printk(KERN_WARNING "airtuner: LEDs not registered (%d)\n", err);
