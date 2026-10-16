@@ -61,6 +61,10 @@ int emma3sep_tsfifo_slots(int fifo);		/* how many are known */
  * DMA, the others in mask by the CPU (ts-fifo spec §7). */
 int emma3sep_tsfifo_start(unsigned int mask, int xdma_fifo);
 void emma3sep_tsfifo_stop(void);
+/* The stream is a heavy one (CS, ~23,000 packets a second) or not: picks the
+ * drainer's settings for it (ts-fifo spec §7.1), running or not; a running
+ * drainer takes them from its next tick. */
+void emma3sep_tsfifo_heavy(int heavy);
 
 /* The reader's side (one reader). */
 void emma3sep_tsfifo_capture(int on);	/* on: drop what is queued, allow reads */

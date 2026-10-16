@@ -81,8 +81,10 @@
 #define ELEM		SLOT_STRIDE	/* ring element = arrival time + packet */
 
 /*
- * How it drains.  All are taken when draining starts (at the first tune
- * after an open), so they can be changed at run time to compare
+ * How it drains.  Two sets: one for most streams, and one for heavy ones
+ * (CS, ~23,000 packets a second), which the tuner picks at every tune (spec
+ * §7.1).  They are taken when draining starts and whenever the set is
+ * picked, so they can be changed at run time to compare
  * (/sys/module/emma3sep_tsfifo/parameters/).  The defaults lost no packet in
  * 2.2 million on the busiest terrestrial multiplexes (spec §7).
  */
@@ -98,6 +100,13 @@ MODULE_PARM_DESC(wait_us, "wait up to this long for a transfer still running at 
 static unsigned int split_span = 5;
 module_param(split_span, uint, 0644);
 MODULE_PARM_DESC(split_span, "copy a range of this many slots or more as two transfers when 2 or more in it are not ready (default 5, 0: never)");
+static unsigned int heavy_period_us = 75;
+module_param(heavy_period_us, uint, 0644);
+MODULE_PARM_DESC(heavy_period_us, "period_us for a heavy stream (CS; default 75)");
+static unsigned int heavy_split_span = 4;
+module_param(heavy_split_span, uint, 0644);
+MODULE_PARM_DESC(heavy_split_span, "split_span for a heavy stream (CS; default 4)");
+static int heavy;			/* which set is picked */
 static unsigned int cur_period_us = 100;	/* the ones in use */
 static unsigned int cur_wait_us, cur_split_span;
 
@@ -773,6 +782,29 @@ EXPORT_SYMBOL_GPL(emma3sep_tsfifo_find_slots);
 
 /* --- start / stop ---------------------------------------------------------- */
 
+/* The picked set into the variables the tick reads.  With interrupts off
+ * when the timer runs: the tick must not see half of it (ktime_t is two
+ * words here). */
+static void take_params(void)
+{
+	cur_period_us = max(heavy ? heavy_period_us : period_us, 25u);
+	cur_wait_us = min(wait_us, cur_period_us / 2);
+	cur_split_span = heavy ? heavy_split_span : split_span;
+	period = ktime_set(0, cur_period_us * 1000);
+}
+
+void emma3sep_tsfifo_heavy(int on)
+{
+	unsigned long flags;
+
+	local_irq_save(flags);
+	heavy = !!on;
+	if (running)
+		take_params();
+	local_irq_restore(flags);
+}
+EXPORT_SYMBOL_GPL(emma3sep_tsfifo_heavy);
+
 int emma3sep_tsfifo_start(unsigned int mask, int by_xdma)
 {
 	int f, k;
@@ -798,10 +830,7 @@ int emma3sep_tsfifo_start(unsigned int mask, int by_xdma)
 	fifos = mask;
 	xdma_fifo = use_xdma ? by_xdma : -1;
 	dma_busy = 0;
-	cur_period_us = max(period_us, 25u);
-	cur_wait_us = min(wait_us, cur_period_us / 2);
-	cur_split_span = split_span;
-	period = ktime_set(0, cur_period_us * 1000);
+	take_params();
 	hrtimer_init(&timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	timer.function = tick;
 	timer.cb_mode = HRTIMER_CB_IRQSAFE_UNLOCKED;	/* hard IRQ, may wake */
@@ -838,8 +867,9 @@ int emma3sep_tsfifo_show(char *page)
 {
 	int len = 0, f, k;
 
-	len += sprintf(page + len, "drainer %s period_us %u ring %u x %u B\n",
-		       running ? "running" : "stopped", cur_period_us, ring_n, ELEM);
+	len += sprintf(page + len, "drainer %s %s period_us %u ring %u x %u B\n",
+		       running ? "running" : "stopped", heavy ? "heavy" : "normal",
+		       cur_period_us, ring_n, ELEM);
 	for (f = 0; f < FIFO_N; f++) {
 		if (!nslots[f])
 			continue;

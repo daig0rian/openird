@@ -54,6 +54,8 @@
 /* a lock takes up to about 1.7 s where there is a signal; give it 3 s */
 #define LOCK_POLL_MS	50
 #define LOCK_POLLS	60
+/* ISDB-S at or above this is CS (ird_ptx_ioctl.h: 1613000 kHz and up) */
+#define CS_KHZ		1600000
 
 static const struct emma3sep_fe *const fronts[] = {
 #ifdef CONFIG_IRD_TUNER_YB1
@@ -316,6 +318,9 @@ static int et_tune(struct ird_tuner *t, int system, u32 freq_khz,
 			goto out;
 		}
 	}
+	/* CS carries ~23,000 packets a second: the drainer's heavy settings
+	 * (ts-fifo spec §7.1) */
+	emma3sep_tsfifo_heavy(system == PTX_ISDB_S_SYSTEM && freq_khz >= CS_KHZ);
 
 	/* find the FIFO slots once (needs packets flowing: filter 0 -> null) */
 	if (!emma3sep_tsfifo_slots(group[G_LIGHT].fifo) ||
