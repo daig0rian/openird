@@ -35,12 +35,14 @@ done
 
 matches=( "$ROOT"/br-ext-chip-*/configs/"$BOARD"_defconfig )
 [ -e "${matches[0]}" ] || die "未知の BOARD: $BOARD（configs/${BOARD}_defconfig が無い）"
-VT="$(dirname "$(dirname "${matches[0]}")")"
 FAMILY="${BOARD%%_*}"
-ENVF="$VT/board/$FAMILY/kernel/build.env"
-[ -f "$ENVF" ] || die "$ENVF が無い"
-DEVICE="$( . "$ENVF"; echo "${MKIMAGE_BOARD:-}" )"
-[ -n "$DEVICE" ] || die "$BOARD は openird-mkimage の board 名（build.env の MKIMAGE_BOARD=）を決めていない"
+# openird-mkimage の board 名＝機種名から「<ファミリー>_<ベンダ>_」を除いたもの
+# （board/<ファミリー>/post-image.sh と同じ決め方）。ファミリーの build.env の
+# MKIMAGE_BOARD はカーネルの梱包（ファミリー共通の uImage の契約）にだけ使う
+DEVICE="${BOARD#*_}"
+DEVICE="${DEVICE#*_}"
+[ -f "$ROOT/host/openird-mkimage/boards/$DEVICE.json" ] ||
+	die "$BOARD の board 定義が無い: host/openird-mkimage/boards/$DEVICE.json"
 
 O="$ROOT/output/$BOARD"
 KERNEL="${KERNEL:-$O/vmlinux.img}"

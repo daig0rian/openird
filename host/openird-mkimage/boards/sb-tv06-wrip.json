@@ -21,6 +21,12 @@
     "container": "v1b",
     "family_tag": "LINDBERG",
     "nand_generation": "1Gb",
+    "payload_name": "lindberg.zip",
+    "update_store_mtd": 9,
+    "update_dir": "/flash/tmp_update",
+    "staging": "0x83000000",
+    "env_tool": "/app/bin/nand_flash_write -u /dev/mtd1",
+    "_pack_note": "pack-factory が write.sh を生成するときの値（nand-update 仕様 §3.2）。payload_name は純正コンテナ v1.0.2 の中間 ZIP の中の名前（unpack-factory の stage2/）。update_store_mtd・update_dir・staging・env_tool は純正の write1Gb.sh の ymount 3d00000 7d00000・/flash/tmp_update・83000000・nand_flash_write -u /dev/mtd1 そのまま＝YB1 と同じ。",
     "_note": "族タグはコンテナの族であって実モデル名ではない（update-v1b-container.md §2.1）。LINDBERG=SB-TV06-WRIP。retail の pix_br310l/w（族 BR310L）とは別族。書き込み offset・write_len・erase_len は write1Gb.sh の nand write/erase 実引数そのまま＝YB1(BLUR) と全数一致。",
     "images": [
       {"name": "vmlinux.img",      "mtd": 2, "write_offset": "0x600000",  "write_len": "0x300000",  "erase_len": "0x480000",  "openird": true,
@@ -36,11 +42,17 @@
     ]
   },
 
+  "sysupgrade": {
+    "files": [["kernel", "vmlinux.img"], ["root", "rootfs.img"]],
+    "_note": "OpenIRD から OpenIRD への更新イメージ（docs/sysupgrade.md）。区画と書き込み長が YB1 と同じなので、機器側の書き方（board/emma3sep/rootfs_overlay/lib/upgrade/platform.sh）も同じ。"
+  },
+
   "uimage": {
     "os": 5, "arch": 5, "type": 2, "comp": 1,
     "name": "emma3se",
     "load": "0x82280000", "entry": "0x822841b0",
-    "_note": "実機 U-Boot ログの実測（2026-09-26）。os=linux arch=mips type=kernel comp=gzip。RAM base 0x80000000・256MB。YB1 と同値。"
+    "nboot_load": "0x82000000",
+    "_note": "実機 U-Boot ログの実測（2026-09-26）。os=linux arch=mips type=kernel comp=gzip。RAM base 0x80000000・256MB。YB1 と同値。nboot_load はふだんの起動でブートローダが NAND の uImage を置く番地（ブートログ '## Booting kernel from Legacy Image at 82000000'・2026-10-16）。load までの差 0x280000 を超える uImage は起動しない（YB1 で確認・nand-update 仕様 §2.1）。"
   },
 
   "squashfs": {
