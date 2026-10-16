@@ -5,8 +5,8 @@ Status: verified
 As-of:  実機 SB-TV06-WRIP (2026-09-26・段階 C の見通しは 2026-10-12)
 Impl:   host/openird-mkimage/boards/sb-tv06-wrip.json, host/openird-mkimage/openird_mkimage.py, tools/vendor-rootfs/mkshell.sh
 Tests:  tests/mkimage/
-Note:   Status は factory 経路（§2〜§4）のもの。§5〜§9 は 2026-09-26 の観察記録（§5.3・§6・§7.2 は 2026-10-12 に訂正＝フロントエンドの I2C は GPL のバス 1）。
-        §10 が段階 C の見通し（AV 側は YB1 と同じ物・ベンダアプリ抜きの生 TS・参照受信機との照合）、§11 がリグの現状
+Note:   Status は factory 経路（§2〜§4）のもの。§5〜§9 は 2026-09-26 の観察記録（§5.3・§6・§7.2 は 2026-10-12 に訂正）。
+        §10 が段階 C の見通し、§11 がリグの現状、§12 が GPL のカーネルの起動確認（1 回だけの RAM 起動・2026-10-16）
 -->
 
 <!-- Open 層: 観察の出自は (a) 基板写真の型番シルク (b) 実機 U-Boot ブートログ
@@ -677,3 +677,75 @@ ECM/EMM の PID も載せて運ぶだけ）、全部をフィルタに載せて�
     所が記録の時間から外れた）。
   - ベンダアプリの選局は UPnP の `X_SetTuning(BroadcastWave, Frequency)`（`tb`/`bs`/`cs`・MHz）。
     約 15 秒で待機に戻る。
+
+## 12. GPL のカーネルの起動確認＝1 回だけの RAM 起動（2026-10-16）
+
+**OpenIRD のカーネル（GPL から作るファミリー共通のもの）は、この機種で起動する。** カーネル区画
+（mtd2）は書かずに、U-Boot に 1 回だけ RAM から起動させて確かめた。
+
+### 12.1 手順（カーネル区画を書かない）
+
+純正の更新機構の「更新用 env」（[NAND 更新機構](poe-br100-yb1-nand-update.md) §3.2 の形式）を使う。
+U-Boot は mtd1 に有効な更新用 env があると、それを自動で実行する（対話の入力の実行ロックとは
+関係ない）。
+
+1. カーネルの uImage を mtd9（`/app/flashDev`・yaffs2）に置く（例 `openird/vmlinux.img`）。
+2. 更新用 env を作る。`update=` のコマンド列は次の順:
+   ```
+   delenvu;ymount 3d00000 7d00000;yrdm /flash/openird/vmlinux.img 83000000;
+   setenv bootargs console=ttyS1,115200 rootfstype=squashfs root=/dev/mtdblock3 ro ip=none PRODUCT_FWIDS=PIX_AIRTUNER_BR310L U_BOOT_REV=16;
+   bootm 83000000;reset
+   ```
+3. `umount /app/flashDev && /app/bin/nand_flash_write -u /dev/mtd1 <env> && reboot`
+   （`nand_flash_write -u` は先頭に 4 バイトの CRC を付けて書く）。
+
+- **`delenvu`（更新用 env を消す）は必ず先頭に置く。** U-Boot はコマンドの失敗でコマンド列を
+  打ち切ることがある（`bootm` の失敗で、後ろの `reset` まで届かなかった）。消す前に打ち切られると、
+  更新用 env が残って毎回の起動で同じ列が走り、Linux に戻れなくなる。先頭で消しておけば、
+  どこで止まっても電源の入れ直しで純正のカーネルが起動する（3 回とも、そのとおりに戻った）。
+- **`yrdm` の読み込み先は `0x83000000`（純正の更新と同じ）にする。** `0x82000000` では、置いた
+  ファイルも純正が書いたファイルも「File not found」になった（`yls` には出ている）。表示と原因が
+  合っていない。
+- `0x83000000` から起動すると、展開先（`0x82280000`〜）と重ならないので、NAND から起動するときの
+  展開の上限（`0x280000`・NAND 更新機構 §2.1）はこの手順では確かめられない。uImage がその上限に
+  収まっていることは別に確かめる。
+- 失敗したとき（ファイルが読めない等）は U-Boot で止まる。電源の入れ直しで戻る。
+
+### 12.2 結果
+
+`48606df` のファミリー共通のカーネル（uImage 2,094,382 B）で試した。
+
+| 項目 | 結果 |
+|---|---|
+| 起動 | 起動した。メモリ 144MB（`09000000 @ 00000000`）、NAND の 11 区画、純正の rootfs（squashfs）を mount、ベンダの起動処理は `lindberg` の起動まで進んだ |
+| コンソール | ttyS1（`PIX_AIRTUNER` で始まる機種名で選ぶ・カーネルパッチ 0009）。機種ごとの部品（`airtuner`・`ird-tuner-yb1`）は機種名が一致しないので動かない |
+| USB | 機器は 1 つも現れなかった。ただし**純正のカーネルでも**、OHCI の 2 口とも `over-current change` が出て、トランスコーダ（Dione・`06b8:102d`）が起動時に一度つながってすぐ切れるだけで、ふだんは USB の機器が無い。Dione は TS の経路に要らない（§10.4）。純正のカーネルの GPIO は 36 = H・37 / 23 / 24 / 47 / 48 = L（いずれも出力）で、GPL の `LITE` の分岐（36 だけ上げる）と同じ形。GPL には `BR310L` の分岐が無いので、機種の部品で 36 を上げる |
+| ネットワーク | 上がらない。カーネルが `ethaddr is not set in boot prom` と言い、`eth0` を上げられない（`Cannot assign requested address`）。この手順では U-Boot の環境が更新用 env に置き換わるので、MAC が渡らないとみられる。NAND から起動したときに渡るかは、この機種ではまだ確かめていない（YB1 では渡る）。GPL のカーネルは、ブートローダの環境に無ければ起動引数の `ethaddr=` を読む（`arch/mips/emma/common/prom.c`）。MAC の元は mtd1 の最後のブロックの先頭（`xx:xx:xx:xx:xx:xx` の 17 文字＋1 バイト）。rootfs がここから読めば、起動の仕方によらず上げられる |
+| シリアル | コンソールが ttyS1 になるので、ベンダアプリの出力が流れ、入力はアプリの工場テスト用のシェル（`->`）に取られる。この起動でシェルを使うなら、ベンダアプリ抜き（§11 の `openird-noblur-once`）で起動する |
+
+### 12.3 ★ OpenIRD のこの機種用のイメージを RAM から起動した（2026-10-16）
+
+機種を足した作業ツリー（defconfig `emma3sep_softbank_sb-tv06-wrip`・チューナ無し）から作った
+カーネル（2,094,518 B）と rootfs（squashfs 3.1 BE・1,032,192 B）を、どちらも RAM から起動した。
+**mtd2 と mtd3 は書いていない。**
+
+- rootfs は initrd として渡す。2 つのファイルを mtd9 に置き、§12.1 の手順のコマンド列を次にする:
+  ```
+  delenvu;ymount 3d00000 7d00000;yrdm /flash/openird/vmlinux.img 83000000;
+  yrdm /flash/openird/rootfs.img 84000000;
+  setenv bootargs console=ttyS1,115200 root=/dev/ram0 ro rootfstype=squashfs ramdisk_size=<KB>
+    rd_start=0x84000000 rd_size=<バイト数> ip=none PRODUCT_FWIDS=PIX_AIRTUNER_BR310L U_BOOT_REV=16;
+  bootm 83000000;reset
+  ```
+  このカーネルは squashfs の initrd を RAM ディスクに読み（`RAMDISK: squashfs filesystem found`）、
+  `root=/dev/ram0` で mount する。`ramdisk_size` はイメージより大きくする（既定は 4096KB）。
+
+| 項目 | 結果 |
+|---|---|
+| 起動 | OpenIRD の起動処理が最後まで進み、シリアル（ttyS1）に root シェル |
+| 書き込める層 | mtd9（yaffs2）の `openird/overlay` を unionfs で重ねた（純正のファイルと同じ区画に同居） |
+| ネットワーク | `S40network` が mtd1 の最後のブロックから MAC を読んで設定し、DHCP でいつもの番地が付いた。ssh（dropbear）も上がる |
+| LED | 4 本とも登録。起動の最後に電源の緑が点き、横の LED は消灯（所有者が実物で確認）。GPIO 19 だけ L |
+| USB の電源 | GPIO36 が H（出力）。USB の機器は現れない（純正のときと同じ・§12.2） |
+| 再起動 | `reboot` で `AirTuner restart (self-reset line).` が出て、0.6 秒後にブートローダから起動し直した。更新用 env は消えているので、純正のカーネルで立ち上がった |
+| フロントエンドの電源 | GPIO43 は L のまま（チューナのドライバがまだ無い） |
