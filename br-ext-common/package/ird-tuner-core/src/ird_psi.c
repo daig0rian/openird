@@ -30,10 +30,11 @@
 #define TAG_CA		0x09
 #define TAG_ACCESS	0xf6	/* ARIB access control descriptor: same layout */
 
-/* TR-B14 vol. 4 table 5-4: PAT, CAT, NIT, SDT, EIT x3, TOT, SDTT x2, BIT, CDT */
+/* TR-B14 vol. 4 table 5-4: PAT, CAT, NIT, SDT, EIT x3, TOT, SDTT x2, BIT, CDT;
+ * and 0x0025, which satellite multiplexes carry (spec §6.1) */
 static const u16 fixed_pids[] = {
 	0x0000, 0x0001, 0x0010, 0x0011, 0x0012, 0x0026, 0x0027, 0x0014,
-	0x0023, 0x0028, 0x0024, 0x0029,
+	0x0023, 0x0028, 0x0024, 0x0029, 0x0025,
 };
 
 static inline unsigned int be16(const u8 *p)

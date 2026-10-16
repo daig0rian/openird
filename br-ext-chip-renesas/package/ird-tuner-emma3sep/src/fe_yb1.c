@@ -13,6 +13,7 @@
 
 #include "emma3sep_fe.h"
 #include "mxl683.h"
+#include "ird_ptx_ioctl.h"
 
 #define YB1_I2C_BUS	1
 #define YB1_DEMOD_ADDR	0x60
@@ -51,7 +52,7 @@ static int yb1_start(const u8 *fw, size_t fw_len, const char **why,
 	return 0;
 }
 
-static int yb1_tune(u32 freq_khz)
+static int yb1_tune(int system, u32 freq_khz)
 {
 	return mxl683_tune(&demod, freq_khz);
 }
@@ -70,6 +71,7 @@ const struct emma3sep_fe emma3sep_fe_yb1 = {
 	.board		= "PIX_AIRTUNER_LITE",
 	.name		= "yb1",
 	.fw_max		= YB1_FW_MAX,
+	.systems	= PTX_ISDB_T_SYSTEM,
 	.start		= yb1_start,
 	.tune		= yb1_tune,
 	.locked		= yb1_locked,

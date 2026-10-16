@@ -20,17 +20,25 @@ struct emma3sep_fe {
 	/* > 0: the demodulator needs firmware, written by userland to the
 	 * device's `firmware' attribute before `start' (at most this long) */
 	size_t fw_max;
+	/* the PTX_ISDB_*_SYSTEMs it receives, OR-ed (ird_ptx_ioctl.h) */
+	u32 systems;
 
 	/* Get the front end going, once: power, firmware, initialisation.
 	 * On failure *why says what is missing, in words; on success *how
 	 * may say how it went (both ASCII, both optional). */
 	int (*start)(const u8 *fw, size_t fw_len, const char **why,
 		     const char **how);
-	/* ISDB-T: the frequency as the core numbers it (kHz, ird_chrdev.c) */
-	int (*tune)(u32 freq_khz);
-	/* 1 = locked, 0 = not (yet), < 0 = error */
+	/* Tune: one of its systems, the frequency as the core numbers it
+	 * (kHz, ird_chrdev.c) */
+	int (*tune)(int system, u32 freq_khz);
+	/* for what was tuned last: 1 = locked, 0 = not (yet), < 0 = error */
 	int (*locked)(void);
-	/* carrier to noise, in 1/1000 dB */
+	/* ISDB-S, once locked: pick the transport stream (the core's
+	 * stream_id, ird_tuner.h); 0 = it is coming out, -EAGAIN = it is not */
+	int (*select_ts)(u16 stream_id);
+	/* Carrier to noise of what was tuned last, one of the two (as in
+	 * ird_tuner.h): the demodulator's own value, or 1/1000 dB */
+	int (*read_cnr_raw)(u32 *raw);
 	int (*read_cnr)(u32 *mdb);
 };
 

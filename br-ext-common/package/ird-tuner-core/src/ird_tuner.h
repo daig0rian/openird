@@ -20,12 +20,21 @@ struct ird_tuner_ops {
 	/* the node was opened / closed (one opener at a time) */
 	int (*open)(struct ird_tuner *t);
 	void (*release)(struct ird_tuner *t);
-	/* Tune and wait for lock: 0 = locked, -EAGAIN = no lock.  The stream
-	 * of the new multiplex may be read as soon as this returns. */
-	int (*tune)(struct ird_tuner *t, u32 freq_khz);
+	/* Tune and wait for lock: 0 = locked, -EAGAIN = no lock.  system is
+	 * PTX_ISDB_T_SYSTEM or PTX_ISDB_S_SYSTEM (one the tuner's system_cap
+	 * has).  stream_id is ISDB-S's: 0..7 = the n-th transport stream of
+	 * the transponder, 12 and up = a TSID; 0 for ISDB-T.  The stream of
+	 * the new multiplex may be read as soon as this returns. */
+	int (*tune)(struct ird_tuner *t, int system, u32 freq_khz,
+		    u16 stream_id);
 	/* start / stop handing packets to read() */
 	int (*set_capture)(struct ird_tuner *t, int on);
-	/* carrier to noise, in 1/1000 dB */
+	/* Carrier to noise, one of the two: the demodulator's own value in the
+	 * units px4_drv hands out for the system last tuned (PTX_GET_CNR
+	 * passes it on as it is), or, for an ISDB-T-only tuner whose
+	 * demodulator speaks dB, 1/1000 dB (the core turns it into those
+	 * units). */
+	int (*read_cnr_raw)(struct ird_tuner *t, u32 *raw);
 	int (*read_cnr)(struct ird_tuner *t, u32 *mdb);
 	/* Whole and partial 188-byte packets, like read(2).  Called WITHOUT
 	 * the tuner's mutex (it blocks), only while capturing. */
@@ -37,6 +46,8 @@ struct ird_tuner {
 	const char *name;		/* device node, "irdvideo0" */
 	const struct ird_tuner_ops *ops;
 	void *priv;
+	/* the PTX_ISDB_*_SYSTEMs it receives, OR-ed; 0 = ISDB-T only */
+	u32 system_cap;
 
 	/* the core's */
 	struct miscdevice misc;
@@ -48,9 +59,5 @@ struct ird_tuner {
 
 int ird_tuner_register(struct ird_tuner *t);
 void ird_tuner_unregister(struct ird_tuner *t);
-
-/* C/N in 1/1000 dB from the PT1 demodulator's raw value (the unit
- * PTX_GET_CNR hands out), for drivers whose demodulator reports in it */
-u32 ird_tuner_cnr_from_ptx(u32 raw);
 
 #endif /* _IRD_TUNER_H */

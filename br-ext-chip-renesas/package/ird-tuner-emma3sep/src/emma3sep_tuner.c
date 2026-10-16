@@ -41,6 +41,7 @@
 #include <linux/string.h>
 
 #include "ird_tuner.h"
+#include "ird_ptx_ioctl.h"
 #include "ird_psi.h"
 #include "ird_pidalloc.h"
 #include "emma3sep_fe.h"
@@ -98,7 +99,9 @@ static struct {
 
 	int draining, capturing;
 	int tuned;		/* a multiplex is locked and being followed */
+	int system;		/* PTX_ISDB_*_SYSTEM of it */
 	u32 freq_khz;
+	u16 stream_id;		/* ISDB-S: which of the transponder's streams */
 	struct ird_psi *psi;
 	int psi_done;
 	unsigned int dropped;	/* PIDs that found no filter, last time */
@@ -270,34 +273,49 @@ static void et_release(struct ird_tuner *t)
 	mutex_unlock(&et.lock);
 }
 
-static int et_tune(struct ird_tuner *t, u32 freq_khz)
+static int et_tune(struct ird_tuner *t, int system, u32 freq_khz,
+		   u16 stream_id)
 {
-	int ret = 0, i, locked = 0, was_tuned, same;
+	int ret = 0, i, locked, was_tuned, same, same_mux;
 	u32 old_crc;
 
 	mutex_lock(&et.lock);
 	was_tuned = et.tuned;
-	same = was_tuned && freq_khz == et.freq_khz;
+	same = was_tuned && system == et.system && freq_khz == et.freq_khz;
+	same_mux = same && stream_id == et.stream_id;
+	locked = same ? et.fe->locked() == 1 : 0;
 
 	/* Already locked onto this exact channel and following it: the filter
 	 * table is already right, so do nothing -- no re-lock, no re-point.
 	 * (This is what makes a re-tune of the same channel free of glitches.) */
-	if (same && et.fe->locked() == 1) {
+	if (same_mux && locked) {
 		mutex_unlock(&et.lock);
 		return 0;
 	}
 
-	ret = et.fe->tune(freq_khz);
-	for (i = 0; i < LOCK_POLLS && !ret && !locked; i++) {
-		msleep(LOCK_POLL_MS);
-		locked = et.fe->locked();
-		if (locked < 0)
-			ret = locked;
+	/* (another stream of a transponder still locked is only picked) */
+	if (!locked) {
+		ret = et.fe->tune(system, freq_khz);
+		for (i = 0; i < LOCK_POLLS && !ret && !locked; i++) {
+			msleep(LOCK_POLL_MS);
+			locked = et.fe->locked();
+			if (locked < 0)
+				ret = locked;
+		}
+		if (!ret && !locked)
+			ret = -EAGAIN;
+		if (ret)
+			goto out;
 	}
-	if (!ret && !locked)
-		ret = -EAGAIN;
-	if (ret)
-		goto out;
+	/* ISDB-S carries up to 8 streams on a transponder; the demodulator
+	 * passes the one it is told to */
+	if (system == PTX_ISDB_S_SYSTEM) {
+		ret = et.fe->select_ts ? et.fe->select_ts(stream_id) : -EINVAL;
+		if (ret) {
+			et.tuned = 0;	/* which stream comes out is not known */
+			goto out;
+		}
+	}
 
 	/* find the FIFO slots once (needs packets flowing: filter 0 -> null) */
 	if (!emma3sep_tsfifo_slots(group[G_LIGHT].fifo) ||
@@ -329,11 +347,13 @@ static int et_tune(struct ird_tuner *t, u32 freq_khz)
 	}
 
 	old_crc = et.psi->pat_crc;
+	et.system = system;
 	et.freq_khz = freq_khz;
+	et.stream_id = stream_id;
 	et.tuned = 1;			/* let the follower run while we wait below */
 	mutex_unlock(&et.lock);
 
-	if (same)
+	if (same_mux)
 		return 0;		/* re-locked the same multiplex: already followed */
 
 	/* A (possibly) new multiplex: wait until its PAT -- a new CRC -- and all
@@ -366,18 +386,28 @@ static int et_read_cnr(struct ird_tuner *t, u32 *mdb)
 	return ret;
 }
 
+static int et_read_cnr_raw(struct ird_tuner *t, u32 *raw)
+{
+	int ret;
+
+	mutex_lock(&et.lock);
+	ret = et.fe->read_cnr_raw(raw);
+	mutex_unlock(&et.lock);
+	return ret;
+}
+
 static ssize_t et_read(struct ird_tuner *t, char __user *buf, size_t count,
 		       int nonblock)
 {
 	return emma3sep_tsfifo_read(buf, count, nonblock);
 }
 
-static const struct ird_tuner_ops et_ops = {
+/* the C/N op is the one the front end has (et_init) */
+static struct ird_tuner_ops et_ops = {
 	.open		= et_open,
 	.release	= et_release,
 	.tune		= et_tune,
 	.set_capture	= et_set_capture,
-	.read_cnr	= et_read_cnr,
 	.read		= et_read,
 };
 
@@ -446,9 +476,11 @@ static ssize_t state_show(struct device *dev, struct device_attribute *attr,
 		len += sprintf(buf + len, "firmware %u bytes\n",
 			       (unsigned int)et.fw_len);
 	if (et.ready) {
-		len += sprintf(buf + len, "tuned %d freq_khz %u programs %d "
-			       "tables_read %d pids_without_filter %u filter_writes %u\n",
-			       et.tuned, et.freq_khz, et.psi->nprog,
+		len += sprintf(buf + len, "tuned %d %s freq_khz %u stream %u "
+			       "programs %d tables_read %d pids_without_filter %u "
+			       "filter_writes %u\n", et.tuned,
+			       et.system == PTX_ISDB_S_SYSTEM ? "isdb-s" : "isdb-t",
+			       et.freq_khz, et.stream_id, et.psi->nprog,
 			       et.psi_done, et.dropped, et.filter_writes);
 		for (g = 0; g < NGROUP; g++) {
 			len += sprintf(buf + len, "fifo %d pids", group[g].fifo);
@@ -550,8 +582,13 @@ static int __init et_init(void)
 	if (IS_ERR(et.psi_task))
 		return PTR_ERR(et.psi_task);
 
+	if (et.fe->read_cnr_raw)
+		et_ops.read_cnr_raw = et_read_cnr_raw;
+	else
+		et_ops.read_cnr = et_read_cnr;
 	et.tuner.name = "irdvideo0";
 	et.tuner.ops = &et_ops;
+	et.tuner.system_cap = et.fe->systems;
 	ret = ird_tuner_register(&et.tuner);
 	if (ret)
 		return ret;

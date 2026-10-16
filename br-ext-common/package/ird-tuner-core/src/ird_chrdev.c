@@ -32,13 +32,16 @@ static DEFINE_MUTEX(tuners_lock);
 
 /*
  * PTX_GET_CNR hands out a number in the units of the demodulator the PT1
- * had, and every client turns it into dB itself.  recpt1 does it with
+ * had, and every client turns it into dB itself.  For ISDB-T recpt1 does it
+ * with
  *
  *	P = 10 * log10(5505024 / raw)
  *	C/N = 0.000024 P^4 - 0.0016 P^3 + 0.0398 P^2 + 0.5491 P + 3.0965
  *
  * So a driver that knows its C/N in dB has to go the other way.  The table
  * is that function inverted: the raw value for 4.0 dB, 4.5 dB, ... 40.0 dB.
+ * (A driver whose demodulator gives such a value itself passes it on as it
+ * is, for ISDB-S too: read_cnr_raw.)
  */
 #define CNR_TAB_MIN_MDB		4000
 #define CNR_TAB_STEP_MDB	500
@@ -68,34 +71,41 @@ static u32 cnr_mdb_to_ptx(u32 mdb)
 	return cnr_tab[i] - (cnr_tab[i] - cnr_tab[i + 1]) * frac / CNR_TAB_STEP_MDB;
 }
 
-/* The other way, for a demodulator that reports in the PT1's units itself:
- * the C/N in 1/1000 dB, read off the same table. */
-u32 ird_tuner_cnr_from_ptx(u32 raw)
+/*
+ * The channel numbering of px4_drv (ird_ptx_ioctl.h): the system, the
+ * frequency and, for ISDB-S, the stream.  The system asked for with
+ * PTX_SET_SYSTEM_MODE decides; with none, a tuner that receives ISDB-S
+ * takes freq_no 0..23 as BS and CS.
+ */
+static u32 caps(const struct ird_tuner *t)
 {
-	u32 i;
-
-	if (raw >= cnr_tab[0])
-		return CNR_TAB_MIN_MDB;
-	for (i = 0; i + 1 < ARRAY_SIZE(cnr_tab); i++)
-		if (raw > cnr_tab[i + 1])
-			return CNR_TAB_MIN_MDB + i * CNR_TAB_STEP_MDB +
-			       (cnr_tab[i] - raw) * CNR_TAB_STEP_MDB /
-			       (cnr_tab[i] - cnr_tab[i + 1]);
-	return CNR_TAB_MIN_MDB + (ARRAY_SIZE(cnr_tab) - 1) * CNR_TAB_STEP_MDB;
+	return t->system_cap ? t->system_cap : PTX_ISDB_T_SYSTEM;
 }
-EXPORT_SYMBOL_GPL(ird_tuner_cnr_from_ptx);
 
-/* The ISDB-T channel numbering of px4_drv (ird_ptx_ioctl.h). */
-static int isdbt_freq_khz(int system, const struct ptx_freq *f, u32 *khz)
+static int channel(const struct ird_tuner *t, const struct ptx_freq *f,
+		   int *system, u32 *khz, u16 *stream_id)
 {
-	int n = f->freq_no;
+	int n = f->freq_no, mode = t->system;
 
+	*stream_id = 0;
+	if (n < 0)
+		return -EINVAL;
+	if (n < 24 && (mode == PTX_ISDB_S_SYSTEM ||
+		       (mode == PTX_UNSPECIFIED_SYSTEM &&
+			(caps(t) & PTX_ISDB_S_SYSTEM)))) {
+		*system = PTX_ISDB_S_SYSTEM;
+		*khz = n < 12 ? 1049480 + 38360 * n : 1613000 + 40000 * (n - 12);
+		*stream_id = f->slot;	/* a 16-bit number, as in px4_drv */
+		return 0;
+	}
+	if (mode == PTX_ISDB_S_SYSTEM || !(caps(t) & PTX_ISDB_T_SYSTEM))
+		return -EINVAL;
+	*system = PTX_ISDB_T_SYSTEM;
 	if (n >= 63 && n <= 112) {
 		*khz = 95143 + n * 6000 + f->slot;
-	} else if ((n >= 22 && n <= 62) ||
-		   (system == PTX_ISDB_T_SYSTEM && n >= 3 && n <= 12)) {
-		if (system != PTX_ISDB_T_SYSTEM && n < 24)
-			return -EINVAL;
+	} else if ((n >= 24 && n <= 62) ||
+		   (mode == PTX_ISDB_T_SYSTEM && ((n >= 3 && n <= 12) ||
+						  n == 22 || n == 23))) {
 		*khz = 93143 + n * 6000 + f->slot;
 		if (n == 12)
 			*khz += 2000;
@@ -176,15 +186,17 @@ static long ird_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	switch (cmd) {
 	case PTX_SET_CHANNEL: {
 		struct ptx_freq f;
+		int system;
 		u32 khz;
+		u16 stream_id;
 
 		if (copy_from_user(&f, (void __user *)arg, sizeof(f))) {
 			ret = -EFAULT;
 			break;
 		}
-		ret = isdbt_freq_khz(t->system, &f, &khz);
+		ret = channel(t, &f, &system, &khz, &stream_id);
 		if (!ret)
-			ret = t->ops->tune(t, khz);
+			ret = t->ops->tune(t, system, khz, stream_id);
 		break;
 	}
 	case PTX_START_STREAMING:
@@ -208,24 +220,30 @@ static long ird_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case PTX_GET_CNR: {
 		u32 mdb, raw;
 
-		ret = t->ops->read_cnr(t, &mdb);
+		if (t->ops->read_cnr_raw) {
+			ret = t->ops->read_cnr_raw(t, &raw);
+		} else {
+			ret = t->ops->read_cnr(t, &mdb);
+			raw = cnr_mdb_to_ptx(mdb);
+		}
 		if (ret)
 			break;
-		raw = cnr_mdb_to_ptx(mdb);
 		if (copy_to_user((void __user *)arg, &raw, sizeof(raw)))
 			ret = -EFAULT;
 		break;
 	}
 	case PTX_ENABLE_LNB_POWER:
-		/* terrestrial only: there is no LNB to power */
+		/* no tuner here can power an LNB */
 		if (arg)
 			ret = -ENOSYS;
 		break;
 	case PTX_DISABLE_LNB_POWER:
 		break;
 	case PTX_SET_SYSTEM_MODE:
-		if (arg == PTX_ISDB_T_SYSTEM)
-			t->system = PTX_ISDB_T_SYSTEM;
+		/* px4_drv: one the tuner receives (so never "unspecified") */
+		if ((arg == PTX_ISDB_T_SYSTEM || arg == PTX_ISDB_S_SYSTEM) &&
+		    (caps(t) & arg))
+			t->system = arg;
 		else
 			ret = -EINVAL;
 		break;
@@ -250,7 +268,7 @@ int ird_tuner_register(struct ird_tuner *t)
 	int i, ret;
 
 	if (!t->ops || !t->ops->tune || !t->ops->set_capture ||
-	    !t->ops->read_cnr || !t->ops->read)
+	    !(t->ops->read_cnr || t->ops->read_cnr_raw) || !t->ops->read)
 		return -EINVAL;
 	mutex_init(&t->lock);
 	atomic_set(&t->opened, 0);
