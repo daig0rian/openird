@@ -167,14 +167,30 @@ static int ird_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
+/*
+ * Like px4_drv, read() waits until the whole buffer is filled.  A signal
+ * ends it with what it has (-EINTR if nothing), and so does the stream being
+ * stopped; with O_NONBLOCK it takes only what is there.  recpt1 allocates a
+ * buffer of its read size for every read(): handing it a few packets at a
+ * time made its queue grow as fast as the stream came in (ts-fifo spec §11).
+ */
 static ssize_t ird_read(struct file *file, char __user *buf, size_t count,
 			loff_t *ppos)
 {
 	struct ird_tuner *t = file->private_data;
+	int nonblock = file->f_flags & O_NONBLOCK;
+	size_t done = 0;
+	ssize_t n;
 
 	if (!t->streaming)
 		return 0;
-	return t->ops->read(t, buf, count, file->f_flags & O_NONBLOCK);
+	do {
+		n = t->ops->read(t, buf + done, count - done, nonblock);
+		if (n <= 0)
+			return done ? (ssize_t)done : n;
+		done += n;
+	} while (done < count && !nonblock && t->streaming);
+	return done;
 }
 
 static long ird_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
