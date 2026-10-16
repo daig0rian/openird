@@ -36,11 +36,19 @@
  * CPU, before the transfer starts: while the XDMA reads the SRAM, a CPU read
  * of it is six times slower.
  *
+ * The XDMA reads the SRAM at ~15 MB/s, so a range of all 7 slots takes about
+ * a tick.  The FIFO fills its slots round and round, and the ready ones are
+ * often the last and the first: such a range is copied as two transfers.  A
+ * transfer still running at the next tick is waited for, briefly, rather
+ * than leaving that FIFO for a whole tick: a slot comes round again in as
+ * little as 230 to 350 us, and a tick missed is how packets were lost.
+ *
  * This file only ever reads the SRAM.  The one register it writes is its own
  * XDMA channel.
  */
 
 #include <linux/module.h>
+#include <linux/moduleparam.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/hrtimer.h>
@@ -72,9 +80,29 @@
 #define TS_WORDS	(TS_BYTES / 4)
 #define ELEM		SLOT_STRIDE	/* ring element = arrival time + packet */
 
-#define PERIOD_US	100
+/*
+ * How it drains.  All are taken when draining starts (at the first tune
+ * after an open), so they can be changed at run time to compare
+ * (/sys/module/emma3sep_tsfifo/parameters/).  The defaults lost no packet in
+ * 2.2 million on the busiest terrestrial multiplexes (spec §7).
+ */
+static unsigned int period_us = 100;
+module_param(period_us, uint, 0644);
+MODULE_PARM_DESC(period_us, "tick in microseconds (default 100, at least 25)");
+static int use_xdma = 1;
+module_param(use_xdma, int, 0644);
+MODULE_PARM_DESC(use_xdma, "copy the busy FIFO by XDMA (1, default) or by the CPU (0)");
+static unsigned int wait_us = 40;
+module_param(wait_us, uint, 0644);
+MODULE_PARM_DESC(wait_us, "wait up to this long for a transfer still running at a tick (default 40, at most half a tick)");
+static unsigned int split_span = 5;
+module_param(split_span, uint, 0644);
+MODULE_PARM_DESC(split_span, "copy a range of this many slots or more as two transfers when 2 or more in it are not ready (default 5, 0: never)");
+static unsigned int cur_period_us = 100;	/* the ones in use */
+static unsigned int cur_wait_us, cur_split_span;
+
 #define WAKE_PKTS	64		/* wake the reader for this many ... */
-#define WAKE_TICKS	(10000 / PERIOD_US)	/* ... or every 10 ms */
+#define WAKE_TICKS	(10000 / cur_period_us)	/* ... or every 10 ms */
 
 static void __iomem *sram;
 static unsigned int fifos;		/* bit mask being drained */
@@ -136,6 +164,11 @@ static u32 count_per_us;		/* CP0 Count rate */
 /* counters; the timer callback is the only writer */
 static u32 st_ticks, st_late, st_deferred, st_torn, st_overrun, st_sync;
 static u32 st_pkts[FIFO_N], st_dma, st_dma_slow, st_tap_lost, st_max_ns;
+/* how many new packets a tick found in a FIFO (the ready ones and the newest) */
+static u32 st_seen[FIFO_N][SLOTS_MAX + 1];
+static u32 st_span[SLOTS_MAX + 1];	/* slots a transfer spanned */
+static u32 st_dma_wait, st_wait_dus;	/* waits that ended it, their 0.1 us */
+static u32 st_split, st_split_dus, st_split_slow;	/* two-part transfers */
 
 /* --- the tap: copies of chosen PIDs' packets for the PSI follower ---------- */
 
@@ -230,6 +263,7 @@ static int ready_slots(int f, int *rdy, u32 *rdy_ats, int *seen)
 		rdy_ats[r++] = ats[k];
 	}
 	*seen = n;
+	st_seen[f][n]++;
 	return r;
 }
 
@@ -334,7 +368,7 @@ static void drain_cpu(int f)
 
 static void __iomem *xdma;
 static u8 *stage;		/* where a transfer goes when the ring is full */
-static int batch_f, batch_n, batch_k[SLOTS_MAX], batch_lo;
+static int batch_f, batch_n, batch_k[SLOTS_MAX], batch_e[SLOTS_MAX];
 static u8 batch_safe[SLOTS_MAX];
 static u32 batch_ats[SLOTS_MAX], batch_len, batch_span;
 
@@ -367,7 +401,8 @@ static int copy_is_safe(int ns, int m, int p, u32 late_us)
 }
 
 /* Collect the last transfer: check each copy and queue the elements in
- * ARRIVAL order.  Returns -1 while it is still running. */
+ * ARRIVAL order.  A transfer still running is waited for up to wait_us (it
+ * is nearly always nearly done); returns -1 if it still is. */
 static int harvest(void)
 {
 	int i;
@@ -376,14 +411,22 @@ static int harvest(void)
 	if (!dma_busy)
 		return 0;
 	if (__raw_readl(xdma + X_LIST(2)) != 0) {
-		st_dma_slow++;			/* still running: next tick */
-		return -1;
+		u32 c0 = read_c0_count(), lim = cur_wait_us * count_per_us;
+
+		do {
+			if (read_c0_count() - c0 >= lim) {
+				st_dma_slow++;	/* still running: next tick */
+				return -1;
+			}
+		} while (__raw_readl(xdma + X_LIST(2)) != 0);
+		st_dma_wait++;
+		st_wait_dus += (read_c0_count() - c0) * 10 / count_per_us;
 	}
 	dma_busy = 0;
 	base = batch_p < 0 ? stage : ring + batch_p * ELEM;
 	dma_cache_inv((unsigned long)base, batch_len);
 	for (i = 0; i < batch_n; i++) {
-		int k = batch_k[i] - batch_lo;
+		int k = batch_e[i];
 		const u32 *c = (const u32 *)(base + k * ELEM);
 		int ok = c[0] == batch_ats[i];
 
@@ -406,32 +449,75 @@ static int harvest(void)
 	return 0;
 }
 
-/* One transfer copies the address range that holds this tick's ready slots,
- * taking along any slot in between (it is not queued). */
+/* Start one transfer of the slots lo..hi of FIFO f to dst. */
+static void xdma_go(int f, int lo, int hi, u8 *dst)
+{
+	__raw_writel(SRAM_PHYS + slot_off[f][lo] + SLOT_ATS, xdma + X_LIST(0));
+	__raw_writel(virt_to_phys(dst), xdma + X_LIST(1));
+	__raw_writel((hi - lo) * ELEM + 4 + TS_BYTES, xdma + X_LIST(2));
+	__raw_writel(X_SETUP, xdma + X_LIST(3));
+	__raw_writel(0, xdma + X_LIST(4));
+	__raw_writel(1u << XCH, xdma + X_ENABLE);
+}
+
+/*
+ * One transfer copies the address range that holds this tick's ready slots,
+ * taking along any slot in between (it is not queued).  The FIFO fills its
+ * slots round and round, so the ready ones are often the last and the first,
+ * and the range is then the whole FIFO: about 100 us of transfer for two
+ * packets, longer than a tick.  So a long range with slots in between is
+ * copied as two: the shorter part first, waiting for it (some 13 us a slot),
+ * then the other, which the next tick collects.  The elements go where they
+ * would have gone anyway, side by side in address order.
+ */
 static void start_batch(int f, const int *rdy, const u32 *rdy_ats, int n,
 			int seen, u32 late_us)
 {
-	int i, lo = rdy[0], hi = rdy[0];
+	int i, k, lo = rdy[0], hi = rdy[0], nseg = 1, a = 0, b = 1, drop_b = 0;
+	int seg_lo[2] = { 0 }, seg_hi[2] = { 0 }, seg_n[2] = { 0 };
+	int seg_off[2] = { 0 };
+	u8 in[SLOTS_MAX] = { 0 };
 	u8 *dst;
 
-	for (i = 1; i < n; i++) {
+	for (i = 0; i < n; i++) {
+		in[rdy[i]] = 1;
 		if (rdy[i] < lo)
 			lo = rdy[i];
 		if (rdy[i] > hi)
 			hi = rdy[i];
 	}
-	batch_f = f;
-	batch_lo = lo;
-	batch_n = n;
-	for (i = 0; i < n; i++) {
-		batch_k[i] = rdy[i];
-		batch_ats[i] = rdy_ats[i];
-		/* rdy[] is oldest first, so seen - 1 - i packets are behind it */
-		batch_safe[i] = copy_is_safe(nslots[f], seen - 1 - i, rdy[i] - lo,
-					     late_us);
-		mark_taken(f, rdy[i], rdy_ats[i]);
+	seg_lo[0] = lo;
+	seg_hi[0] = hi;
+	if (cur_split_span && hi - lo + 1 >= cur_split_span) {
+		int run = 0, best = 0, end = 0;
+
+		for (k = lo + 1; k < hi; k++) {	/* the widest gap */
+			run = in[k] ? 0 : run + 1;
+			if (run > best) {
+				best = run;
+				end = k;
+			}
+		}
+		if (best >= 2) {
+			seg_hi[0] = end - best;
+			seg_lo[1] = end + 1;
+			seg_hi[1] = hi;
+			nseg = 2;
+		}
 	}
-	batch_span = hi - lo + 1;
+	seg_n[0] = seg_hi[0] - seg_lo[0] + 1;
+	seg_off[0] = 0;
+	batch_span = seg_n[0];
+	if (nseg == 2) {
+		seg_n[1] = seg_hi[1] - seg_lo[1] + 1;
+		seg_off[1] = seg_n[0];
+		batch_span += seg_n[1];
+		if (seg_n[1] < seg_n[0]) {
+			a = 1;
+			b = 0;
+		}
+	}
+	st_span[hi - lo + 1]++;
 	batch_p = ring_room(batch_span);
 	batch_v = wpos;
 	if (batch_p >= 0) {
@@ -440,15 +526,53 @@ static void start_batch(int f, const int *rdy, const u32 *rdy_ats, int n,
 	} else {
 		dst = stage;			/* only to count what is lost */
 	}
-	batch_len = (hi - lo) * ELEM + 4 + TS_BYTES;
-	__raw_writel(SRAM_PHYS + slot_off[f][lo] + SLOT_ATS, xdma + X_LIST(0));
-	__raw_writel(virt_to_phys(dst), xdma + X_LIST(1));
-	__raw_writel(batch_len, xdma + X_LIST(2));
-	__raw_writel(X_SETUP, xdma + X_LIST(3));
-	__raw_writel(0, xdma + X_LIST(4));
-	__raw_writel(1u << XCH, xdma + X_ENABLE);
+	batch_len = (batch_span - 1) * ELEM + 4 + TS_BYTES;
+
+	if (nseg == 1) {
+		xdma_go(f, lo, hi, dst);
+	} else {
+		u32 c0, lim;
+
+		xdma_go(f, seg_lo[a], seg_hi[a], dst + seg_off[a] * ELEM);
+		c0 = read_c0_count();
+		lim = (20 + 20 * seg_n[a]) * count_per_us;
+		while (__raw_readl(xdma + X_LIST(2)) != 0)
+			if (read_c0_count() - c0 > lim) {
+				drop_b = 1;	/* not now: they stay for the next tick */
+				st_split_slow++;
+				break;
+			}
+		if (!drop_b)
+			xdma_go(f, seg_lo[b], seg_hi[b], dst + seg_off[b] * ELEM);
+		st_split++;
+		st_split_dus += (read_c0_count() - c0) * 10 / count_per_us;
+	}
 	dma_busy = 1;
 	st_dma++;
+
+	batch_f = f;
+	batch_n = 0;
+	for (i = 0; i < n; i++) {
+		int s = nseg == 2 && rdy[i] >= seg_lo[1];
+		int p;			/* how many slots the DMA reads up to it */
+
+		if (drop_b && s == b)
+			continue;
+		if (nseg == 1)
+			p = rdy[i] - lo;
+		else if (s == a)
+			p = rdy[i] - seg_lo[a];
+		else
+			p = seg_n[a] + rdy[i] - seg_lo[b];
+		batch_k[batch_n] = rdy[i];
+		batch_e[batch_n] = seg_off[s] + rdy[i] - seg_lo[s];
+		batch_ats[batch_n] = rdy_ats[i];
+		/* rdy[] is oldest first, so seen - 1 - i packets are behind it */
+		batch_safe[batch_n] = copy_is_safe(nslots[f], seen - 1 - i, p,
+						   late_us);
+		mark_taken(f, rdy[i], rdy_ats[i]);
+		batch_n++;
+	}
 }
 
 /* --- the tick -------------------------------------------------------------- */
@@ -672,9 +796,12 @@ int emma3sep_tsfifo_start(unsigned int mask, int by_xdma)
 				ref_ats[f] = done_ats[f][k];
 		}
 	fifos = mask;
-	xdma_fifo = by_xdma;
+	xdma_fifo = use_xdma ? by_xdma : -1;
 	dma_busy = 0;
-	period = ktime_set(0, PERIOD_US * 1000);
+	cur_period_us = max(period_us, 25u);
+	cur_wait_us = min(wait_us, cur_period_us / 2);
+	cur_split_span = split_span;
+	period = ktime_set(0, cur_period_us * 1000);
 	hrtimer_init(&timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	timer.function = tick;
 	timer.cb_mode = HRTIMER_CB_IRQSAFE_UNLOCKED;	/* hard IRQ, may wake */
@@ -712,7 +839,7 @@ int emma3sep_tsfifo_show(char *page)
 	int len = 0, f, k;
 
 	len += sprintf(page + len, "drainer %s period_us %u ring %u x %u B\n",
-		       running ? "running" : "stopped", PERIOD_US, ring_n, ELEM);
+		       running ? "running" : "stopped", cur_period_us, ring_n, ELEM);
 	for (f = 0; f < FIFO_N; f++) {
 		if (!nslots[f])
 			continue;
@@ -722,14 +849,28 @@ int emma3sep_tsfifo_show(char *page)
 		for (k = 0; k < nslots[f]; k++)
 			len += sprintf(page + len, " %04x", slot_off[f][k]);
 		len += sprintf(page + len, "  packets %u\n", st_pkts[f]);
+		len += sprintf(page + len, "fifo %d new packets a tick (0..%d):", f,
+			       nslots[f]);
+		for (k = 0; k <= nslots[f]; k++)
+			len += sprintf(page + len, " %u", st_seen[f][k]);
+		len += sprintf(page + len, "\n");
 	}
 	len += sprintf(page + len, "ticks %u late %u max_tick_ns %u\n",
 		       st_ticks, st_late, st_max_ns);
 	len += sprintf(page + len, "deferred %u torn %u overrun %u sync_err %u "
 		       "tap_lost %u\n", st_deferred, st_torn, st_overrun,
 		       st_sync, st_tap_lost);
-	len += sprintf(page + len, "xdma transfers %u still_running %u\n",
-		       st_dma, st_dma_slow);
+	len += sprintf(page + len, "xdma transfers %u still_running %u "
+		       "waited %u for %u.%u us (wait_us %u)\n", st_dma, st_dma_slow,
+		       st_dma_wait, st_wait_dus / 10, st_wait_dus % 10, cur_wait_us);
+	len += sprintf(page + len, "xdma split %u for %u.%u us, not finished %u "
+		       "(split_span %u)\n", st_split, st_split_dus / 10,
+		       st_split_dus % 10, st_split_slow, cur_split_span);
+	len += sprintf(page + len, "xdma slots a transfer spanned (0..%d):",
+		       SLOTS_MAX);
+	for (k = 0; k <= SLOTS_MAX; k++)
+		len += sprintf(page + len, " %u", st_span[k]);
+	len += sprintf(page + len, "\n");
 	len += sprintf(page + len, "queue head %u tail %u capturing %d\n",
 		       qhead, qtail, capturing);
 	return len;
