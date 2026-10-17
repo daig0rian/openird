@@ -16,6 +16,9 @@
 #   openird-<版>-<arch-id>-sources.tar         対応するソース一式（Buildroot の legal-info と、
 #                                              ビルド元の記録 openird-build.txt）
 #   SHA256SUMS                                 このディレクトリの全ファイル
+# 同じ Arch id の機種を続けて `make release` すると、2 機種目からは SDK もソース一式も足さない。
+# そのかわり、パッケージの一覧（legal-info の manifest）が 1 機種目のソース一式と同じことを
+# 確かめる（＝そのソース一式が、この機種のバイナリのソースでもある）。違えば止まる。
 # GitHub への公開（gh release create）は人が行う。
 set -eu
 
@@ -47,14 +50,26 @@ SDK="$O/images/openird-sdk-$VER-$IRD_ARCH.$HOSTOS.tar.xz"
 
 R="$ROOT/output/release/$VER"
 mkdir -p "$R"
-cp "$SDK" "$R/"
-
-# ソース一式: Buildroot が保存しないもの（Buildroot 自身と OpenIRD）は、どこの何かを書き添える
 SRC="openird-$VER-$IRD_ARCH-sources"
 EXTRA="$(mktemp -d)"
 trap 'rm -rf "$EXTRA"' EXIT
-. "$ROOT/scripts/buildroot.env"
-cat > "$EXTRA/openird-build.txt" <<EOF
+
+if [ -f "$R/$SRC.tar" ]; then
+	# この Arch id の SDK とソース一式は、先の機種で作った。パッケージが同じなら、それがこの
+	# 機種のソースでもある（違うのは buildroot.config の機種名だけ）
+	for m in manifest.csv host-manifest.csv; do
+		tar -xOf "$R/$SRC.tar" "$SRC/$m" > "$EXTRA/$m" ||
+			die "$SRC.tar に $m が無い"
+		cmp -s "$EXTRA/$m" "$O/legal-info/$m" ||
+			die "$BOARD のパッケージが、先に作ったソース一式（$SRC.tar）と違う: $m"
+	done
+	echo "✓ $BOARD: パッケージは $SRC.tar と同じ（SDK もソース一式も足さない）"
+else
+	cp "$SDK" "$R/"
+
+	# ソース一式: Buildroot が保存しないもの（Buildroot 自身と OpenIRD）は、どこの何かを書き添える
+	. "$ROOT/scripts/buildroot.env"
+	cat > "$EXTRA/openird-build.txt" <<EOF
 OpenIRD $VER  (tag $TAG, commit $COMMIT)
 board:      $BOARD
 arch id:    $IRD_ARCH
@@ -64,6 +79,8 @@ This archive is the output of Buildroot's "make legal-info" for the build
 above: the sources (with the patches that were applied) and the licence texts
 of every package that went into the root filesystem image and the SDK -
 sources/ for the target, host-sources/ for the build host (the toolchain).
+The other boards of this arch id in the same release are built from exactly
+the same packages (the release build checks it), so it covers them too.
 
 Not in this archive, because Buildroot does not save them:
   Buildroot    $BUILDROOT_VERSION
@@ -72,10 +89,11 @@ Not in this archive, because Buildroot does not save them:
   OpenIRD      the repository at tag $TAG: the external trees, the board
                configuration and the scripts that drive the build.
 EOF
-# S = symlink の指す先には適用しない
-tar -cf "$R/$SRC.tar" --sort=name --owner=0 --group=0 --numeric-owner \
-	--transform="s#^legal-info#$SRC#S;s#^\./openird-build\.txt#$SRC/openird-build.txt#S" \
-	-C "$O" legal-info -C "$EXTRA" ./openird-build.txt
+	# S = symlink の指す先には適用しない
+	tar -cf "$R/$SRC.tar" --sort=name --owner=0 --group=0 --numeric-owner \
+		--transform="s#^legal-info#$SRC#S;s#^\./openird-build\.txt#$SRC/openird-build.txt#S" \
+		-C "$O" legal-info -C "$EXTRA" ./openird-build.txt
+fi
 
 ( cd "$R" && rm -f SHA256SUMS && sha256sum -- * > "$EXTRA/SHA256SUMS" && mv "$EXTRA/SHA256SUMS" . )
 

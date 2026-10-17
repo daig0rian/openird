@@ -32,13 +32,17 @@
    （`make test-mkimage test-fwup test-tuner test-addon test-sysupgrade`）を通してからビルドする。
    SDK・ソース一式（`make release`）、カーネル（`make kernel`）、rootfs。鍵の要らないところまでの
    factory の検査（`make factory FACTORY_ARGS=--payload-only`）と、更新イメージ（`make sysupgrade`）もここ。
+   配る機種はワークフローの `BOARDS` に並べてあり、機種ごとに順に作る（1 機種 20 分ほど）。
+   SDK とソース一式は、その Arch id の最初の機種が作る。2 機種目からの `make release` は、
+   パッケージの一覧（legal-info の manifest）が同じことを確かめるだけで、何も足さない。
    このジョブは鍵も、リリースを書く権限も持たない。
 3. **factory ジョブを承認する**（人）: Actions の画面に「Review deployments」が出る。
    下の「承認するときに見ること」を確かめてから承認する。承認すると、鍵を使って factory
    イメージを作り、全部の配布物と `SHA256SUMS` を**下書き**のリリースに付ける。
 4. **実機で確かめてから公開する**（人）:
    - 下書きから factory イメージを取り、**そのファイルを**実機に書いて、起動と受信を確かめる
-     （ビルドはビット単位で再現しないので、確かめたファイルそのものを出す）。
+     （ビルドはビット単位で再現しないので、確かめたファイルそのものを出す）。**機種ごとに**行う。
+     実機で確かめられない機種があるときは、その機種の factory イメージを下書きから外して公開する。
    - **シリアルを使わずに、ネットワークから入れることも確かめる**（`ssh root@<機器>`。導入した
      人が持っている口はこれだけ。`v26.10-rc2` は、ここを見ずに口の無いイメージを作った）。
    - リリースの文面を書く（何が入っているか・知っておくべき制約）。
@@ -123,7 +127,8 @@ make factory BOARD=emma3sep_softbank_poe-br100-yb1  # → output/<BOARD>/images/
     make release BOARD=emma3sep_softbank_poe-br100-yb1"
   ```
   その機種の `output` を消して最初からビルドし（16 コアで 10 分ほど）、
-  `output/release/<版>/` に SDK・ソース一式・`SHA256SUMS` を揃える。
+  `output/release/<版>/` に SDK・ソース一式・`SHA256SUMS` を揃える。同じ Arch id の機種を
+  続けて `make release` すると、2 機種目からはパッケージが同じことを確かめるだけになる。
   **出す前に、SDK とソース一式を展開して、自分のユーザ名とホスト名で grep し、0 件を確かめる。**
 
 ## 決まり

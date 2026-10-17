@@ -28,8 +28,11 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Arch id ごとに 1 機種（docs/release.md）。機種を足すときは matrix にする
-  BOARD: emma3sep_softbank_poe-br100-yb1
+  # 配る機種（docs/release.md）。機種ごとに rootfs・カーネル・factory・更新イメージを作る。
+  # SDK とソース一式は Arch id ごとに 1 本で、その Arch id の最初の機種が作る
+  BOARDS: >-
+    emma3sep_softbank_poe-br100-yb1
+    emma3sep_softbank_sb-tv06-wrip
   # 配布物にはビルドした場所の絶対パスが入る。手元でビルドするときと同じ場所にそろえる
   TREE: /var/tmp/openird-build/openird
 
@@ -42,10 +45,10 @@ jobs:
       contents: read
     outputs:
       version: ${{ steps.collect.outputs.version }}
-      kernel_sha256: ${{ steps.collect.outputs.kernel_sha256 }}
-      rootfs_sha256: ${{ steps.collect.outputs.rootfs_sha256 }}
-      kernel_source: ${{ steps.collect.outputs.kernel_source }}
-      kernel_source_sha256: ${{ steps.collect.outputs.kernel_source_sha256 }}
+      # images/ の全ファイルの sha256（sha256sum の形・機種ごとの <BOARD>/vmlinux.img と
+      # <BOARD>/rootfs.img、カーネルのソース）。factory ジョブは成果物をこれで確かめる
+      sums: ${{ steps.collect.outputs.sums }}
+      kernel_sources: ${{ steps.collect.outputs.kernel_sources }}
     steps:
       - name: Host packages
         run: |
@@ -87,28 +90,41 @@ jobs:
         working-directory: ${{ env.TREE }}
         run: |
           set -eu
-          # make release は、版のタグを打った commit の、変更の無い checkout でだけ通る
-          if [ "$GITHUB_REF_TYPE" = tag ]; then
-            make release BOARD="$BOARD"
-          else
-            make sdk BOARD="$BOARD"
-          fi
+          # make release は、版のタグを打った commit の、変更の無い checkout でだけ通る。
+          # 同じ Arch id の 2 機種目からは、SDK もソース一式も足さず、パッケージが同じことを確かめる
+          for b in $BOARDS; do
+            echo "::group::$b"
+            if [ "$GITHUB_REF_TYPE" = tag ]; then
+              make release BOARD="$b"
+            else
+              make sdk BOARD="$b"
+            fi
+            echo "::endgroup::"
+          done
 
       - name: Build (kernel)
         working-directory: ${{ env.TREE }}
-        run: make kernel BOARD="$BOARD"
+        run: |
+          set -eu
+          for b in $BOARDS; do make kernel BOARD="$b"; done
 
       - name: Factory payload without the key
         working-directory: ${{ env.TREE }}
         run: |
+          set -eu
           # 鍵の要らないところまで（イメージが機種の契約に合うか・write.sh の生成）をここで確かめる
-          make factory BOARD="$BOARD" FACTORY_ARGS="--payload-only --outdir $RUNNER_TEMP/payload"
+          for b in $BOARDS; do
+            make factory BOARD="$b" FACTORY_ARGS="--payload-only --outdir $RUNNER_TEMP/payload"
+          done
 
       - name: Sysupgrade image
         working-directory: ${{ env.TREE }}
         run: |
+          set -eu
           # OpenIRD から OpenIRD への更新イメージ（docs/sysupgrade.md）。上と同じ kernel と rootfs から作る。鍵は要らない
-          make sysupgrade BOARD="$BOARD" SYSUPGRADE_ARGS="--outdir $RUNNER_TEMP/sysupgrade"
+          for b in $BOARDS; do
+            make sysupgrade BOARD="$b" SYSUPGRADE_ARGS="--outdir $RUNNER_TEMP/sysupgrade"
+          done
 
       - name: Collect
         id: collect
@@ -116,25 +132,35 @@ jobs:
         run: |
           set -eu
           ver="$(git describe --tags --match 'v[0-9]*' | sed 's/^v//')"
-          envf="$(ls br-ext-chip-*/board/"${BOARD%%_*}"/kernel/build.env)"
-          ksrc="$( . "./$envf"; echo "$KERNEL_TARBALL" )"
           out="$RUNNER_TEMP/out"
           mkdir -p "$out/images" "$out/release"
-          cp "output/$BOARD/vmlinux.img" "output/$BOARD/images/rootfs.img" "dl/$ksrc" "$out/images/"
+          ksrcs=""
+          for b in $BOARDS; do
+            mkdir -p "$out/images/$b"
+            cp "output/$b/vmlinux.img" "output/$b/images/rootfs.img" "$out/images/$b/"
+            # カーネルのソースはファミリーごと（同じものは 1 つ）
+            envf="$(ls br-ext-chip-*/board/"${b%%_*}"/kernel/build.env)"
+            ksrc="$( . "./$envf"; echo "$KERNEL_TARBALL" )"
+            case " $ksrcs " in *" $ksrc "*) ;; *)
+              cp "dl/$ksrc" "$out/images/"
+              ksrcs="${ksrcs:+$ksrcs }$ksrc" ;;
+            esac
+          done
           if [ -d "output/release/$ver" ]; then
             cp "output/release/$ver"/* "$out/release/"
             ( cd "$out/release" && sha256sum -c SHA256SUMS )
             # 更新イメージも配布物に入れる（SHA256SUMS は factory ジョブが全部について作り直す）
             cp "$RUNNER_TEMP/sysupgrade"/*-sysupgrade.bin "$out/release/"
           fi
-          ( cd "$out/images" && sha256sum -- * )
-          sum() { sha256sum < "$out/images/$1" | cut -d' ' -f1; }
+          sums="$(cd "$out/images" && find . -type f | sed 's#^\./##' | sort | xargs sha256sum --)"
+          printf '%s\n' "$sums"
+          d="EOF_$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
           {
             echo "version=$ver"
-            echo "kernel_sha256=$(sum vmlinux.img)"
-            echo "rootfs_sha256=$(sum rootfs.img)"
-            echo "kernel_source=$ksrc"
-            echo "kernel_source_sha256=$(sum "$ksrc")"
+            echo "kernel_sources=$ksrcs"
+            echo "sums<<$d"
+            printf '%s\n' "$sums"
+            echo "$d"
           } >> "$GITHUB_OUTPUT"
 
       - name: Upload (kernel, rootfs, kernel source)
@@ -171,10 +197,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       VERSION: ${{ needs.build.outputs.version }}
-      KERNEL_SHA256: ${{ needs.build.outputs.kernel_sha256 }}
-      ROOTFS_SHA256: ${{ needs.build.outputs.rootfs_sha256 }}
-      KERNEL_SOURCE: ${{ needs.build.outputs.kernel_source }}
-      KERNEL_SOURCE_SHA256: ${{ needs.build.outputs.kernel_source_sha256 }}
+      SUMS: ${{ needs.build.outputs.sums }}
+      KERNEL_SOURCES: ${{ needs.build.outputs.kernel_sources }}
     steps:
       # ★ このジョブに uses: を足さないこと。鍵を読めるコードを増やさない。
 
@@ -185,8 +209,13 @@ jobs:
           gh run download "$GITHUB_RUN_ID" -n images -D "$RUNNER_TEMP/in/images"
           gh run download "$GITHUB_RUN_ID" -n release -D "$RUNNER_TEMP/in/release"
           cd "$RUNNER_TEMP/in/images"
-          printf '%s  %s\n' "$KERNEL_SHA256" vmlinux.img "$ROOTFS_SHA256" rootfs.img \
-            "$KERNEL_SOURCE_SHA256" "$KERNEL_SOURCE" | sha256sum -c -
+          # build ジョブが出力で渡した sha256 と、取った成果物を突き合わせる（全機種の分がそろっていること）
+          printf '%s\n' "$SUMS" | sha256sum -c -
+          for b in $BOARDS; do
+            printf '%s\n' "$SUMS" | grep -q "  $b/vmlinux.img\$" &&
+              printf '%s\n' "$SUMS" | grep -q "  $b/rootfs.img\$" ||
+              { echo "$b: no kernel or rootfs from the build job"; exit 1; }
+          done
           cd ../release
           sha256sum -c SHA256SUMS
 
@@ -218,19 +247,21 @@ jobs:
           printf '%s' "$V1B_ZIP_PASSWORD" > "$k/pw"
           unset V1B_AES_KEY V1B_ZIP_PASSWORD
           cd "$RUNNER_TEMP/src"
-          OPENIRD_V1B_KEY_FILE="$k/key" OPENIRD_V1B_ZIPPW_FILE="$k/pw" \
-          PYTHON=python3 PYTHONPATH="$RUNNER_TEMP/pydeps" \
-            scripts/make-factory.sh "$BOARD" --version "$VERSION" \
-              --kernel "$RUNNER_TEMP/in/images/vmlinux.img" \
-              --rootfs "$RUNNER_TEMP/in/images/rootfs.img" \
-              --outdir "$RUNNER_TEMP/in/release"
+          for b in $BOARDS; do
+            OPENIRD_V1B_KEY_FILE="$k/key" OPENIRD_V1B_ZIPPW_FILE="$k/pw" \
+            PYTHON=python3 PYTHONPATH="$RUNNER_TEMP/pydeps" \
+              scripts/make-factory.sh "$b" --version "$VERSION" \
+                --kernel "$RUNNER_TEMP/in/images/$b/vmlinux.img" \
+                --rootfs "$RUNNER_TEMP/in/images/$b/rootfs.img" \
+                --outdir "$RUNNER_TEMP/in/release"
+          done
 
       - name: Draft release
         run: |
           set -eu
           cd "$RUNNER_TEMP/in/release"
           # カーネルのバイナリを配るので、対応するソースを同じ場所に置く
-          cp "../images/$KERNEL_SOURCE" .
+          for s in $KERNEL_SOURCES; do cp "../images/$s" .; done
           rm -f SHA256SUMS
           sha256sum -- * > ../SHA256SUMS
           mv ../SHA256SUMS .
