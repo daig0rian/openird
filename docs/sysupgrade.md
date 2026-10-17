@@ -163,6 +163,11 @@ make sysupgrade BOARD=<board>     # → output/<board>/images/openird-<版>-…-
 - 最初の `--dry-run` で、stage2 が `/tmp` を書き込み可能に戻せていないことが分かった（`/proc` を
   戻す前に `mount` を呼んでいた）。古い中身を保存できず、何も書かずに再起動した＝安全な側に
   倒れた。直してから本番を通した。
+**SB-TV06-WRIP（2026-10-17）**: 同じ部品（`platform.sh`）のまま、`selftest-device.sh` の 8 項目・
+`sysupgrade -T`・`--dry-run`・本番（同じ版を書く）が通り、読み戻した両区画がイメージと一致した。
+コマンドから起動まで約 17 秒。純正のカーネルと rootfs を包んだ更新イメージも書け、純正に戻った
+（`make-sysupgrade.sh --kernel … --rootfs …`。詳細は bring-up 仕様 §12.8）。
+
 - **実機で確かめていないもの**: `-n`（実機の overlay は消していない。偽のツリーで確認）、URL からの
   取得、照合が合わないときの巻き戻し（実機のフラッシュでは起こしていない。偽の `mtd` で確認）、
   書いている最中の電源断。
