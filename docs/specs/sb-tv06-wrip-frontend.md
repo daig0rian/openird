@@ -384,7 +384,7 @@ OpenIRD の実装はベンダの `/dev/fe_main` を使わない。記録の読�
 | §6 | バスの記録、UPnP `X_GetOfdmTunerInfo`、メインライン `tc90522.c`（状態と C/N の式） |
 | §7 | ベンダアプリの ioctl の記録（`LD_PRELOAD`） |
 | §8.1 | SB-TV06-WRIP のガイド（`softbankselection.jp/product/pdf/detail/guide_SB-TV06-WRIP.pdf` 35 ページ）、PIX-BR310L／W のセットアップガイド（`pixela.co.jp` 20 ページ）、アンテナ端子の直流電圧の実測、ioctl・I2C・GPIO の記録 |
-| §11 | px4_drv（`tsukumijima/px4_drv` の `driver/ptx_chrdev.c`・`px4_device.c`・`tc90522.c`・`include/ptx_ioctl.h`。GPL-2.0 のソース）。TS の選択の待ち時間とリセットは §5 の (4)・§9 |
+| §11 | px4_drv（`tsukumijima/px4_drv` の `driver/ptx_chrdev.c`・`px4_device.c`・`m1ur_device.c`・`isdb2056_device.c`・`pxmlt_device.c`・`cxd2856er.c`・`tc90522.c`・`include/ptx_ioctl.h`。GPL-2.0 のソース。TS の選択は v0.4.0 と develop（2026-10-17 に取得）で同じ。BS の判定を外したのはコミット `1c1e6fa`）、recisdb（`kazuki0824/recisdb-rs` の `recisdb-rs/src/channels.rs`＝slot に入れる値）。TS の選択の待ち時間とリセットは §5 の (4)・§9 |
 
 ## 11. chardev（px4_drv 互換）への対応
 
@@ -414,14 +414,22 @@ px4_drv（GPL-2.0。`driver/ptx_chrdev.c`・`px4_device.c`・`tc90522.c`）の�
   表に無い周波数は `-EINVAL`。`70` の値（BS／CS）は 1600 MHz 未満を BS とする。
 - 地上・衛星の切り替え（§3）は、選局のたびに方式に合わせて行う。
 
-**TS の選択**（衛星の slot。px4_drv の `px4_chrdev_set_stream_id_s` と同じ形）:
+**TS の選択**（衛星の slot。tsukumijima 版 px4_drv 0.4.0 以降の `px4_chrdev_set_stream_id_s` と同じ形。
+slot は 16 ビットに切り詰めて使う＝px4_drv の `stream_id` と同じ）:
 
 1. slot が 0〜7 なら、ロックの後に `0x11` の `0xce + 2 × slot` から 2 バイトを TSID として読む。0 の間は
    10 ms おきに最大 1 秒読み直す（表はロックから少し遅れて埋まる）。0 のまま、または `ff ff`（空き）
    なら `-EAGAIN`。
-   - px4_drv は 0〜11 を表の位置とみなすが、この復調器の表は 16 バイト（8 個）しか確かめていない
-     （§5 の (4)）ので、8〜11 は `-EINVAL` にする。
-2. slot が 12 以上なら、その値を TSID とみなす（px4_drv と同じ）。
+   - px4_drv の TC90522 の機種（PX-W3U4 などの PX4 系・PX-M1UR・ISDB2056）は 0〜11 を表の位置とみなして
+     `0xce + 2 × slot` を読むが、表は 8 個で
+     （この復調器でも 16 バイトしか確かめていない・§5 の (4)）、8〜11 は表の外を読むことになる。
+     ここでは `-EINVAL` にする。px4_drv の CXD2856ER の機種（PX-MLT 系）も 8 以上の相対番号は `-EINVAL`。
+2. slot が 12 以上なら、その値を TSID とみなす（px4_drv と同じ）。recisdb の `--tsid` はこの値を slot に
+   入れる。相対番号はトランスポンダの中の並びが変わると黙って別の TS を指すが、TSID は同じ TS を指し続ける。
+   - nns779 版の px4_drv は BS の slot 8 以上を chardev で断っていた（`-EINVAL`。CS は断らない）。
+     tsukumijima 版 0.4.0（2023-08）でこの判定が外れ、BS も TSID で選べるようになった。
+   - recisdb は `BS15` のように相対番号も TSID も付けないと、slot に −1 を入れる（16 ビットで `0xffff`）。
+     px4_drv も OpenIRD も TSID `0xffff` とみなして書く。この値で復調器がどうなるかは確かめていない。
 3. `8f`・`90` に TSID を書き、`03 01` を書く（§5 の (4)。px4_drv はリセットを書かない）。
 4. `e6` が書いた TSID になるまで 10 ms おきに読む。§9 の確認では約 1 秒かかったので最大 2 秒待つ
    （px4_drv は 1 秒）。ならなければ `-EAGAIN`。
