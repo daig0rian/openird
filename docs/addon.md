@@ -196,11 +196,12 @@ make sdk BOARD=<board>   ->  output/<board>/images/openird-sdk-<ver>-<arch-id>.<
 タグからの `git describe`、`<host>` は toolchain が動くホストの種類。
 
 中身（展開すると `openird-sdk-<ver>-<arch-id>/`）:
-- 再配置可能な **musl クロス toolchain**＋ **target sysroot**（headers／libs）＝ Buildroot の
+- 再配置可能な **musl クロス toolchain**（C と C++。C++ の標準ライブラリは静的な `libstdc++.a`）＋
+  **target sysroot**（headers／libs）＝ Buildroot の
   `output/<board>/host` そのもの。再配置は Buildroot の仕組みに任せる（`prepare-sdk` が
   `relocate-sdk.sh` を置く。展開した先で 1 回走らせる）。
 - `sdk.env`（`.` で読む）: `IRD_ARCH`（manifest の `Arch` に使う id）・`CROSS_COMPILE`
-  （toolchain の prefix）・`CC`・`SYSROOT`・`OPENIRD_SDK`（SDK の場所）と `PATH`。
+  （toolchain の prefix）・`CC`・`CXX`・`SYSROOT`・`OPENIRD_SDK`（SDK の場所）と `PATH`。
   id の変数名を `ARCH` にしないのは、カーネルや多くの Makefile が `ARCH` を別の意味
   （`mips` 等）で読むから。
 - `bin/ird-mkaddon`（単一ファイル・Python 3 の標準ライブラリだけ）:

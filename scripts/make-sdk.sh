@@ -79,6 +79,7 @@ export OPENIRD_SDK
 export IRD_ARCH=$IRD_ARCH
 export CROSS_COMPILE="\$OPENIRD_SDK/bin/$TUPLE-"
 export CC="\${CROSS_COMPILE}gcc"
+export CXX="\${CROSS_COMPILE}g++"
 export SYSROOT="\$OPENIRD_SDK/$TUPLE/sysroot"
 export PATH="\$OPENIRD_SDK/bin:\$PATH"
 EOF
@@ -94,7 +95,7 @@ Buildroot のツリー無しで作るための土台。形式と決まりは Ope
 | Arch id（manifest の \`Arch\`） | \`$IRD_ARCH\` |
 | 版 | \`$VER\`（ビルド元の機種: \`$BOARD\`） |
 | ホスト | \`$HOSTOS\` |
-| cross toolchain | \`bin/$TUPLE-gcc\` ほか（musl） |
+| cross toolchain | \`bin/$TUPLE-gcc\`・\`bin/$TUPLE-g++\` ほか（musl・C++ の標準ライブラリは静的な \`libstdc++.a\`） |
 | sysroot（target の headers / libs） | \`$TUPLE/sysroot\` |
 
 ## 使い方
@@ -103,7 +104,7 @@ Buildroot のツリー無しで作るための土台。形式と決まりは Ope
 tar xJf $NAME.$HOSTOS.tar.xz
 cd $NAME
 ./relocate-sdk.sh          # 展開した場所に合わせる（場所を移したら、もう一度）
-. ./sdk.env                # IRD_ARCH / CROSS_COMPILE / CC / SYSROOT と PATH
+. ./sdk.env                # IRD_ARCH / CROSS_COMPILE / CC / CXX / SYSROOT と PATH
 \`\`\`
 
 ビルドする（アドオンは**自己完結**にする＝静的リンクか、必要な lib を同梱する）:

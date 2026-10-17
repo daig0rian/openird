@@ -15,6 +15,8 @@ BR2_mips=y
 BR2_mips_32r2=y
 BR2_MIPS_SOFT_FLOAT=y
 BR2_TOOLCHAIN_BUILDROOT_MUSL=y
+# C++ も（アドオンを C++ で書けるように。SDK に g++ と静的な libstdc++.a が入る）
+BR2_TOOLCHAIN_BUILDROOT_CXX=y
 BR2_KERNEL_HEADERS_5_10=y
 
 # --- ダウンロードの完全性（全ソースを .hash で検証） ---
