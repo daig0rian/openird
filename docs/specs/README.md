@@ -33,6 +33,7 @@ clean-room のファイアウォール。観察 → 実装の間に挟む「文�
 | [poe-br100-yb1-subcpu-control.md](poe-br100-yb1-subcpu-control.md) | POE-BR100-YB1 の裏 CPU 制御インターフェース（BHIF の CPU 制御ブロック・アドレス窓・割り込みの振り分け・デバッグの口） | 機構 | `observing` |
 | [sb-tv06-wrip-frontend.md](sb-tv06-wrip-frontend.md) | SB-TV06-WRIP のフロントエンド（TC90532＋MxL601RF＋TDA8263HN の I2C の線上の手順・電源・選局・状態・衛星の TS の選択） | 機構 | `specified` |
 | [sb-tv06-wrip-card-slot.md](sb-tv06-wrip-card-slot.md) | SB-TV06-WRIP のカードの口（裏 CPU の SCARD コマンド・リセット・ATR・コマンドの往復・合図と結果の場所。運び役だけ） | 機構 | `specified` |
+| [emma3sep-card-reader.md](emma3sep-card-reader.md) | EMMA3SEP のカードリーダー（`/dev/irdcard0` の口・FW との手順と在否の追い方・静的な pcscd への組み込み） | 契約 | `specified` |
 
 ## 実装状態の宣言（`openird-spec` ヘッダ）
 
