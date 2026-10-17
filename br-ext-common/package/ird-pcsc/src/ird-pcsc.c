@@ -5,6 +5,7 @@
  *   ird-pcsc                 the readers, whether a card is in, its ATR
  *   ird-pcsc -x <hex>        send one APDU to the card in the first reader
  *                            and print the response as it comes back
+ *   ird-pcsc -r              have the card in the first reader reset (warm)
  *
  * A check that the reader works; it does not interpret what a card says.
  * docs/specs/emma3sep-card-reader.md §4.  Messages are ASCII only.
@@ -66,14 +67,17 @@ int main(int argc, char **argv)
 	DWORD resp_len;
 	LONG rv;
 	int ret = 0;
+	int warm = argc == 2 && !strcmp(argv[1], "-r");
 
-	if (argc == 3 && !strcmp(argv[1], "-x")) {
+	if (warm) {
+		apdu_len = 0;
+	} else if (argc == 3 && !strcmp(argv[1], "-x")) {
 		if (parse_hex(argv[2], apdu, sizeof(apdu), &apdu_len)) {
 			fprintf(stderr, "ird-pcsc: not an APDU in hex: %s\n", argv[2]);
 			return 2;
 		}
 	} else if (argc != 1) {
-		fprintf(stderr, "usage: ird-pcsc [-x <APDU in hex>]\n");
+		fprintf(stderr, "usage: ird-pcsc [-x <APDU in hex> | -r]\n");
 		return 2;
 	}
 
@@ -86,7 +90,7 @@ int main(int argc, char **argv)
 		goto out;
 	}
 
-	if (!apdu_len) {
+	if (!apdu_len && !warm) {
 		for (r = readers; *r; r += strlen(r) + 1) {
 			memset(&st, 0, sizeof(st));
 			st.szReader = r;
@@ -108,6 +112,16 @@ int main(int argc, char **argv)
 			  &card, &proto);
 	if (rv != SCARD_S_SUCCESS) {
 		ret = fail("cannot connect to the card", rv);
+		goto out;
+	}
+	if (warm) {
+		rv = SCardReconnect(card, SCARD_SHARE_SHARED, SCARD_PROTOCOL_T1,
+				    SCARD_RESET_CARD, &proto);
+		if (rv == SCARD_S_SUCCESS)
+			printf("reset\n");
+		else
+			ret = fail("reset", rv);
+		SCardDisconnect(card, SCARD_LEAVE_CARD);
 		goto out;
 	}
 	hex("> ", apdu, apdu_len);
