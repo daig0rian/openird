@@ -6,15 +6,18 @@
  * tuner on the device itself: it does what recpt1 does (set the channel,
  * start streaming, read), writes the stream to a file or throws it away, and
  * reports what it saw -- packets, PIDs, continuity errors, how many packets
- * are scrambled.  The stream is written as it comes; nothing is descrambled.
+ * are scrambled, the TSID in the PAT.  The stream is written as it comes;
+ * nothing is descrambled.
  *
- *   ird-rec [-d <device>] [-p] <channel> <seconds> [<outfile>|-]
+ *   ird-rec [-d <device>] [-p] [-t <tsid>] <channel> <seconds> [<outfile>|-]
  *
  *   <channel>  UHF physical channel, 13..62; or, as recpt1 names them,
  *              BS<1..23 odd>_<stream 0..7> (BS15_0) or CS<2..24 even> (CS2)
  *   <seconds>  how long to read (0: tune and report the signal only)
  *   <outfile>  where the stream goes; "-" is stdout; none: thrown away
  *   -p         list every PID seen
+ *   -t <tsid>  with BS<n> or CS<n>: pick the stream by its TSID instead
+ *              (0x40f2), as recisdb's --tsid does -- the TSID goes in slot
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -90,6 +93,24 @@ static int parse_channel(const char *s, struct ptx_freq *f)
 	return 0;
 }
 
+/* transport_stream_id of the PAT section that starts in packet p (PID 0),
+ * or -1 */
+static long pat_tsid(const unsigned char *p)
+{
+	int off = 4;
+
+	if (!(p[1] & 0x40) || !(p[3] & 0x10))
+		return -1;
+	if (p[3] & 0x20)
+		off += 1 + p[4];
+	if (off >= TS)
+		return -1;
+	off += 1 + p[off];		/* pointer_field */
+	if (off + 5 > TS || p[off] != 0x00)
+		return -1;
+	return (p[off + 3] << 8) | p[off + 4];
+}
+
 static double now(void)
 {
 	struct timespec ts;
@@ -104,17 +125,25 @@ int main(int argc, char **argv)
 	static unsigned char buf[TS * 256];
 	unsigned long total = 0, bad_sync = 0, cc_total = 0, scr_total = 0, npid = 0;
 	int list = 0, fd, ofd = -1, sat, secs, raw = 0, opt, have = 0, i;
+	long tsid = 0, ts_id = -1;
 	const char *ch;
+	char *end;
 	struct ptx_freq freq;
 	double t0, t1;
 
-	while ((opt = getopt(argc, argv, "d:p")) != -1) {
-		if (opt == 'd')
+	while ((opt = getopt(argc, argv, "d:pt:")) != -1) {
+		if (opt == 'd') {
 			dev = optarg;
-		else if (opt == 'p')
+		} else if (opt == 'p') {
 			list = 1;
-		else
+		} else if (opt == 't') {
+			/* under 12 would be taken as a position */
+			tsid = strtol(optarg, &end, 0);
+			if (*end || tsid < 12 || tsid > 0xffff)
+				goto usage;
+		} else {
 			goto usage;
+		}
 	}
 	if (argc - optind < 2)
 		goto usage;
@@ -125,6 +154,11 @@ int main(int argc, char **argv)
 	sat = parse_channel(ch, &freq);
 	if (sat < 0)
 		goto usage;
+	if (tsid) {
+		if (!sat || strchr(ch, '_'))
+			goto usage;
+		freq.slot = tsid;
+	}
 
 	fd = open(dev, O_RDONLY);
 	if (fd < 0) {
@@ -134,7 +168,8 @@ int main(int argc, char **argv)
 	t0 = now();
 	if (ioctl(fd, PTX_SET_CHANNEL, &freq) < 0) {
 		fprintf(stderr, "ird-rec: channel %s: %s\n", ch,
-			errno == EAGAIN ? "no lock" : strerror(errno));
+			errno != EAGAIN ? strerror(errno) :
+			sat ? "no lock, or no such stream" : "no lock");
 		return 1;
 	}
 	t1 = now();
@@ -187,6 +222,8 @@ int main(int argc, char **argv)
 				continue;
 			}
 			count[pid]++;
+			if (!pid && ts_id < 0)
+				ts_id = pat_tsid(p);
 			if (p[3] & 0xc0)
 				scrambled[pid]++;
 			/* the counter steps on packets that carry payload; a
@@ -219,14 +256,17 @@ int main(int argc, char **argv)
 				scrambled[i] ? "  scrambled" : "",
 				cc_err[i] ? "  CONTINUITY ERRORS" : "");
 	}
+	if (ts_id >= 0)
+		fprintf(stderr, "ird-rec: TSID 0x%04lx in the PAT\n", ts_id);
 	fprintf(stderr, "ird-rec: %lu packets in %.1f s (%.0f kbit/s), %lu PIDs, "
 		"%lu scrambled, %lu continuity errors, %lu sync errors\n",
 		total, t1 - t0, total * TS * 8 / (t1 - t0) / 1000, npid,
 		scr_total, cc_total, bad_sync);
 	return cc_total || bad_sync ? 3 : 0;
 usage:
-	fprintf(stderr, "usage: ird-rec [-d <device>] [-p] <channel> <seconds> "
-		"[<outfile>|-]\n"
-		"  <channel>: 13..62 (UHF), BS1_0..BS23_7, CS2..CS24\n");
+	fprintf(stderr, "usage: ird-rec [-d <device>] [-p] [-t <tsid>] <channel> "
+		"<seconds> [<outfile>|-]\n"
+		"  <channel>: 13..62 (UHF), BS1_0..BS23_7, CS2..CS24\n"
+		"  -t <tsid>: with BS1..BS23 or CS2..CS24, the stream by its TSID\n");
 	return 2;
 }

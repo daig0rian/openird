@@ -23,7 +23,8 @@ struct ird_tuner_ops {
 	/* Tune and wait for lock: 0 = locked, -EAGAIN = no lock.  system is
 	 * PTX_ISDB_T_SYSTEM or PTX_ISDB_S_SYSTEM (one the tuner's system_cap
 	 * has).  stream_id is ISDB-S's: 0..7 = the n-th transport stream of
-	 * the transponder, 12 and up = a TSID; 0 for ISDB-T.  The stream of
+	 * the transponder, 8..11 = none (-EINVAL), 12 and up = a TSID; 0 for
+	 * ISDB-T (ird_ptx_ioctl.h).  The stream of
 	 * the new multiplex may be read as soon as this returns. */
 	int (*tune)(struct ird_tuner *t, int system, u32 freq_khz,
 		    u16 stream_id);

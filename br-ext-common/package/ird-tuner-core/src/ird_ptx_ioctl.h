@@ -30,8 +30,12 @@ enum ptx_system_type {
  *    0..11  BS   1/3/../23           1049480 + 38360 * freq_no kHz
  *   12..23  CS   ND2/4/../24         1613000 + 40000 * (freq_no - 12) kHz
  * (without PTX_SET_SYSTEM_MODE, a device that receives ISDB-S takes 0..23
- * as these), and slot picks the transport stream: 0..7 = the n-th one of
- * the transponder, 12 and up = a TSID.
+ * as these), and slot, cut to 16 bits, picks the transport stream the way
+ * tsukumijima's px4_drv does from 0.4.0 on: under 12 = the n-th one of the
+ * transponder, 12 and up = its TSID (recisdb's --tsid puts the TSID here;
+ * nns779's px4_drv refused 8 and up for BS).  A transponder lists at most
+ * 8 streams, so 8..11 name none: -EINVAL, as px4_drv's CXD2856ER tuners
+ * answer.
  */
 struct ptx_freq {
 	int freq_no;
