@@ -5,8 +5,8 @@ Status: specified
 As-of:  カードの口の観察 sb-tv06-wrip-card-slot.md (2026-10-13・抜き挿しは 2026-10-15)
 Impl:   -
 Tests:  -
-Note:   OpenIRD がカードスロットを PC/SC のリーダとして見せる作り（カーネルの口・FW との手順・pcscd）。
-        FW とのやり取りの事実は sb-tv06-wrip-card-slot.md にあり、この文書はそれをどう使うかを決める
+Note:   OpenIRD がカードスロットを PC/SC のリーダとして見せる作り。FW とのやり取りの事実は sb-tv06-wrip-card-slot.md。
+        実装は ird-tuner-emma3sep の src/emma3sep_card.c と ird-pcsc（SB-TV06-WRIP の実機で動作・§6。この仕様を引く自動テストは無い）
 -->
 
 <!-- Open 層のみ: FW とのやり取りはすべて sb-tv06-wrip-card-slot.md の観察から。pcsc-lite の
@@ -131,13 +131,12 @@ FW とのやり取りは [カードの口](sb-tv06-wrip-card-slot.md) の §2・
 ## 4. pcscd
 
 - **pcsc-lite 2.1.0 を静的にリンクして入れる**（rootfs は全部静的・`BR2_STATIC_LIBS`）。
-  Buildroot の pcsc-lite は静的な構成を受け付けないので、OpenIRD のパッケージで作る
-  （`--disable-libudev --disable-libusb --disable-libsystemd --disable-polkit`）。
-- **IFD ハンドラ（`ifd-irdcard`）は pcscd の中に組み込む。** pcscd はリーダのドライバを
-  `dlopen` で読むが、静的な musl には `dlopen` が無い。そこで pcscd に、`dlopen`・`dlsym`・
-  `dlclose`・`dlerror` の小さな代役をリンクする: `dlopen` は名前が `irdcard.builtin` で終わるとき
-  だけ成功し、`dlsym` は組み込みの IFD ハンドラの関数を返す。pcsc-lite 本体には手を入れない。
-  ほかのドライバ（USB のリーダなど）は読めない。
+  Buildroot の pcsc-lite は静的な構成を受け付けないので、OpenIRD のパッケージ `ird-pcsc` で作る
+  （`--disable-libudev --disable-libusb --disable-usb --disable-libsystemd --disable-polkit`）。
+- **IFD ハンドラ（`ifd-irdcard`）は pcscd の中に組み込む。** 静的な musl には `dlopen` が無いので、
+  pcsc-lite が持つ静的ドライバの作り（`-DPCSCLITE_STATIC_DRIVER -DIFDHANDLERv3` でビルドすると、
+  pcscd はドライバを読まずに `IFDH*` の関数を直接呼ぶ）を使い、IFD ハンドラを pcscd にリンクする。
+  pcsc-lite のソースには手を入れない。ほかのドライバ（USB のリーダなど）は使えない。
 - リーダの登録は `/etc/reader.conf.d/irdcard.conf`:
   ```
   FRIENDLYNAME "OpenIRD card slot"
@@ -145,14 +144,15 @@ FW とのやり取りは [カードの口](sb-tv06-wrip-card-slot.md) の §2・
   LIBPATH      /usr/lib/pcsc/drivers/irdcard.builtin
   CHANNELID    0
   ```
-  `LIBPATH` のファイルは中身の無い目印（pcscd が在るかを確かめるため）。
+  静的ドライバの作りでも、pcscd は設定を読むときに `LIBPATH` と `DEVICENAME` が在ることを
+  確かめるので、`LIBPATH` には中身の無い目印のファイルを置く。
 - IFD ハンドラ（IFD Handler API v3）の働き:
 
 | 関数 | 働き |
 |---|---|
 | `IFDHCreateChannelByName`・`IFDHCreateChannel` | `/dev/irdcard0` を開く |
 | `IFDHCloseChannel` | 閉じる |
-| `IFDHICCPresence` | `IRD_CARD_STATUS` の `present` |
+| `IFDHICCPresence` | `IRD_CARD_STATUS` の `present`。前の問い合わせから `changes` が進んでいたら、1 回だけ「無い」と答える（抜いてすぐ挿し直したのを pcscd に気づかせる） |
 | `IFDHPowerICC` | 投入・やり直しは `IRD_CARD_RESET`（ATR を返す）、切断は `IRD_CARD_POWER_OFF` |
 | `IFDHSetProtocolParameters` | T=1 だけ受ける（FW が T=1 を持つ）。ほかは `IFD_PROTOCOL_NOT_SUPPORTED` |
 | `IFDHTransmitToICC` | `IRD_CARD_TRANSMIT`。応答が呼び出し側の器に入らなければ `IFD_ERROR_INSUFFICIENT_BUFFER` |
@@ -162,7 +162,10 @@ FW とのやり取りは [カードの口](sb-tv06-wrip-card-slot.md) の §2・
   自前の在否の見張り（polling thread）は持たない＝pcscd が `IFDHICCPresence` を定期的に呼ぶ。
 - 起動は、チューナの起動スクリプトの後（カードの口が AV のコマンド経路を使うため）。
   `/dev/irdcard0` が無い機種では起動しない。
-- 使う側のプログラムは `libpcsclite.a` を静的にリンクする（SDK に入る）。確かめ用に `ird-pcsc`
+- 使う側のプログラムは `libpcsclite.a` を静的にリンクする（SDK に入る）。pcsc-lite 2.x の
+  `libpcsclite` は、本体（`libpcsclite_real`）を `dlopen` で読むリダイレクタで、静的な構成では
+  使えない（`Dynamic loading not supported`）。そこで SDK の `libpcsclite.a` は本体に置き換えて
+  おく（`-lpcsclite` と pkg-config の `libpcsclite.pc` がそのまま使える）。確かめ用に `ird-pcsc`
   （リーダとカードの状態・ATR を表示し、指定した APDU を 1 本送って応答をそのまま表示する。
   応答の意味は解釈しない）を rootfs に入れる。
 
@@ -176,4 +179,21 @@ FW とのやり取りは [カードの口](sb-tv06-wrip-card-slot.md) の §2・
 
 ## 6. 検証
 
-（実装の後に書く）
+実機 SB-TV06-WRIP（2026-10-17）。OpenIRD を NAND から起動（カーネルと rootfs はこの実装を入れた
+手元のビルド）。カードは観察（カードの口 §6）と同じ、B-CAS ではない T=1 のもの 1 枚。送ったのは、
+状態語だけが返る汎用のコマンド（このカードは 2 バイトの状態語で断る）と、既定のアプリケーションの
+選択 1 回だけで、カード上の記録の読み出しは行っていない。応答と ATR の中身は書かない。
+
+| 確かめたこと | 結果 |
+|---|---|
+| 起動 | `/dev/irdcard0` を登録。チューナの起動の後に pcscd が起動 |
+| カードが無いとき | `ird-pcsc` が「no card」。つなごうとすると `SCARD_E_NO_SMARTCARD` |
+| 挿す・抜く（往復の前＝P を知らない） | 1 秒ごとの確かめで、挿してすぐ「card present」と 23 バイトの ATR、抜いてすぐ「no card」 |
+| APDU の往復 | 4 バイト（応答なしの形）と 5 バイトのコマンドに 2 バイトの状態語。既定のアプリケーションの選択に 105 バイト＋状態語（観察の 2 バイトより長い応答）。接続を含めて 1 本 40〜180 ms |
+| 受信と同時に | 地上 27 を 30 秒受けながら 200 本、CS2 を 20 秒受けながら 50 本の往復。往復は全部成功し、受信は連続性エラー 0・ドレイナーの欠け 0 |
+| 抜いて挿し直す（往復の後＝P を知っている） | 0.65 秒ごとの確かめで、抜いた次の回に「no card」、挿し直した次の回に「card present」で、そのまま往復が通った（pcscd が自分で起こし直した） |
+
+- pcsc-lite 2.x の `libpcsclite` が `dlopen` を使うリダイレクタだったことは、この実機で分かった
+  （§4。最初の版の確かめ用の道具が `Dynamic loading not supported` で pcscd と話せなかった）。
+- 確かめていないこと: 往復の最中に抜いたとき、長い APDU（数十バイトを超えるコマンド）、
+  T=0 のカード、pcscd の再起動・長時間の連続運転。
