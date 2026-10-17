@@ -6,6 +6,8 @@
  * Written from docs/specs/poe-br100-yb1-av-command.md only (§2 the stack,
  * §3 the commands, §4 how a PID filter behaves, §5.1 the smallest set raw
  * TS needs).  Register names are the GPL kernel's (asm/emma/emma3sep.h).
+ * The tuner and the card reader share the stack; what that takes is in
+ * docs/specs/emma3sep-card-reader.md §3.5.
  *
  * The sub-CPU must be running: the owner's csd.ko starts it and may then be
  * unloaded (spec §1).  This file never resets it, never writes the BHIF
@@ -16,6 +18,7 @@
 #include <linux/kernel.h>
 #include <linux/delay.h>
 #include <linux/jiffies.h>
+#include <linux/mutex.h>
 #include <asm/io.h>
 #include <asm/addrspace.h>
 
@@ -41,7 +44,7 @@
  * largest request and response is all that is needed. */
 #define DATA_START	0xa0010800ul
 #define DATA_WRAP	0xa0011200ul
-#define MAX_WORDS	16
+#define MAX_WORDS	EMMA3SEP_AV_MAX_WORDS
 
 #define CMD_INITIALISE	0x1900
 #define CMD_OPEN_DEVICE	0x1901
@@ -56,6 +59,9 @@
 static void __iomem *bhif;
 static unsigned int nx_entry = ENT_FIRST, nx_seq = SEQ_FIRST;
 static unsigned long nx_addr = DATA_START;
+static int attached;
+/* one command on the stack at a time, whoever posts it */
+static DEFINE_MUTEX(av_lock);
 
 static inline u32 *entry(unsigned int i)
 {
@@ -95,7 +101,7 @@ int emma3sep_av_shared(void)
 }
 EXPORT_SYMBOL_GPL(emma3sep_av_shared);
 
-int emma3sep_av_attach(int *fresh)
+static int attach(int *fresh)
 {
 	unsigned int i, newest = 0, used = 0;
 
@@ -128,9 +134,33 @@ int emma3sep_av_attach(int *fresh)
 	nx_addr = DATA_START;
 	return 0;
 }
+
+int emma3sep_av_attach(int *fresh)
+{
+	int ret;
+
+	mutex_lock(&av_lock);
+	ret = attach(fresh);
+	if (!ret)
+		attached = 1;
+	mutex_unlock(&av_lock);
+	return ret;
+}
 EXPORT_SYMBOL_GPL(emma3sep_av_attach);
 
-int emma3sep_av_cmd(u16 cmd, const u32 *req, int nreq, u32 *resp, int nresp)
+int emma3sep_av_attached(void)
+{
+	return attached;
+}
+EXPORT_SYMBOL_GPL(emma3sep_av_attached);
+
+/*
+ * Post one command and wait for it; av_lock held.  Bit i of self adds the
+ * request's own address to word i; back, if given, gets the request words
+ * as they stand when the command is done (the firmware writes some).
+ */
+static int post(u16 cmd, const u32 *req, int nreq, u32 *resp, int nresp,
+		u32 self, u32 *back)
 {
 	volatile u32 *e = entry(nx_entry);
 	volatile u32 *d;
@@ -143,7 +173,7 @@ int emma3sep_av_cmd(u16 cmd, const u32 *req, int nreq, u32 *resp, int nresp)
 		nx_addr = DATA_START;
 	d = (volatile u32 *)nx_addr;
 	for (i = 0; i < nreq; i++)
-		d[i] = req[i];
+		d[i] = req[i] + (i < 32 && (self & (1u << i)) ? nx_addr : 0);
 	for (i = 0; i < nresp; i++)
 		d[nreq + i] = 0;
 	e[1] = ((u32)cmd << 16) | nx_seq;
@@ -167,6 +197,8 @@ int emma3sep_av_cmd(u16 cmd, const u32 *req, int nreq, u32 *resp, int nresp)
 	}
 	for (i = 0; i < nresp; i++)
 		resp[i] = d[nreq + i];
+	for (i = 0; back && i < nreq; i++)
+		back[i] = d[i];
 
 	/* the firmware takes entries and sequence numbers in order */
 	nx_entry = entry_after(nx_entry);
@@ -174,20 +206,45 @@ int emma3sep_av_cmd(u16 cmd, const u32 *req, int nreq, u32 *resp, int nresp)
 	nx_addr += 4 * (nreq + nresp);
 	return e[5];
 }
+
+int emma3sep_av_cmd(u16 cmd, const u32 *req, int nreq, u32 *resp, int nresp)
+{
+	int st;
+
+	mutex_lock(&av_lock);
+	st = post(cmd, req, nreq, resp, nresp, 0, NULL);
+	mutex_unlock(&av_lock);
+	return st;
+}
 EXPORT_SYMBOL_GPL(emma3sep_av_cmd);
+
+int emma3sep_av_cmd_rw(u16 cmd, u32 *req, int nreq, u32 *resp, int nresp,
+		       u32 self)
+{
+	int st;
+
+	mutex_lock(&av_lock);
+	st = post(cmd, req, nreq, resp, nresp, self, req);
+	mutex_unlock(&av_lock);
+	return st;
+}
+EXPORT_SYMBOL_GPL(emma3sep_av_cmd_rw);
 
 /* --- the demultiplexer ------------------------------------------------------- */
 
-static int cmd_ok(u16 cmd, const u32 *req, int nreq, u32 *resp, int nresp)
+static int refused(u16 cmd, int st)
 {
-	int st = emma3sep_av_cmd(cmd, req, nreq, resp, nresp);
-
 	if (st > 0) {
 		printk(KERN_WARNING "emma3sep-av: command 0x%04x refused, status %d\n",
 		       cmd, st);
 		return -EIO;
 	}
 	return st;
+}
+
+static int cmd_ok(u16 cmd, const u32 *req, int nreq, u32 *resp, int nresp)
+{
+	return refused(cmd, emma3sep_av_cmd(cmd, req, nreq, resp, nresp));
 }
 
 /*
@@ -216,16 +273,12 @@ EXPORT_SYMBOL_GPL(emma3sep_demux_init);
 
 int emma3sep_demux_filter_alloc(u32 dev, u32 *filter)
 {
-	u32 req[4];
-
 	/* the request's second word points at its own fourth */
-	if (nx_addr + 4 * 5 > DATA_WRAP)
-		nx_addr = DATA_START;
-	req[0] = FILTER_PID;
-	req[1] = nx_addr + 12;
-	req[2] = dev;
-	req[3] = 0xffffff00;
-	return cmd_ok(CMD_FILTER_ALLOC, req, 4, filter, 1);
+	u32 req[4] = { FILTER_PID, 12, dev, 0xffffff00 };
+
+	return refused(CMD_FILTER_ALLOC,
+		       emma3sep_av_cmd_rw(CMD_FILTER_ALLOC, req, 4, filter, 1,
+					  1u << 1));
 }
 EXPORT_SYMBOL_GPL(emma3sep_demux_filter_alloc);
 

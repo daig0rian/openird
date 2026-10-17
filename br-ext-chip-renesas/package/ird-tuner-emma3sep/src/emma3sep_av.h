@@ -19,6 +19,7 @@
 /* --- commands ---------------------------------------------------------------- */
 
 #define EMMA3SEP_DEMUX_FILTERS	36	/* PID filters per demultiplexer device */
+#define EMMA3SEP_AV_MAX_WORDS	96	/* request + response words of one command */
 
 /* Is the sub-CPU out of reset and pointing at the shared memory? */
 int emma3sep_av_up(void);
@@ -33,12 +34,25 @@ int emma3sep_av_shared(void);
  */
 int emma3sep_av_attach(int *fresh);
 
+/* Has emma3sep_av_attach() succeeded since boot (commands may be posted)? */
+int emma3sep_av_attached(void);
+
 /*
- * Post one command and wait for it.  req/resp are 32-bit words.  Returns the
- * firmware's status (0 = success, > 0 = refused) or -errno.  Not reentrant:
- * the caller serialises.
+ * Post one command and wait for it.  req/resp are 32-bit words, at most
+ * EMMA3SEP_AV_MAX_WORDS together.  Returns the firmware's status (0 =
+ * success, > 0 = refused) or -errno.  Commands are serialised here: the
+ * tuner and the card reader may both post.
  */
 int emma3sep_av_cmd(u16 cmd, const u32 *req, int nreq, u32 *resp, int nresp);
+
+/*
+ * The same, for requests that refer to themselves or that the firmware
+ * writes into: bit i of self (i < 32) adds the request's own address to
+ * word i, and req gets the request words back as they stand when the
+ * command is done.
+ */
+int emma3sep_av_cmd_rw(u16 cmd, u32 *req, int nreq, u32 *resp, int nresp,
+		       u32 self);
 
 /* The demultiplexer as far as raw TS needs it (av-command spec §5.1). */
 int emma3sep_demux_init(u32 dev[3]);	/* Initialise, open 3 devices, inputs */

@@ -32,3 +32,12 @@ config IRD_TUNER_WRIP
 	  The front end of the SB-TV06-WRIP: TC90532 demodulator with the
 	  MxL601RF and TDA8263HN tuners, terrestrial reception.  Inactive
 	  on other boards of the family.
+
+config IRD_CARD_EMMA3SEP
+	bool "EMMA3SEP card slot as a card reader (/dev/irdcard0)"
+	depends on IRD_TUNER_EMMA3SEP
+	help
+	  The card slot of the SB-TV06-WRIP, through the firmware of the
+	  AV sub-CPU, as /dev/irdcard0 for OpenIRD's pcsc-lite driver.
+	  Carries APDUs and nothing else.  Inactive on boards without a
+	  slot; opens once the tuner has been started.
