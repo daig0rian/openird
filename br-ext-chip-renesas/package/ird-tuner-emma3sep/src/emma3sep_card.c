@@ -79,6 +79,8 @@ static struct {
 	volatile u32 *rec;		/* P, or NULL until a transmit shows it */
 	u8 atr[IRD_CARD_ATR_MAX];
 	int atr_len;
+	int have_defaults;
+	u32 def10, def11;		/* settings words 10 and 11 as the slot opened */
 } card;
 
 /* --- the signal --------------------------------------------------------------- */
@@ -132,13 +134,26 @@ static void set_present(int present)
 
 /* --- commands ----------------------------------------------------------------- */
 
+static int debug;
+module_param(debug, int, 0644);
+MODULE_PARM_DESC(debug, "1: log every command to the firmware and its status");
+
 static int command(u16 cmd, u32 *req, int nreq, u32 *resp, int nresp, u32 self)
 {
+	u32 code = cmd == CMD_CNTRL ? req[1] : 0;
 	int st = emma3sep_av_cmd_rw(cmd, req, nreq, resp, nresp, self);
 
 	if (st > 0 && !(cmd == CMD_CNTRL && st == ST_NO_CARD))
-		printk(KERN_WARNING "emma3sep-card: command 0x%04x refused, "
-		       "status %d\n", cmd, st);
+		printk(KERN_WARNING "emma3sep-card: command 0x%04x (code %u) refused, "
+		       "status %d\n", cmd, code, st);
+	if (debug) {
+		int i;
+
+		printk(KERN_INFO "emma3sep-card: 0x%04x code %u -> %d:", cmd, code, st);
+		for (i = 0; cmd == CMD_CNTRL && i < nreq; i++)
+			printk(" %08x", req[i]);
+		printk("\n");
+	}
 	return st;
 }
 
@@ -180,6 +195,18 @@ static int reset(void)
 	st = command(CMD_CNTRL, req, CNTRL_WORDS, resp, CNTRL_RESP, 0);
 	if (st)
 		return st < 0 ? st : -EIO;
+	/* words 10 and 11 take the transmission values of the card's last ATR
+	 * (its speed, guard time, waiting times), and the next reset still
+	 * listens at those; but an ATR comes at the defaults.  Put back what
+	 * they were as the slot opened - else a second reset of a card that
+	 * asked for another speed fails (spec §3.2) */
+	if (!card.have_defaults) {
+		card.def10 = req[10];
+		card.def11 = req[11];
+		card.have_defaults = 1;
+	}
+	req[10] = card.def10;
+	req[11] = card.def11;
 	req[1] = CNTRL_SET;
 	req[12] = 0x0000000f;
 	req[15] = 0x03000000;
