@@ -56,6 +56,10 @@ BR2_PACKAGE_DROPBEAR_DISABLE_REVERSEDNS=y
 # px4_drv 互換 chardev の確認用クライアント。ドライバ本体はカーネル側（make kernel）
 BR2_PACKAGE_IRD_TUNER_EMMA3SEP=y
 
+# カードリーダー（/dev/irdcard0）を PC/SC で使う静的な pcsc-lite。カードスロットの
+# 無い機種では pcscd は起動しない（ファミリーでパッケージをそろえておく）
+BR2_PACKAGE_IRD_PCSC=y
+
 # --- rootfs イメージ ---
 # ベンダカーネルの squashfs は 3.1 BE。Buildroot の mksquashfs(4.x) では作れないので、
 # post-fakeroot.sh が pin した squashfs-tools 3.4 で固める（tar は fakeroot を回すためだけ）。

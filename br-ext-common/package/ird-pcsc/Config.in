@@ -1,0 +1,19 @@
+config BR2_PACKAGE_IRD_PCSC
+	bool "ird-pcsc"
+	depends on BR2_TOOLCHAIN_HAS_THREADS
+	depends on BR2_STATIC_LIBS
+	help
+	  OpenIRD: カードリーダー（/dev/irdcard0）を PC/SC で使うための
+	  pcsc-lite（pcscd と libpcsclite）。
+
+	  rootfs が静的リンクなので、pcsc-lite を静的ドライバの作り
+	  （PCSCLITE_STATIC_DRIVER）でビルドし、OpenIRD の IFD ハンドラ
+	  （ifd-irdcard）を pcscd に組み込む。機器の上のプログラムは
+	  libpcsclite.a（SDK に入る）を静的にリンクして pcscd と話す。
+	  確かめ用の ird-pcsc も入る。
+
+	  /dev/irdcard0 の無い機種では pcscd は起動しない。
+	  仕様は docs/specs/emma3sep-card-reader.md。
+
+comment "ird-pcsc needs a static toolchain with threads"
+	depends on !BR2_TOOLCHAIN_HAS_THREADS || !BR2_STATIC_LIBS

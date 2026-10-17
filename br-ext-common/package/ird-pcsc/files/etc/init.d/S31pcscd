@@ -1,0 +1,30 @@
+#!/bin/sh
+# pcscd, for the card reader (/dev/irdcard0).  After the tuner: the reader
+# goes through the AV sub-CPU's command path, which the tuner's start-up sets
+# up.  A board without a card slot has no /dev/irdcard0 and no pcscd.
+# Messages are ASCII only.
+
+DEV=/dev/irdcard0
+PCSCD=/usr/sbin/pcscd
+
+case "$1" in
+	start)
+		[ -c "$DEV" ] || exit 0
+		printf "Starting pcscd: "
+		start-stop-daemon -S -q -x "$PCSCD" && echo "OK" || echo "FAIL"
+		;;
+	stop)
+		[ -c "$DEV" ] || exit 0
+		printf "Stopping pcscd: "
+		start-stop-daemon -K -q -x "$PCSCD" && echo "OK" || echo "FAIL"
+		;;
+	restart|reload)
+		"$0" stop
+		sleep 1
+		"$0" start
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart}"
+		exit 1
+		;;
+esac

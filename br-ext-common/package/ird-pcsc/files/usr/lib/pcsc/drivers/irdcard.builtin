@@ -1,0 +1,2 @@
+The driver of the OpenIRD card reader (ifd-irdcard) is built into pcscd.
+This file only has to exist: /etc/reader.conf.d/irdcard.conf names it.
