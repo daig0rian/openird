@@ -283,14 +283,16 @@ static int et_tune(struct ird_tuner *t, int system, u32 freq_khz,
 
 	mutex_lock(&et.lock);
 	was_tuned = et.tuned;
-	same = was_tuned && system == et.system && freq_khz == et.freq_khz;
+	/* The multiplex last followed, even if the node was closed since: its
+	 * tables and filters are still in place (ts-fifo spec §11). */
+	same = et.freq_khz && system == et.system && freq_khz == et.freq_khz;
 	same_mux = same && stream_id == et.stream_id;
 	locked = same ? et.fe->locked() == 1 : 0;
 
 	/* Already locked onto this exact channel and following it: the filter
 	 * table is already right, so do nothing -- no re-lock, no re-point.
 	 * (This is what makes a re-tune of the same channel free of glitches.) */
-	if (same_mux && locked) {
+	if (was_tuned && same_mux && locked) {
 		mutex_unlock(&et.lock);
 		return 0;
 	}
@@ -314,7 +316,9 @@ static int et_tune(struct ird_tuner *t, int system, u32 freq_khz,
 	if (system == PTX_ISDB_S_SYSTEM) {
 		ret = et.fe->select_ts ? et.fe->select_ts(stream_id) : -EINVAL;
 		if (ret) {
-			et.tuned = 0;	/* which stream comes out is not known */
+			/* which stream comes out is not known */
+			et.tuned = 0;
+			et.freq_khz = 0;
 			goto out;
 		}
 	}
@@ -358,8 +362,10 @@ static int et_tune(struct ird_tuner *t, int system, u32 freq_khz,
 	et.tuned = 1;			/* let the follower run while we wait below */
 	mutex_unlock(&et.lock);
 
+	/* the same multiplex again: its PAT will not change, so waiting for a
+	 * new one would only run out the clock */
 	if (same_mux)
-		return 0;		/* re-locked the same multiplex: already followed */
+		return 0;
 
 	/* A (possibly) new multiplex: wait until its PAT -- a new CRC -- and all
 	 * its PMTs have been read, so a reader that starts at once gets whole
