@@ -7,7 +7,7 @@
 #
 # 中身: 素の Linux 基盤（BusyBox・dropbear・mtd）。カーネルは YB1 と同じファミリー共通の
 # もの（GPL 2.6.27.39 の再ビルド・機種の部品は起動引数の PRODUCT_FWIDS で選ぶ）。
-# チューナは px4_drv 互換 chardev（/dev/irdvideo0・ドライバはカーネルに組み込み）。地上のみ。
+# チューナは px4_drv 互換 chardev（/dev/irdvideo0・ドライバはカーネルに組み込み）。地上・BS・CS。
 # 区画はベンダのまま（mtd2/mtd3 だけ書く・docs/specs/sb-tv06-wrip-bringup.md §2）。
 
 # --- アーキテクチャ / toolchain ---

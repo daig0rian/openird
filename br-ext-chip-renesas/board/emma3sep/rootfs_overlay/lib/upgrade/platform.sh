@@ -1,4 +1,5 @@
-# /lib/upgrade/platform.sh - POE-BR100-YB1 (Renesas EMMA3SEP, 128MB NAND)
+# /lib/upgrade/platform.sh - Renesas EMMA3SEP boards with the 128MB NAND layout
+# (POE-BR100-YB1, POE-BR310L-SB1)
 #
 # The kernel is a uImage on mtd2, the root filesystem a squashfs on mtd3.
 # The boot loader only loads what is there, so an upgrade is two partitions
